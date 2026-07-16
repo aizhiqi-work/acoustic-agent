@@ -42,7 +42,7 @@ python scripts/run_web.py
 python scripts/run_resplan_web.py
 ```
 
-The geometry workbench runs at `http://127.0.0.1:8765`. The ResPlan workbench runs independently at `http://127.0.0.1:8766` and loads `../ResPlan.pkl` by default. Use its plan index and room selector to build a metric room extrusion with the source and receiver constrained to the selected room.
+The geometry workbench runs at `http://127.0.0.1:8765`. The ResPlan workbench runs independently at `http://127.0.0.1:8766` and loads `../ResPlan.pkl` by default. Use its plan index, source-room selector, and microphone-room selector to switch between the established same-room solver and the multi-room portal model.
 
 Pass another dataset location when needed:
 
@@ -50,7 +50,7 @@ Pass another dataset location when needed:
 python scripts/run_resplan_web.py --dataset /path/to/ResPlan.pkl --port 8766
 ```
 
-ResPlan coordinates are converted to meters with the audited scale policy below. Door and window spans are preserved as distinct ray-tracing boundary materials. In this first same-room model, their acoustic height is represented as a full-height equivalent boundary; the 3D view still displays their recorded sill and opening height.
+ResPlan coordinates are converted to meters with the audited scale policy below. Same-room scenes retain the original full-height equivalent door/window boundary model. When the source and microphone are in different rooms, the engine builds the whole apartment in global coordinates: verified interior doors become open `0-2.1 m` portals with reflective lintels, wall-free room connections become full-height portals, and windows remain closed glass surfaces. The cross-room solver combines direct visibility or weak wall transmission, deterministic routing through the verified portal graph, and Numba-parallel visual and energy-field tracing through the same openings. The JIT intersection kernel preserves each wall segment's vertical range, including door lintels and window spans. Its energy kernel consumes the same NumPy PCG64 scattering values and sample indices as the reference vectorized solver, preserving the traced echogram while accelerating the computation.
 
 ### ResPlan filtering
 

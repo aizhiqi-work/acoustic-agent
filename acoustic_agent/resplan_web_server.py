@@ -27,8 +27,12 @@ _RESPLAN_SCENE_SETUP = '''      <section class="panelBlock editorBlock resplanEd
           <button id="resplanRandom" type="button">Random</button>
         </div>
 
-        <label class="presetSelect" for="resplanRoom">Room
+        <label class="presetSelect" for="resplanRoom">Source room
           <select id="resplanRoom"></select>
+        </label>
+
+        <label class="presetSelect" for="resplanReceiverRoom">Microphone room
+          <select id="resplanReceiverRoom"></select>
         </label>
 
         <canvas id="resplanPlanCanvas" width="320" height="210" aria-label="Selected ResPlan floor plan"></canvas>
@@ -80,8 +84,16 @@ class ResPlanWorkbenchHandler(AcousticWorkbenchHandler):
                 query = parse_qs(parsed.query)
                 index = int(query.get("idx", ["0"])[0])
                 room_id = query.get("room", [None])[0]
+                receiver_room_id = query.get("receiver_room", [None])[0]
                 height = float(query.get("height", ["2.8"])[0])
-                self._send_json(self.dataset.scene(index, room_id, height_m=height))
+                self._send_json(
+                    self.dataset.scene(
+                        index,
+                        room_id,
+                        receiver_room_id=receiver_room_id,
+                        height_m=height,
+                    )
+                )
             except (BrokenPipeError, ConnectionResetError):
                 pass
             except Exception as exc:

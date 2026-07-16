@@ -21,6 +21,7 @@ from acoustic_agent.steam_rt import (
     _segment_inside_room,
     _sphere_samples,
     _trace_energy_field_numba,
+    _trace_energy_field_numpy,
     _volumetric_occlusion,
     bandlimit_band_signals,
     reconstruct_band_irs,
@@ -202,6 +203,36 @@ def test_foa_energy_field_keeps_the_initial_listener_ray_direction():
             rtol=1e-12,
             atol=1e-12,
         )
+
+
+def test_numba_energy_field_matches_numpy_scattering_sequence():
+    room = make_room("u_shape", size=(6.0, 4.0, 2.8))
+    scene = RoomRayScene(room)
+    config = SimConfig(
+        duration_s=0.4,
+        rt_duration_s=0.4,
+        rt_num_rays=512,
+        rt_num_bounces=12,
+        seed=4107,
+        late_tail=False,
+    )
+    source = np.asarray((0.8, 3.2, 1.4))
+    listener = np.asarray((5.2, 3.2, 1.4))
+
+    numpy_field = _trace_energy_field_numpy(scene, source, listener, config)
+    numba_field = _trace_energy_field_numba(scene, source, listener, config)
+
+    np.testing.assert_allclose(numba_field["echogram"], numpy_field["echogram"], rtol=1e-12, atol=1e-15)
+    np.testing.assert_allclose(
+        numba_field["ambisonic_echogram"],
+        numpy_field["ambisonic_echogram"],
+        rtol=1e-12,
+        atol=1e-15,
+    )
+    assert numba_field["active_ray_count"] == numpy_field["active_ray_count"]
+    assert numba_field["actual_bounces"] == numpy_field["actual_bounces"]
+    assert numba_field["surface_hit_count"] == numpy_field["surface_hit_count"]
+    assert numba_field["surface_contribution_count"] == numpy_field["surface_contribution_count"]
 
 
 def test_hrtf_directional_path_preserves_six_band_gains():

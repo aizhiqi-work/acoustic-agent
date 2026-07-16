@@ -401,6 +401,7 @@ pre {
 
 .layerGrid i { width: 24px; height: 3px; flex: 0 0 auto; border-radius: 2px; }
 .pathDirect { background: var(--direct); }
+.pathPortal { background: var(--early); }
 .pathRt { background: var(--rt); }
 .pathDiffraction { background: var(--array); }
 

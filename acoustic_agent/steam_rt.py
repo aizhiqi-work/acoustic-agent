@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import heapq
 from itertools import permutations
 import math
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+from shapely.geometry import LineString, Point, Polygon
 
 try:
     from numba import get_num_threads, get_thread_id, njit, prange
@@ -62,11 +64,25 @@ class _Surface:
 
 
 class _WallSurface(_Surface):
-    def __init__(self, a: np.ndarray, b: np.ndarray, height: float, name: str, absorption: np.ndarray, scattering: np.ndarray, transmission: np.ndarray) -> None:
+    def __init__(
+        self,
+        a: np.ndarray,
+        b: np.ndarray,
+        height: float,
+        name: str,
+        absorption: np.ndarray,
+        scattering: np.ndarray,
+        transmission: np.ndarray,
+        *,
+        z_min: float = 0.0,
+        z_max: float | None = None,
+    ) -> None:
         super().__init__("wall", name, absorption, scattering, transmission)
         self.a = a
         self.b = b
         self.height = height
+        self.z_min = max(0.0, float(z_min))
+        self.z_max = min(float(height), float(height if z_max is None else z_max))
         seg = b - a
         normal_xy = np.asarray([seg[1], -seg[0]], dtype=float)
         n = float(np.linalg.norm(normal_xy))
@@ -84,7 +100,7 @@ class _WallSurface(_Surface):
         if t <= _EPS or u < -1e-6 or u > 1.0 + 1e-6:
             return np.inf
         z = origin[2] + t * direction[2]
-        if z < -1e-6 or z > self.height + 1e-6:
+        if z < self.z_min - 1e-6 or z > self.z_max + 1e-6:
             return np.inf
         return float(t)
 
@@ -99,7 +115,7 @@ class _WallSurface(_Surface):
             t = (relx * sy - rely * sx) / det
             u = (relx * dy - rely * dx) / det
         z = oz + t * dz
-        valid = (np.abs(det) > 1e-12) & (t > _EPS) & (u >= -1e-6) & (u <= 1.0 + 1e-6) & (z >= -1e-6) & (z <= self.height + 1e-6)
+        valid = (np.abs(det) > 1e-12) & (t > _EPS) & (u >= -1e-6) & (u <= 1.0 + 1e-6) & (z >= self.z_min - 1e-6) & (z <= self.z_max + 1e-6)
         return np.where(valid, t, np.inf), np.tile(self.normal, (origins.shape[0], 1))
 
 
@@ -123,7 +139,7 @@ class _HorizontalSurface(_Surface):
         with np.errstate(divide="ignore", invalid="ignore"):
             t = (self.z - origins[:, 2]) / dirs[:, 2]
         p = origins + t[:, None] * dirs
-        inside = scene._point_in_polygon_batch(p[:, :2])
+        inside = _points_in_polygon_batch(p[:, :2], np.asarray(self.corners, dtype=float))
         valid = (np.abs(dirs[:, 2]) > 1e-12) & (t > _EPS) & inside
         return np.where(valid, t, np.inf), np.tile(self.normal, (origins.shape[0], 1))
 
@@ -179,6 +195,8 @@ class _BoxSurface(_Surface):
 class RoomRayScene:
     def __init__(self, room: Room) -> None:
         self.room = room
+        multi_room = room.metadata.get("multi_room") if isinstance(room.metadata, Mapping) else None
+        self.is_multi_room = bool(isinstance(multi_room, Mapping) and multi_room.get("enabled"))
         corners = [np.asarray(c[:2], dtype=float) for c in room.corners]
         wall = room.materials.get("wall") or next(iter(room.materials.values()))
         floor = room.materials.get("floor", wall)
@@ -226,19 +244,7 @@ class RoomRayScene:
         self._batch_ready = True
 
     def _point_in_polygon_batch(self, pts: np.ndarray) -> np.ndarray:
-        corners = self._corners
-        x, y = pts[:, 0], pts[:, 1]
-        inside = np.zeros(pts.shape[0], dtype=bool)
-        j = corners.shape[0] - 1
-        for i in range(corners.shape[0]):
-            xi, yi = corners[i]
-            xj, yj = corners[j]
-            cond = (yi > y) != (yj > y)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                x_cross = (xj - xi) * (y - yi) / (yj - yi) + xi
-            inside ^= cond & (x < x_cross)
-            j = i
-        return inside
+        return _points_in_polygon_batch(pts, self._corners)
 
     def batch_closest_hit(self, origins: np.ndarray, dirs: np.ndarray) -> dict[str, Any]:
         self._build_batch_arrays()
@@ -260,9 +266,24 @@ class RoomRayScene:
         return np.any((t_all > _EPS) & (t_all < (max_distance - _EPS)[None, :]), axis=0)
 
 
+def _points_in_polygon_batch(pts: np.ndarray, corners: np.ndarray) -> np.ndarray:
+    x, y = pts[:, 0], pts[:, 1]
+    inside = np.zeros(pts.shape[0], dtype=bool)
+    j = corners.shape[0] - 1
+    for i in range(corners.shape[0]):
+        xi, yi = corners[i]
+        xj, yj = corners[j]
+        cond = (yi > y) != (yj > y)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            x_cross = (xj - xi) * (y - yi) / (yj - yi) + xi
+        inside ^= cond & (x < x_cross)
+        j = i
+    return inside
+
+
 def _boundary_wall_surfaces(room: Room, corners: Sequence[np.ndarray], wall: Any) -> list[_WallSurface]:
     raw_segments = room.metadata.get("surface_segments") if isinstance(room.metadata, Mapping) else None
-    segments: list[tuple[np.ndarray, np.ndarray, str]] = []
+    segments: list[tuple[np.ndarray, np.ndarray, str, float, float, str]] = []
     if isinstance(raw_segments, list):
         for item in raw_segments:
             if not isinstance(item, Mapping):
@@ -271,25 +292,41 @@ def _boundary_wall_surfaces(room: Room, corners: Sequence[np.ndarray], wall: Any
                 a = np.asarray(item.get("a"), dtype=float)
                 b = np.asarray(item.get("b"), dtype=float)
                 kind = str(item.get("type", "wall")).lower()
+                z_min = float(item.get("z_min", 0.0))
+                z_max = float(item.get("z_max", room.height_m))
+                name = str(item.get("name", f"{kind}_{len(segments)}"))
             except (TypeError, ValueError):
                 continue
-            valid = a.shape == (2,) and b.shape == (2,) and np.all(np.isfinite(a)) and np.all(np.isfinite(b))
+            valid = (
+                a.shape == (2,)
+                and b.shape == (2,)
+                and np.all(np.isfinite(a))
+                and np.all(np.isfinite(b))
+                and math.isfinite(z_min)
+                and math.isfinite(z_max)
+                and z_max - z_min > _EPS
+            )
             if valid and float(np.linalg.norm(b - a)) > _EPS:
-                segments.append((a, b, kind if kind in {"wall", "door", "window"} else "wall"))
+                segments.append((a, b, kind if kind in {"wall", "door", "window"} else "wall", z_min, z_max, name))
     if not segments:
-        segments = [(a, corners[(index + 1) % len(corners)], "wall") for index, a in enumerate(corners)]
+        segments = [
+            (a, corners[(index + 1) % len(corners)], "wall", 0.0, room.height_m, f"wall_{index}")
+            for index, a in enumerate(corners)
+        ]
 
     surfaces: list[_WallSurface] = []
-    for index, (a, b, kind) in enumerate(segments):
+    for a, b, kind, z_min, z_max, name in segments:
         material = wall if kind == "wall" else fallback_material(kind)
         surfaces.append(_WallSurface(
             a,
             b,
             room.height_m,
-            f"{kind}_{index}",
+            name,
             _band_array(material, "absorption", 0.1),
             _band_array(material, "scattering", 0.12),
             _band_array(material, "transmission", 10.0 ** (-30.0 / 20.0)),
+            z_min=z_min,
+            z_max=z_max,
         ))
     return surfaces
 
@@ -424,6 +461,8 @@ def _scene_kernel_arrays(scene: RoomRayScene) -> dict[str, Any]:
     kinds = np.zeros(len(scene.surfaces), dtype=np.int64)
     wall_a = np.zeros((len(scene.surfaces), 2), dtype=np.float64)
     wall_b = np.zeros((len(scene.surfaces), 2), dtype=np.float64)
+    wall_z = np.zeros((len(scene.surfaces), 2), dtype=np.float64)
+    wall_z[:, 1] = float(scene.room.height_m)
     z_values = np.zeros(len(scene.surfaces), dtype=np.float64)
     box_center = np.zeros((len(scene.surfaces), 2), dtype=np.float64)
     box_axis_u = np.zeros((len(scene.surfaces), 2), dtype=np.float64)
@@ -443,6 +482,7 @@ def _scene_kernel_arrays(scene: RoomRayScene) -> dict[str, Any]:
             kinds[index] = 0
             wall_a[index] = np.asarray(surface.a, dtype=np.float64)
             wall_b[index] = np.asarray(surface.b, dtype=np.float64)
+            wall_z[index] = np.asarray([surface.z_min, surface.z_max], dtype=np.float64)
         elif isinstance(surface, _BoxSurface):
             kinds[index] = 2
             box_center[index] = np.asarray(surface.center, dtype=np.float64)
@@ -457,6 +497,7 @@ def _scene_kernel_arrays(scene: RoomRayScene) -> dict[str, Any]:
         "kinds": kinds,
         "wall_a": wall_a,
         "wall_delta": wall_b - wall_a,
+        "wall_z": wall_z,
         "z_values": z_values,
         "box_center": box_center,
         "box_axis_u": box_axis_u,
@@ -493,14 +534,20 @@ def simulate_steam_room(
     _add_band_impulse(discrete_band, float(direct["delay_s"]), direct["band_gains"], config)
 
     paths = [_direct_path(src, rcv, direct, config)]
-    diffraction_paths = [
+    portal_paths = _multi_room_portal_paths(room, scene, src, rcv, direct, config, emitter)
+    diffraction_paths = [] if scene.is_multi_room else [
         _apply_source_directivity_to_path(path, emitter)
         for path in _boundary_diffraction_paths(room, scene, src, rcv, direct, config)
     ]
+    for path in portal_paths:
+        sample = int(round(path.delay_s * fs))
+        if 0 <= sample < total:
+            _add_band_impulse(discrete_band, float(path.delay_s), dict(path.band_gains), config)
     for path in diffraction_paths:
         sample = int(round(path.delay_s * fs))
         if config.diffraction_audio_enabled and 0 <= sample < total:
             _add_band_impulse(discrete_band, float(path.delay_s), path.band_gains, config)
+    paths.extend(portal_paths)
     paths.extend(diffraction_paths)
     rt_visual = scan_visual_rt_paths(room, scene, src, rcv, config)
     rt_visual["paths"] = [
@@ -559,6 +606,7 @@ def simulate_steam_room(
             "surface_hit_count": field.get("surface_hit_count", {}),
             "surface_contribution_count": field.get("surface_contribution_count", {}),
             "surface_energy": field.get("surface_energy", {}),
+            "accelerator": field.get("accelerator", "numpy"),
             "ambisonics": {
                 "enabled": True,
                 "order": 1,
@@ -629,6 +677,13 @@ def simulate_steam_room(
                 "order_counts": _diffraction_order_counts(diffraction_paths),
                 "skipped_reason": _diffraction_skip_reason(direct, config, diffraction_paths),
                 "contributes_to_rir": bool(config.diffraction_audio_enabled and diffraction_paths),
+            },
+            "portal_propagation": {
+                "enabled": bool(scene.is_multi_room),
+                "path_count": len(portal_paths),
+                "model": "verified_portal_visibility_graph_pathing_v1" if scene.is_multi_room else "not_applicable",
+                "accelerator": "python_visibility_graph" if scene.is_multi_room else None,
+                "contributes_to_rir": bool(portal_paths),
             },
             "reflections": reflection_metadata,
             "rt_visual": rt_visual["metadata"],
@@ -839,6 +894,7 @@ def _scan_visual_rt_paths_numba(
         arrays["kinds"],
         arrays["wall_a"],
         arrays["wall_delta"],
+        arrays["wall_z"],
         arrays["z_values"],
         arrays["box_center"],
         arrays["box_axis_u"],
@@ -867,6 +923,7 @@ def _scan_visual_rt_paths_numba(
         arrays["kinds"],
         arrays["wall_a"],
         arrays["wall_delta"],
+        arrays["wall_z"],
         arrays["z_values"],
         arrays["box_center"],
         arrays["box_axis_u"],
@@ -1015,15 +1072,24 @@ def _trace_energy_field_numba(
     num_bins = max(1, int(math.ceil(duration / bin_dur)))
     directions = _sphere_samples(num_rays, int(config.seed))
     diffuse_bank = _diffuse_sample_bank(config.rt_num_diffuse_samples)
+    diffuse_random, diffuse_indices = _diffuse_random_sequence(
+        num_rays,
+        num_bounces,
+        diffuse_bank.shape[0],
+        int(config.seed),
+    )
     direct_delay = float(np.linalg.norm(np.asarray(source, dtype=float) - np.asarray(listener, dtype=float))) / float(config.c)
     echogram, ambisonic, hit_counts, contrib_counts, surface_energy, actual_bounces, active_count = _trace_energy_kernel(
         np.asarray(source, dtype=np.float64),
         np.asarray(listener, dtype=np.float64),
         np.asarray(directions, dtype=np.float64),
         np.asarray(diffuse_bank, dtype=np.float64),
+        diffuse_random,
+        diffuse_indices,
         arrays["kinds"],
         arrays["wall_a"],
         arrays["wall_delta"],
+        arrays["wall_z"],
         arrays["z_values"],
         arrays["box_center"],
         arrays["box_axis_u"],
@@ -1048,7 +1114,6 @@ def _trace_energy_field_numba(
         source_forward(emitter),
         float(emitter["dipole_weight"]),
         float(emitter["dipole_power"]),
-        float(config.seed),
     )
     names = arrays["names"]
     total_energy = np.sum(echogram, axis=0)
@@ -1192,6 +1257,7 @@ def _trace_energy_field_numpy(
         "surface_hit_count": dict(sorted(surface_hit_count.items())),
         "surface_contribution_count": dict(sorted(surface_contribution_count.items())),
         "surface_energy": {key: float(value) for key, value in sorted(surface_energy.items())},
+        "accelerator": "numpy",
         "source_directivity": dict(emitter),
     }
 
@@ -1546,13 +1612,237 @@ def _direct_path(src: np.ndarray, rcv: np.ndarray, direct: dict[str, Any], confi
         direct["band_gains"],
         (tuple(src), tuple(rcv)),
         {
-            "model": "same_room_direct_with_occlusion_transmission",
+            "model": "direct_with_geometry_occlusion_transmission",
             "occlusion": float(direct["occlusion"]),
             "occlusion_surface": direct.get("occlusion_surface"),
             "source_directivity_gain": float(direct.get("source_directivity_gain", 1.0)),
             "contributes_to_rir": True,
         },
     )
+
+
+def _multi_room_portal_paths(
+    room: Room,
+    scene: RoomRayScene,
+    src: np.ndarray,
+    rcv: np.ndarray,
+    direct: Mapping[str, Any],
+    config: SimConfig,
+    emitter: Mapping[str, Any],
+) -> list[AcousticPath]:
+    if not scene.is_multi_room or float(direct.get("occlusion", 1.0)) >= 1.0:
+        return []
+    metadata = room.metadata.get("multi_room") if isinstance(room.metadata, Mapping) else None
+    if not isinstance(metadata, Mapping):
+        return []
+    room_records = [item for item in metadata.get("rooms", []) if isinstance(item, Mapping)]
+    portals = [item for item in metadata.get("portals", []) if isinstance(item, Mapping) and bool(item.get("open", False))]
+    source_room_id = _multi_room_id_for_point(src[:2], room_records)
+    receiver_room_id = _multi_room_id_for_point(rcv[:2], room_records)
+    if source_room_id is None or receiver_room_id is None or source_room_id == receiver_room_id:
+        return []
+    route = _shortest_portal_route(portals, source_room_id, receiver_room_id)
+    if not route:
+        return []
+    room_by_id = {str(item.get("id")): item for item in room_records}
+    portal_by_id = {str(item.get("id")): item for item in portals}
+    route_rooms, route_portals = route
+    xy_points: list[np.ndarray] = [np.asarray(src[:2], dtype=float)]
+    current_xy = xy_points[0]
+    for route_index, portal_id in enumerate(route_portals):
+        current_room_id = route_rooms[route_index]
+        next_room_id = route_rooms[route_index + 1]
+        portal = portal_by_id[portal_id]
+        room_points = portal.get("room_points", {})
+        current_side = np.asarray(room_points.get(current_room_id, portal.get("center")), dtype=float)
+        next_side = np.asarray(room_points.get(next_room_id, portal.get("center")), dtype=float)
+        corners = room_by_id[current_room_id].get("corners", [])
+        segment_path = _room_visibility_path(current_xy, current_side, corners)
+        xy_points.extend(segment_path[1:])
+        if float(np.linalg.norm(next_side - xy_points[-1])) > 1e-6:
+            xy_points.append(next_side)
+        current_xy = next_side
+    final_segment = _room_visibility_path(
+        current_xy,
+        np.asarray(rcv[:2], dtype=float),
+        room_by_id[receiver_room_id].get("corners", []),
+    )
+    xy_points.extend(final_segment[1:])
+    xy_points = _deduplicate_xy_points(xy_points)
+    if len(xy_points) < 2:
+        return []
+
+    lower = max(float(portal_by_id[portal_id].get("sill_height_m", 0.0)) + 0.05 for portal_id in route_portals)
+    upper = min(
+        float(portal_by_id[portal_id].get("sill_height_m", 0.0))
+        + float(portal_by_id[portal_id].get("height_m", room.height_m))
+        - 0.05
+        for portal_id in route_portals
+    )
+    aperture_z = float(np.clip(0.5 * (float(src[2]) + float(rcv[2])), lower, max(lower, upper)))
+    points: list[np.ndarray] = [np.asarray(src, dtype=float)]
+    for xy in xy_points[1:-1]:
+        points.append(np.asarray([xy[0], xy[1], aperture_z], dtype=float))
+    points.append(np.asarray(rcv, dtype=float))
+    points = _deduplicate_3d_points(points)
+    distance = float(sum(np.linalg.norm(points[index + 1] - points[index]) for index in range(len(points) - 1)))
+    if distance <= _EPS:
+        return []
+    deviation = _path_deviation_angle(points)
+    pathing = steam_audio_pathing_deviation(deviation) if deviation > 1e-6 else {band: 1.0 for band in FREQUENCY_BANDS}
+    propagation = propagation_band_gains(distance, min_distance_m=float(config.min_distance_m))
+    directivity = source_directivity_gain(points[1] - points[0], emitter)
+    band_gains = {
+        band: float(propagation[band] * pathing[band] * directivity)
+        for band in FREQUENCY_BANDS
+    }
+    return [AcousticPath(
+        "portal_path",
+        distance,
+        distance / float(config.c),
+        band_mean(band_gains),
+        band_gains,
+        tuple(tuple(float(value) for value in point) for point in points),
+        {
+            "model": "verified_portal_visibility_graph_pathing_v1",
+            "source_room_id": source_room_id,
+            "receiver_room_id": receiver_room_id,
+            "route_room_ids": route_rooms,
+            "route_portal_ids": route_portals,
+            "portal_count": len(route_portals),
+            "total_deviation_deg": math.degrees(deviation),
+            "source_directivity_gain": directivity,
+            "contributes_to_rir": True,
+        },
+    )]
+
+
+def _multi_room_id_for_point(point: Sequence[float], rooms: Sequence[Mapping[str, Any]]) -> str | None:
+    for item in rooms:
+        corners = item.get("corners")
+        if isinstance(corners, Sequence) and len(corners) >= 3 and point_in_polygon(point, corners):
+            return str(item.get("id"))
+    return None
+
+
+def _shortest_portal_route(
+    portals: Sequence[Mapping[str, Any]],
+    source_room_id: str,
+    receiver_room_id: str,
+) -> tuple[list[str], list[str]] | None:
+    adjacency: dict[str, list[tuple[str, str, float]]] = {}
+    for portal in portals:
+        room_ids = portal.get("room_ids")
+        if not isinstance(room_ids, Sequence) or len(room_ids) != 2:
+            continue
+        first, second = str(room_ids[0]), str(room_ids[1])
+        width = max(float(portal.get("width_m", 0.8)), 0.1)
+        cost = 1.0 + 0.05 / width
+        portal_id = str(portal.get("id"))
+        adjacency.setdefault(first, []).append((second, portal_id, cost))
+        adjacency.setdefault(second, []).append((first, portal_id, cost))
+    queue: list[tuple[float, str]] = [(0.0, source_room_id)]
+    distance = {source_room_id: 0.0}
+    previous: dict[str, tuple[str, str]] = {}
+    while queue:
+        cost, room_id = heapq.heappop(queue)
+        if cost > distance.get(room_id, math.inf):
+            continue
+        if room_id == receiver_room_id:
+            break
+        for neighbor, portal_id, edge_cost in adjacency.get(room_id, []):
+            candidate = cost + edge_cost
+            if candidate < distance.get(neighbor, math.inf):
+                distance[neighbor] = candidate
+                previous[neighbor] = (room_id, portal_id)
+                heapq.heappush(queue, (candidate, neighbor))
+    if receiver_room_id not in distance:
+        return None
+    rooms = [receiver_room_id]
+    portal_ids: list[str] = []
+    while rooms[-1] != source_room_id:
+        prior_room, portal_id = previous[rooms[-1]]
+        portal_ids.append(portal_id)
+        rooms.append(prior_room)
+    rooms.reverse()
+    portal_ids.reverse()
+    return rooms, portal_ids
+
+
+def _room_visibility_path(
+    start: np.ndarray,
+    end: np.ndarray,
+    corners: Sequence[Sequence[float]],
+) -> list[np.ndarray]:
+    polygon = Polygon(corners)
+    if polygon.is_empty or not polygon.is_valid:
+        return [np.asarray(start, dtype=float), np.asarray(end, dtype=float)]
+    domain = polygon.buffer(1e-4, join_style=2)
+    direct_line = LineString((start, end))
+    if domain.covers(direct_line):
+        return [np.asarray(start, dtype=float), np.asarray(end, dtype=float)]
+    nodes = [np.asarray(start, dtype=float), np.asarray(end, dtype=float)]
+    nodes.extend(np.asarray(point, dtype=float) for point in list(polygon.exterior.coords)[:-1])
+    adjacency: list[list[tuple[int, float]]] = [[] for _ in nodes]
+    for first_index, first in enumerate(nodes):
+        for second_index in range(first_index + 1, len(nodes)):
+            second = nodes[second_index]
+            line = LineString((first, second))
+            if domain.covers(line):
+                length = float(np.linalg.norm(second - first))
+                adjacency[first_index].append((second_index, length))
+                adjacency[second_index].append((first_index, length))
+    queue: list[tuple[float, int]] = [(0.0, 0)]
+    distance = {0: 0.0}
+    previous: dict[int, int] = {}
+    while queue:
+        cost, node_index = heapq.heappop(queue)
+        if node_index == 1:
+            break
+        if cost > distance.get(node_index, math.inf):
+            continue
+        for neighbor, edge_length in adjacency[node_index]:
+            candidate = cost + edge_length
+            if candidate < distance.get(neighbor, math.inf):
+                distance[neighbor] = candidate
+                previous[neighbor] = node_index
+                heapq.heappush(queue, (candidate, neighbor))
+    if 1 not in distance:
+        return [np.asarray(start, dtype=float), np.asarray(end, dtype=float)]
+    indices = [1]
+    while indices[-1] != 0:
+        indices.append(previous[indices[-1]])
+    indices.reverse()
+    return [nodes[index] for index in indices]
+
+
+def _deduplicate_xy_points(points: Sequence[np.ndarray]) -> list[np.ndarray]:
+    result: list[np.ndarray] = []
+    for point in points:
+        value = np.asarray(point, dtype=float)
+        if not result or float(np.linalg.norm(value - result[-1])) > 1e-6:
+            result.append(value)
+    return result
+
+
+def _deduplicate_3d_points(points: Sequence[np.ndarray]) -> list[np.ndarray]:
+    result: list[np.ndarray] = []
+    for point in points:
+        value = np.asarray(point, dtype=float)
+        if not result or float(np.linalg.norm(value - result[-1])) > 1e-6:
+            result.append(value)
+    return result
+
+
+def _path_deviation_angle(points: Sequence[np.ndarray]) -> float:
+    deviation = 0.0
+    for index in range(1, len(points) - 1):
+        incoming = points[index] - points[index - 1]
+        outgoing = points[index + 1] - points[index]
+        incoming /= max(float(np.linalg.norm(incoming)), 1e-12)
+        outgoing /= max(float(np.linalg.norm(outgoing)), 1e-12)
+        deviation += math.acos(float(np.clip(np.dot(incoming, outgoing), -1.0, 1.0)))
+    return deviation
 
 
 def _apply_source_directivity_to_path(path: AcousticPath, model: Mapping[str, Any]) -> AcousticPath:
@@ -2111,6 +2401,21 @@ def _diffuse_sample_bank(count: int) -> np.ndarray:
     return np.stack([r * np.cos(theta), r * np.sin(theta), np.sqrt(np.clip(1.0 - u, 0.0, 1.0))], axis=1)
 
 
+def _diffuse_random_sequence(
+    num_rays: int,
+    num_bounces: int,
+    sample_count: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(int(seed) + 1)
+    random_values = np.empty((num_bounces, num_rays), dtype=np.float64)
+    sample_indices = np.empty((num_bounces, num_rays), dtype=np.int32)
+    for bounce in range(num_bounces):
+        random_values[bounce] = rng.random(num_rays)
+        sample_indices[bounce] = rng.integers(0, sample_count, size=num_rays, dtype=np.int32)
+    return random_values, sample_indices
+
+
 def _transform_hemisphere(samples: np.ndarray, normals: np.ndarray) -> np.ndarray:
     helper = np.where((np.abs(normals[:, 0]) < 0.9)[:, None], np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]))
     tangent = _normalize_rows(np.cross(helper, normals))
@@ -2357,7 +2662,7 @@ if njit is not None:
 
 
     @njit(cache=True)
-    def _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height):
+    def _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height):
         best_t = 1e30
         best_surface = -1
         best_nx = 0.0
@@ -2378,7 +2683,7 @@ if njit is not None:
                     cand_t = (relx * sy - rely * sx) / det
                     u = (relx * direction[1] - rely * direction[0]) / det
                     z = origin[2] + cand_t * direction[2]
-                    if cand_t > _EPS and u >= -1e-6 and u <= 1.0 + 1e-6 and z >= -1e-6 and z <= height + 1e-6:
+                    if cand_t > _EPS and u >= -1e-6 and u <= 1.0 + 1e-6 and z >= wall_z[si, 0] - 1e-6 and z <= wall_z[si, 1] + 1e-6:
                         t = cand_t
             elif kinds[si] == 2:
                 cand_t, cand_nx, cand_ny, cand_nz = _box_hit_jit(origin, direction, box_center[si], box_axis_u[si], box_axis_v[si], box_half[si], box_z[si])
@@ -2390,7 +2695,9 @@ if njit is not None:
             else:
                 if abs(direction[2]) > 1e-12:
                     cand_t = (z_values[si] - origin[2]) / direction[2]
-                    if cand_t > _EPS:
+                    px = origin[0] + cand_t * direction[0]
+                    py = origin[1] + cand_t * direction[1]
+                    if cand_t > _EPS and _point_in_polygon_jit(px, py, corners):
                         t = cand_t
             if t < best_t:
                 best_t = t
@@ -2408,8 +2715,8 @@ if njit is not None:
 
 
     @njit(cache=True)
-    def _any_hit_jit(origin, direction, max_distance, kinds, wall_a, wall_delta, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height):
-        surf, t, nx, ny, nz = _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
+    def _any_hit_jit(origin, direction, max_distance, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height):
+        surf, t, nx, ny, nz = _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
         return surf >= 0 and t > _EPS and t < max_distance - _EPS
 
 
@@ -2445,12 +2752,6 @@ if njit is not None:
         if t1 > 1e-6:
             return t1
         return -1.0
-
-
-    @njit(cache=True)
-    def _hash_unit_jit(a, b, seed):
-        value = math.sin((a + 1.0) * 12.9898 + (b + 1.0) * 78.233 + seed * 0.037719) * 43758.5453123
-        return value - math.floor(value)
 
 
     @njit(cache=True)
@@ -2494,14 +2795,14 @@ if njit is not None:
 
 
     @njit(parallel=True, cache=True)
-    def _visual_event_count_kernel(src, rcv, directions, kinds, wall_a, wall_delta, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, surface_survival, corners, height, receiver_radius, max_path_len, max_bounces):
+    def _visual_event_count_kernel(src, rcv, directions, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, surface_survival, corners, height, receiver_radius, max_path_len, max_bounces):
         event_flags = np.zeros((directions.shape[0], max_bounces + 1), dtype=np.bool_)
         for ri in prange(directions.shape[0]):
             origin = src.copy()
             direction = directions[ri].copy()
             distance_so_far = 0.0
             for bounce in range(max_bounces + 1):
-                surf, t, nx, ny, nz = _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
+                surf, t, nx, ny, nz = _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
                 receiver_t = _ray_sphere_intersection_jit(origin, direction, rcv, receiver_radius)
                 max_t = t if surf >= 0 else 1e30
                 if receiver_t > 0.0 and receiver_t < max_t and bounce > 0:
@@ -2529,7 +2830,7 @@ if njit is not None:
 
 
     @njit(parallel=True, cache=True)
-    def _visual_record_kernel(src, rcv, directions, kinds, wall_a, wall_delta, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, surface_survival, corners, height, receiver_radius, min_distance, max_path_len, max_bounces, events_per_ray, event_offsets, retain_limit):
+    def _visual_record_kernel(src, rcv, directions, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, surface_survival, corners, height, receiver_radius, min_distance, max_path_len, max_bounces, events_per_ray, event_offsets, retain_limit):
         retained_points = np.zeros((retain_limit, max_bounces + 2, 3), dtype=np.float64)
         point_counts = np.zeros(retain_limit, dtype=np.int64)
         ray_indices = np.zeros(retain_limit, dtype=np.int64)
@@ -2549,7 +2850,7 @@ if njit is not None:
             hit_count = 0
             accepted_for_ray = 0
             for bounce in range(max_bounces + 1):
-                surf, t, nx, ny, nz = _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
+                surf, t, nx, ny, nz = _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
                 receiver_t = _ray_sphere_intersection_jit(origin, direction, rcv, receiver_radius)
                 max_t = t if surf >= 0 else 1e30
                 if receiver_t > 0.0 and receiver_t < max_t and bounce > 0:
@@ -2606,7 +2907,7 @@ if njit is not None:
 
 
     @njit(parallel=True)
-    def _trace_energy_kernel(source, listener, directions, diffuse_bank, kinds, wall_a, wall_delta, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, reflection, scattering, corners, height, num_bounces, num_bins, bin_dur, c, max_path_len, direct_delay, listener_radius, source_radius, irradiance_min_distance, specular_exponent, source_forward_vector, dipole_weight, dipole_power, seed):
+    def _trace_energy_kernel(source, listener, directions, diffuse_bank, diffuse_random, diffuse_indices, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, reflection, scattering, corners, height, num_bounces, num_bins, bin_dur, c, max_path_len, direct_delay, listener_radius, source_radius, irradiance_min_distance, specular_exponent, source_forward_vector, dipole_weight, dipole_power):
         thread_count = get_num_threads()
         local_echogram = np.zeros((thread_count, _NUM_BANDS, num_bins), dtype=np.float64)
         local_ambisonic = np.zeros((thread_count, _NUM_BANDS, 4, num_bins), dtype=np.float64)
@@ -2631,7 +2932,7 @@ if njit is not None:
             for bounce in range(num_bounces):
                 if bounce + 1 > local_actual_bounces[tid]:
                     local_actual_bounces[tid] = bounce + 1
-                surf, t, nx, ny, nz = _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
+                surf, t, nx, ny, nz = _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
                 if surf < 0 or t <= listener_radius or accum_distance > max_path_len:
                     alive = False
                     break
@@ -2665,7 +2966,7 @@ if njit is not None:
                         shadow_dir[0] = sdx
                         shadow_dir[1] = sdy
                         shadow_dir[2] = sdz
-                        occluded = _any_hit_jit(shadow_origin, shadow_dir, dist_to_source, kinds, wall_a, wall_delta, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
+                        occluded = _any_hit_jit(shadow_origin, shadow_dir, dist_to_source, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
                         if not occluded:
                             cos_in = facing
                             diffuse = (1.0 / math.pi) * scattering[surf] * cos_in
@@ -2701,11 +3002,9 @@ if njit is not None:
                 origin[0] = hx
                 origin[1] = hy
                 origin[2] = hz
-                use_diffuse = _hash_unit_jit(ri, bounce, seed) < scattering[surf]
+                use_diffuse = diffuse_random[bounce, ri] < scattering[surf]
                 if use_diffuse:
-                    sample_index = int(_hash_unit_jit(ri + 13, bounce + 17, seed) * diffuse_bank.shape[0])
-                    if sample_index >= diffuse_bank.shape[0]:
-                        sample_index = diffuse_bank.shape[0] - 1
+                    sample_index = diffuse_indices[bounce, ri]
                     dx, dy, dz = _diffuse_direction_jit(diffuse_bank[sample_index], nx, ny, nz)
                     direction[0] = dx
                     direction[1] = dy

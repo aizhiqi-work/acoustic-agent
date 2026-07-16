@@ -308,7 +308,17 @@ def _simulate_payload(payload: dict[str, Any]) -> PayloadSimulation:
     )
     if isinstance(room.metadata, dict):
         room.metadata["objects"] = objects
-        for key in ("resplan", "boundary_features", "surface_segments", "opening_model"):
+        for key in (
+            "resplan",
+            "boundary_features",
+            "surface_segments",
+            "opening_model",
+            "connectivity_model",
+            "connections",
+            "source_room_id",
+            "receiver_room_id",
+            "multi_room",
+        ):
             if key in room_metadata:
                 room.metadata[key] = room_metadata[key]
     quality = str(config_raw.get("quality", payload.get("quality", "simulation")))

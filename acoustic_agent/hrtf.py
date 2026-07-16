@@ -226,7 +226,7 @@ def _render_path_aware(
 def _path_has_explicit_binaural_direction(path: AcousticPath) -> bool:
     if not bool(path.metadata.get("contributes_to_rir", False)):
         return False
-    if path.kind in {"direct", "direct_transmitted", "diffraction"}:
+    if path.kind in {"direct", "direct_transmitted", "diffraction", "portal_path"}:
         return len(path.points) >= 2
     return False
 

@@ -1,9 +1,13 @@
 import math
 
 import networkx as nx
+import numpy as np
 from shapely.geometry import MultiPolygon, Point, Polygon, box
 
+import acoustic_agent.steam_rt as steam_rt
+from acoustic_agent.engine import simulate_rir
 from acoustic_agent.geometry import make_room
+from acoustic_agent.models import SimConfig
 from acoustic_agent.resplan import ResPlanDataset, _metric_scale, _plan_profile, scene_from_record
 from acoustic_agent.resplan_web_server import _resplan_viewer_html
 from acoustic_agent.steam_rt import RoomRayScene
@@ -67,6 +71,8 @@ def test_resplan_workbench_reuses_the_main_layout_with_dataset_controls():
     assert 'data-scene-source="resplan"' in html
     assert 'id="resplanIdx"' in html
     assert 'id="resplanRoom"' in html
+    assert 'id="resplanReceiverRoom"' in html
+    assert 'id="layerPortal"' in html
     assert 'id="sourceDirectivityPane"' in html
     assert 'id="receiverPane"' in html
 
@@ -108,3 +114,118 @@ def test_resplan_profile_filters_stairs_and_index_navigation_skips_them():
     assert dataset.resolve_index(2, "nearest") == 1
     assert dataset.resolve_index(1, "next") == 3
     assert dataset.resolve_index(3, "previous") == 1
+
+
+def test_resplan_cross_room_scene_builds_global_portals_and_vertical_openings():
+    scene = scene_from_record(
+        _record(),
+        index=7,
+        room_id="living_0",
+        receiver_room_id="bedroom_0",
+    )
+    multi_room = scene["room"]["metadata"]["multi_room"]
+
+    assert scene["room"]["size"] == [10.0, 5.0, 2.8]
+    assert scene["receiver_room"]["id"] == "bedroom_0"
+    assert multi_room["enabled"] is True
+    assert multi_room["accelerator"] == "numba_jit"
+    assert multi_room["route_room_ids"] == ["living_0", "bedroom_0"]
+    assert multi_room["route_portal_ids"] == ["door_0"]
+    assert multi_room["portals"][0]["height_m"] == 2.1
+    assert multi_room["portals"][0]["width_m"] > 0.8
+
+    room_polygons = {item["id"]: Polygon(item["corners"]) for item in multi_room["rooms"]}
+    assert room_polygons["living_0"].covers(Point(scene["source"][:2]))
+    assert room_polygons["bedroom_0"].covers(Point(scene["receiver"][:2]))
+    lintels = [
+        item for item in scene["room"]["metadata"]["surface_segments"]
+        if item["name"].endswith("_lintel")
+    ]
+    assert len(lintels) == 2
+    assert all(item["z_min"] == 2.1 and item["z_max"] == 2.8 for item in lintels)
+
+
+def test_cross_room_solver_routes_around_wall_through_open_door_with_jit_visual_scan():
+    scene = scene_from_record(
+        _record(),
+        index=7,
+        room_id="living_0",
+        receiver_room_id="bedroom_0",
+    )
+    room = make_room("resplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
+    room.metadata.update(scene["room"]["metadata"])
+    result = simulate_rir(
+        room,
+        (1.0, 0.8, 1.4),
+        (9.0, 0.8, 1.4),
+        config=SimConfig(
+            fs=8000,
+            duration_s=0.2,
+            rt_num_rays=256,
+            rt_num_bounces=3,
+            rt_duration_s=0.2,
+            rt_visual_num_rays=128,
+            rt_visual_num_bounces=3,
+            late_tail=False,
+        ),
+    )
+
+    direct = next(path for path in result.paths if path.kind == "direct_transmitted")
+    portal = next(path for path in result.paths if path.kind == "portal_path")
+    steam = result.metadata["steam_audio"]
+    assert portal.metadata["route_portal_ids"] == ["door_0"]
+    assert portal.distance_m > direct.distance_m
+    assert portal.gain > direct.gain * 20.0
+    assert steam["portal_propagation"]["contributes_to_rir"] is True
+    assert steam["portal_propagation"]["accelerator"] == "python_visibility_graph"
+    assert steam["reflections"]["accelerator"] == "numba"
+    assert steam["rt_visual"]["accelerator"] == "numba"
+    assert steam["rt_visual"]["model"] == "source_space_specular_ray_scan_jit"
+    assert result.metadata["solver_pipeline"][1] == "portal_pathing"
+    assert np.isfinite(result.rir).all()
+    assert float(np.sum(result.rir * result.rir)) > 0.0
+
+
+def test_cross_room_jit_intersections_match_python_for_portal_wall_spans():
+    scene = scene_from_record(
+        _record(),
+        index=7,
+        room_id="living_0",
+        receiver_room_id="bedroom_0",
+    )
+    room = make_room("resplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
+    room.metadata.update(scene["room"]["metadata"])
+    ray_scene = RoomRayScene(room)
+    arrays = steam_rt._scene_kernel_arrays(ray_scene)
+    rng = np.random.default_rng(4107)
+    directions = rng.normal(size=(256, 3))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    origins = (
+        np.asarray([1.0, 2.5, 1.4]),
+        np.asarray([1.0, 2.5, 2.5]),
+        np.asarray([9.0, 2.5, 1.4]),
+    )
+
+    for origin in origins:
+        for direction in directions:
+            expected = ray_scene.closest_hit(origin, direction)
+            surface_index, distance, *_normal = steam_rt._closest_hit_jit(
+                origin,
+                direction,
+                arrays["kinds"],
+                arrays["wall_a"],
+                arrays["wall_delta"],
+                arrays["wall_z"],
+                arrays["z_values"],
+                arrays["box_center"],
+                arrays["box_axis_u"],
+                arrays["box_axis_v"],
+                arrays["box_half"],
+                arrays["box_z"],
+                arrays["normals"],
+                arrays["corners"],
+                arrays["height"],
+            )
+            assert (surface_index >= 0) is bool(expected["valid"])
+            if expected["valid"]:
+                assert np.isclose(distance, expected["distance"], rtol=1e-10, atol=1e-10)

@@ -162,7 +162,12 @@ def _simulate_mono(
             },
             "steam_audio": steam.metadata,
             "source_model": dict(source_model),
-            "solver_pipeline": ["direct", "diffraction", "rt_energy_field", "reverb_estimate", "hybrid_late_reverb", "receiver_reconstruction"],
+            "solver_pipeline": (
+                ["direct", "portal_pathing", "rt_energy_field", "reverb_estimate", "hybrid_late_reverb", "receiver_reconstruction"]
+                if bool(room.metadata.get("multi_room", {}).get("enabled"))
+                else ["direct", "diffraction", "rt_energy_field", "reverb_estimate", "hybrid_late_reverb", "receiver_reconstruction"]
+            ),
+            "multi_room": dict(room.metadata.get("multi_room", {})) if isinstance(room.metadata.get("multi_room"), Mapping) else None,
         },
         steam.ambisonic_rir,
         dict(source_model),
@@ -182,7 +187,16 @@ def _steam_audio_default_material_bands(rt60_bands: Mapping[str, Any]) -> dict[s
 
 def _validate_point(point: Sequence[float], room: Room, label: str) -> tuple[float, float, float]:
     value = vec3(point)
-    if not point_in_polygon(value[:2], room.corners):
+    multi_room = room.metadata.get("multi_room") if isinstance(room.metadata, Mapping) else None
+    valid_xy = point_in_polygon(value[:2], room.corners)
+    if isinstance(multi_room, Mapping) and bool(multi_room.get("enabled")):
+        polygons = [
+            item.get("corners")
+            for item in multi_room.get("rooms", [])
+            if isinstance(item, Mapping) and isinstance(item.get("corners"), Sequence)
+        ]
+        valid_xy = any(point_in_polygon(value[:2], corners) for corners in polygons)
+    if not valid_xy:
         raise ValueError(f"{label} point is outside the room polygon: {tuple(value)}")
     if not (0.0 <= float(value[2]) <= float(room.height_m)):
         raise ValueError(f"{label} z must be inside [0, {room.height_m}]")

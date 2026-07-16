@@ -9,7 +9,7 @@
       window.location.replace("http://127.0.0.1:8767/");
     }
   </script>
-  <link rel="stylesheet" href="./styles.css?v=73-resplan-connectivity">
+  <link rel="stylesheet" href="./styles.css?v=76-resplan-multi-room">
 </head>
 <body>
   <main id="app">
@@ -226,6 +226,7 @@
         </div>
         <div class="layerGrid" aria-label="Acoustic path layers">
           <label><span><i class="pathDirect"></i>Direct</span><input id="layerDirect" type="checkbox" checked></label>
+          <label><span><i class="pathPortal"></i>Portal path</span><input id="layerPortal" type="checkbox" checked></label>
           <label><span><i class="pathDiffraction"></i>Diffraction</span><input id="layerDiffraction" type="checkbox" checked></label>
           <label><span><i class="pathRt"></i>RT sample paths</span><input id="layerRt" type="checkbox" checked></label>
         </div>
@@ -282,6 +283,6 @@
       }
     }
   </script>
-  <script type="module" src="app.js?v=73-resplan-connectivity"></script>
+  <script type="module" src="app.js?v=77-resplan-jit"></script>
 </body>
 </html>
