@@ -50,7 +50,13 @@ Pass another dataset location when needed:
 python scripts/run_resplan_web.py --dataset /path/to/ResPlan.pkl --port 8766
 ```
 
-ResPlan coordinates are converted to meters from the record's `net_area / inner.area` scale. Door and window spans are preserved as distinct ray-tracing boundary materials. In this first same-room model, their acoustic height is represented as a full-height equivalent boundary; the 3D view still displays their recorded sill and opening height.
+ResPlan coordinates are converted to meters with the audited scale policy below. Door and window spans are preserved as distinct ray-tracing boundary materials. In this first same-room model, their acoustic height is represented as a full-height equivalent boundary; the 3D view still displays their recorded sill and opening height.
+
+### ResPlan filtering
+
+The ResPlan workbench keeps the source dataset index but navigates only audited single-floor scenes. The audit removes duplicate room polygons, rejects implausible room geometry, and filters plans with stairs, disconnected inner polygons, excessive room counts, or material room overlaps. Metric scale uses a plausible `net_area` first, a gross-area proxy second, and wall depth only as a final fallback.
+
+`GET /api/v1/resplan/stats` returns the current audit counts. `GET /api/v1/resplan/index?idx=2&direction=nearest` resolves a raw dataset index to an eligible index; `direction` also accepts `next`, `previous`, and `random`. Scene metadata includes normalized room connections such as `via_door`, `via_window`, `via_opening`, and outdoor entry or balcony targets. Cross-room propagation through these connections is intentionally not enabled in the same-room solver yet.
 
 ## HTTP API
 

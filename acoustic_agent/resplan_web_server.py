@@ -87,6 +87,20 @@ class ResPlanWorkbenchHandler(AcousticWorkbenchHandler):
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=400)
             return
+        if parsed.path == "/api/v1/resplan/index":
+            try:
+                query = parse_qs(parsed.query)
+                index = int(query.get("idx", ["0"])[0])
+                direction = query.get("direction", ["nearest"])[0]
+                self._send_json({"index": self.dataset.resolve_index(index, direction)})
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=400)
+            return
+        if parsed.path == "/api/v1/resplan/stats":
+            self._send_json(self.dataset.stats())
+            return
         if parsed.path in {"/", "/viewer.html"}:
             self._send_html(_resplan_viewer_html())
             return
@@ -124,7 +138,11 @@ def main() -> None:
     _warm_simulation_kernels()
     server = ThreadingHTTPServer((args.host, args.port), ResPlanWorkbenchHandler)
     print(f"Acoustic Agent ResPlan workbench: http://{args.host}:{args.port}")
-    print(f"ResPlan scenes: {len(ResPlanWorkbenchHandler.dataset)} from {ResPlanWorkbenchHandler.dataset.path}")
+    stats = ResPlanWorkbenchHandler.dataset.stats()
+    print(
+        f"ResPlan scenes: {stats['eligible_records']} eligible / {stats['records']} total "
+        f"from {ResPlanWorkbenchHandler.dataset.path}"
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

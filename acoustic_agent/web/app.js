@@ -213,6 +213,16 @@ async function loadResplanScene(index, roomId = null, options = {}) {
   if (options.simulate !== false) requestSimulation();
 }
 
+async function navigateResplan(index, direction = "nearest") {
+  if (!resplanMode) return;
+  setStatus("Finding eligible ResPlan scene...");
+  const query = new URLSearchParams({ idx: String(Math.round(Number(index) || 0)), direction });
+  const response = await fetch(`/api/v1/resplan/index?${query.toString()}`, { cache: "no-store" });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Unable to resolve an eligible ResPlan index");
+  await loadResplanScene(Number(result.index));
+}
+
 function syncResplanRoomOptions() {
   const select = document.getElementById("resplanRoom");
   if (!select) return;
@@ -238,13 +248,18 @@ function updateResplanMeta() {
   const dataset = state.resplan.dataset || {};
   const room = state.resplan.selectedRoom || {};
   const features = state.resplan.roomMetadata?.boundary_features || [];
+  const connections = state.resplan.roomMetadata?.connections || [];
+  const exteriorExposures = state.resplan.roomMetadata?.exterior_exposures || [];
   const rows = [
     ["Dataset", `${Number(state.resplan.index) + 1} / ${Number(state.resplan.count) || 0}`],
+    ["Eligible", `${Number(dataset.eligible_count) || 0}`],
     ["Room", String(room.type || "-")],
     ["Area", Number.isFinite(Number(room.area_m2)) ? `${Number(room.area_m2).toFixed(1)} m²` : "-"],
     ["Scale", Number.isFinite(Number(dataset.meters_per_unit)) ? `${Number(dataset.meters_per_unit).toFixed(4)} m/u` : "-"],
+    ["Scale source", String(dataset.scale_source || "-").replaceAll("_", " ")],
     ["Doors", String(features.filter((item) => item.type === "door").length)],
     ["Windows", String(features.filter((item) => item.type === "window").length)],
+    ["Connections", exteriorExposures.length ? `${connections.length} · ${exteriorExposures.length} exterior` : String(connections.length)],
   ];
   container.replaceChildren(...rows.map(([label, value]) => {
     const item = document.createElement("div");
@@ -413,10 +428,10 @@ function bindEvents() {
     requestSimulation();
   });
   if (resplanMode) {
-    document.getElementById("resplanIdx")?.addEventListener("change", () => loadResplanScene(controlNumber("resplanIdx", 0)));
-    document.getElementById("resplanPrev")?.addEventListener("click", () => loadResplanScene(Math.max(0, state.resplan.index - 1)));
-    document.getElementById("resplanNext")?.addEventListener("click", () => loadResplanScene(Math.min(Math.max(0, state.resplan.count - 1), state.resplan.index + 1)));
-    document.getElementById("resplanRandom")?.addEventListener("click", () => loadResplanScene(Math.floor(Math.random() * Math.max(1, state.resplan.count))));
+    document.getElementById("resplanIdx")?.addEventListener("change", () => navigateResplan(controlNumber("resplanIdx", 0), "nearest"));
+    document.getElementById("resplanPrev")?.addEventListener("click", () => navigateResplan(state.resplan.index, "previous"));
+    document.getElementById("resplanNext")?.addEventListener("click", () => navigateResplan(state.resplan.index, "next"));
+    document.getElementById("resplanRandom")?.addEventListener("click", () => navigateResplan(state.resplan.index, "random"));
     document.getElementById("resplanRoom")?.addEventListener("change", (event) => loadResplanScene(state.resplan.index, event.target.value));
   }
   document.getElementById("addAsset").addEventListener("click", handlePaletteSelection);
