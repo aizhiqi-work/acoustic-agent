@@ -586,6 +586,78 @@ input {
   display: none;
 }
 
+.resplanIndexControl {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 34px minmax(72px, auto);
+  align-items: end;
+  gap: 6px;
+}
+
+.resplanIndexControl label {
+  display: grid;
+  gap: 5px;
+  color: var(--soft);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.resplanIndexControl .iconButton {
+  width: 34px;
+  min-width: 34px;
+  min-height: 32px;
+  padding: 0;
+  font-size: 17px;
+}
+
+#resplanPlanCanvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1.52;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8fafb;
+}
+
+.resplanMeta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--line);
+}
+
+.resplanMeta div {
+  min-width: 0;
+  padding: 7px 8px;
+  background: var(--panel-2);
+}
+
+.resplanMeta span,
+.resplanMeta strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resplanMeta span {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.resplanMeta strong {
+  margin-top: 2px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.resplanHeightControl {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .editorCommandRow,
 .solverCommandRow,
 .buttonRow {

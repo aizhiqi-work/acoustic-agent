@@ -284,6 +284,7 @@ def _simulate_payload(payload: dict[str, Any]) -> PayloadSimulation:
     materials = payload.get("materials") if isinstance(payload.get("materials"), dict) else {}
     objects = _object_list(payload.get("objects"))
     geometry = payload.get("geometry") if isinstance(payload.get("geometry"), dict) else {}
+    room_metadata = payload.get("room_metadata") if isinstance(payload.get("room_metadata"), dict) else {}
     config_raw = payload.get("config") if isinstance(payload.get("config"), dict) else {}
     receiver_raw = payload.get("receiver_model") if isinstance(payload.get("receiver_model"), dict) else {"type": "mono"}
     source_raw = payload.get("source_model", "omni")
@@ -307,6 +308,9 @@ def _simulate_payload(payload: dict[str, Any]) -> PayloadSimulation:
     )
     if isinstance(room.metadata, dict):
         room.metadata["objects"] = objects
+        for key in ("resplan", "boundary_features", "surface_segments", "opening_model"):
+            if key in room_metadata:
+                room.metadata[key] = room_metadata[key]
     quality = str(config_raw.get("quality", payload.get("quality", "simulation")))
     quality_config = _quality_config(quality)
     rt_num_rays = int(config_raw.get("rt_num_rays", quality_config["rt_num_rays"]))

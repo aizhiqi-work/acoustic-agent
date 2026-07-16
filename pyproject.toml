@@ -12,6 +12,8 @@ dependencies = [
   "numpy>=1.23",
   "numba>=0.57",
   "h5py>=3.8",
+  "shapely>=2.0",
+  "networkx>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -26,4 +28,3 @@ acoustic_agent = [
   "resources/hrtf/*.sofa",
   "web/*",
 ]
-

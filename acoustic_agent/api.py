@@ -111,10 +111,13 @@ def _make_agent_room(
     room_materials = spec.pop("materials", materials)
     explicit_corners = spec.pop("corners", None)
     acoustic_geometry = spec.pop("acoustic_geometry", spec.pop("objects", None))
+    room_metadata = spec.pop("metadata", None)
     corners = explicit_corners if explicit_corners is not None else _parametric_corners(room_shape, size, spec)
     result = make_room(room_shape, size=size, corners=corners, materials=room_materials)
     if isinstance(result.metadata, dict):
         result.metadata["geometry_params"] = spec
+        if isinstance(room_metadata, Mapping):
+            result.metadata.update(dict(room_metadata))
     if acoustic_geometry is not None:
         result = _room_with_acoustic_geometry(result, acoustic_geometry)
     return result

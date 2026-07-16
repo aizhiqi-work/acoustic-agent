@@ -21,7 +21,7 @@ from .acoustics import (
 )
 from .directivity import source_directivity, source_directivity_gain, source_forward
 from .geometry import point_in_polygon
-from .materials import MaterialLibrary
+from .materials import MaterialLibrary, fallback_material
 from .models import FREQUENCY_BANDS, AcousticPath, Room, SimConfig
 from .rir import render_impulses
 
@@ -184,8 +184,7 @@ class RoomRayScene:
         floor = room.materials.get("floor", wall)
         ceiling = room.materials.get("ceiling", wall)
         self.surfaces: list[Any] = []
-        for i, a in enumerate(corners):
-            self.surfaces.append(_WallSurface(a, corners[(i + 1) % len(corners)], room.height_m, f"wall_{i}", _band_array(wall, "absorption", 0.1), _band_array(wall, "scattering", 0.12), _band_array(wall, "transmission", 10.0 ** (-30.0 / 20.0))))
+        self.surfaces.extend(_boundary_wall_surfaces(room, corners, wall))
         self.surfaces.append(_HorizontalSurface(0.0, True, room.corners, "floor", _band_array(floor, "absorption", 0.12), _band_array(floor, "scattering", 0.1), _band_array(floor, "transmission", 10.0 ** (-35.0 / 20.0))))
         self.surfaces.append(_HorizontalSurface(room.height_m, False, room.corners, "ceiling", _band_array(ceiling, "absorption", 0.1), _band_array(ceiling, "scattering", 0.1), _band_array(ceiling, "transmission", 10.0 ** (-30.0 / 20.0))))
         self.surfaces.extend(_object_box_surfaces(room, wall))
@@ -259,6 +258,40 @@ class RoomRayScene:
         self._build_batch_arrays()
         t_all = np.stack([surface.batch_intersect(origins, dirs, self)[0] for surface in self.surfaces], axis=0)
         return np.any((t_all > _EPS) & (t_all < (max_distance - _EPS)[None, :]), axis=0)
+
+
+def _boundary_wall_surfaces(room: Room, corners: Sequence[np.ndarray], wall: Any) -> list[_WallSurface]:
+    raw_segments = room.metadata.get("surface_segments") if isinstance(room.metadata, Mapping) else None
+    segments: list[tuple[np.ndarray, np.ndarray, str]] = []
+    if isinstance(raw_segments, list):
+        for item in raw_segments:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                a = np.asarray(item.get("a"), dtype=float)
+                b = np.asarray(item.get("b"), dtype=float)
+                kind = str(item.get("type", "wall")).lower()
+            except (TypeError, ValueError):
+                continue
+            valid = a.shape == (2,) and b.shape == (2,) and np.all(np.isfinite(a)) and np.all(np.isfinite(b))
+            if valid and float(np.linalg.norm(b - a)) > _EPS:
+                segments.append((a, b, kind if kind in {"wall", "door", "window"} else "wall"))
+    if not segments:
+        segments = [(a, corners[(index + 1) % len(corners)], "wall") for index, a in enumerate(corners)]
+
+    surfaces: list[_WallSurface] = []
+    for index, (a, b, kind) in enumerate(segments):
+        material = wall if kind == "wall" else fallback_material(kind)
+        surfaces.append(_WallSurface(
+            a,
+            b,
+            room.height_m,
+            f"{kind}_{index}",
+            _band_array(material, "absorption", 0.1),
+            _band_array(material, "scattering", 0.12),
+            _band_array(material, "transmission", 10.0 ** (-30.0 / 20.0)),
+        ))
+    return surfaces
 
 
 def _box_hit_scalar(

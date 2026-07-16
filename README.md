@@ -39,9 +39,18 @@ This avoids two bad visualizations: early paths monopolizing the display, and hi
 python -m pip install -e ".[dev]"
 python examples/basic_room.py
 python scripts/run_web.py
+python scripts/run_resplan_web.py
 ```
 
-The Web workbench runs at `http://127.0.0.1:8765`.
+The geometry workbench runs at `http://127.0.0.1:8765`. The ResPlan workbench runs independently at `http://127.0.0.1:8766` and loads `../ResPlan.pkl` by default. Use its plan index and room selector to build a metric room extrusion with the source and receiver constrained to the selected room.
+
+Pass another dataset location when needed:
+
+```bash
+python scripts/run_resplan_web.py --dataset /path/to/ResPlan.pkl --port 8766
+```
+
+ResPlan coordinates are converted to meters from the record's `net_area / inner.area` scale. Door and window spans are preserved as distinct ray-tracing boundary materials. In this first same-room model, their acoustic height is represented as a full-height equivalent boundary; the 3D view still displays their recorded sill and opening height.
 
 ## HTTP API
 
