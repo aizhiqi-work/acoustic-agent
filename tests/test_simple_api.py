@@ -63,3 +63,21 @@ def test_acoustic_agent_uses_microphone_specific_parameters():
     assert len(linear.receiver_model["channels"]) == 3
     assert circular.receiver_model["type"] == "circular_array"
     assert len(circular.receiver_model["channels"]) == 6
+
+
+def test_acoustic_agent_accepts_acoustic_geometry_as_a_public_parameter():
+    geometry = [{
+        "type": "panel",
+        "material": "plaster",
+        "position": [2.0, 1.5],
+        "z": 1.0,
+        "size": [0.1, 2.0, 2.0],
+        "rotation_deg": 0.0,
+    }]
+
+    agent = AcousticAgent(room=[4.0, 3.0, 2.8], acoustic_geometry=geometry)
+    embedded = AcousticAgent(room={"shape": "rectangle", "size": [4.0, 3.0, 2.8], "objects": geometry})
+
+    assert agent.room.metadata["objects"][0]["type"] == "panel"
+    assert agent.room.metadata["objects"][0]["rotation"] == 0.0
+    assert embedded.room.metadata["objects"] == agent.room.metadata["objects"]

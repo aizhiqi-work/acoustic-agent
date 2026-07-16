@@ -97,7 +97,6 @@ let pendingObjectId = null;
 let dirtyObjectId = null;
 let objectMode = "move";
 let objectDrag = null;
-let lastConfirmAt = 0;
 let suppressObjectSelectionUntil = 0;
 const layerState = { direct: true, diffraction: true, rt: true };
 
@@ -270,14 +269,12 @@ function bindEvents() {
   document.getElementById("addAsset").addEventListener("click", handlePaletteSelection);
   const confirmButton = document.getElementById("confirmFurniture");
   confirmButton.addEventListener("pointerdown", (event) => {
-    event.preventDefault();
     event.stopPropagation();
-    confirmSelectedObject();
   });
   confirmButton.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    if (Date.now() - lastConfirmAt > 250) confirmSelectedObject();
+    confirmSelectedObject();
   });
   document.getElementById("deleteFurniture").addEventListener("click", deleteSelectedObject);
   ["objectX", "objectY", "objectZ", "objectWidth", "objectDepth", "objectHeight", "objectRotation"].forEach((id) => {
@@ -2275,6 +2272,15 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
   };
   Object.assign(room, geometryParams[shape] || {});
 
+  const acousticGeometry = (payload.objects || []).map((object) => ({
+    type: String(object.type || "cuboid"),
+    material: String(object.material || "wood"),
+    position: (object.position || [0, 0]).slice(0, 2).map(Number),
+    z: Number(object.z ?? Number(object.size?.[2] || 1) * 0.5),
+    size: (object.size || [1, 1, 1]).slice(0, 3).map(Number),
+    rotation_deg: Number(object.rotation ?? object.rotation_deg ?? 0),
+  }));
+
   const source = JSON.stringify((payload.source || [1.2, 1.1, 1.5]).map(Number));
   const mic = JSON.stringify((payload.receiver || [4.7, 2.8, 1.4]).map(Number));
   const micModel = payload.receiver_model || { type: "mono" };
@@ -2302,6 +2308,7 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
         type: sourceType,
         orientation_deg: Number(emitterModel.orientation_deg ?? 0),
         elevation_deg: Number(emitterModel.elevation_deg ?? 0),
+        dipole_weight: Number(emitterModel.dipole_weight ?? 0.5),
         dipole_power: Number(emitterModel.dipole_power ?? 1),
       };
   const quality = String(payload.config?.quality || payload.quality || "simulation");
@@ -2311,8 +2318,10 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
     "from acoustic_agent import AcousticAgent",
     "",
     `room = ${JSON.stringify(room, null, 4)}`,
+    `acoustic_geometry = ${JSON.stringify(acousticGeometry, null, 4)}`,
+    "",
     `source = ${source}         # [x, y, z] m`,
-    `source_model = ${JSON.stringify(sourceModel, null, 4)}`,
+    `source_directivity = ${JSON.stringify(sourceModel, null, 4)}`,
     `mic = ${mic}               # [x, y, z] m`,
     `mic_type = "${micType}"   # mono / hrtf / linear / circular`,
     `mic_params = ${JSON.stringify(micParams, null, 4)}`,
@@ -2321,7 +2330,8 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
     `sample_rate = ${sampleRate} # Hz`,
     "",
     "agent = AcousticAgent(",
-    '    room=room, source_model=source_model,',
+    "    room=room, acoustic_geometry=acoustic_geometry,",
+    "    source_model=source_directivity,",
     '    receiver_model={"type": mic_type, **mic_params},',
     "    quality=quality, duration_s=rir_length, fs=sample_rate,",
     ")",
@@ -2682,7 +2692,6 @@ function clearObjectSelection() {
 }
 
 function confirmSelectedObject() {
-  lastConfirmAt = Date.now();
   suppressObjectSelectionUntil = Date.now() + 350;
   const object = sceneObjectById(selectedObjectId);
   if (!object || object.id !== unconfirmedObjectId()) {

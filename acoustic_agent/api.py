@@ -43,8 +43,11 @@ class AcousticAgent:
         config: SimConfig | None = None,
         receiver_model: str | Mapping[str, Any] = "mono",
         source_model: str | Mapping[str, Any] = "omni",
+        acoustic_geometry: Sequence[Mapping[str, Any]] | None = None,
     ) -> None:
         self.room = _make_agent_room(room, shape=shape, materials=materials)
+        if acoustic_geometry is not None:
+            self.room = _room_with_acoustic_geometry(self.room, acoustic_geometry)
         preset = quality_preset(quality)
         self.config = config or SimConfig(
             fs=int(fs),
@@ -107,11 +110,59 @@ def _make_agent_room(
     size = spec.pop("size", (6.0, 4.0, 2.8))
     room_materials = spec.pop("materials", materials)
     explicit_corners = spec.pop("corners", None)
+    acoustic_geometry = spec.pop("acoustic_geometry", spec.pop("objects", None))
     corners = explicit_corners if explicit_corners is not None else _parametric_corners(room_shape, size, spec)
     result = make_room(room_shape, size=size, corners=corners, materials=room_materials)
     if isinstance(result.metadata, dict):
         result.metadata["geometry_params"] = spec
+    if acoustic_geometry is not None:
+        result = _room_with_acoustic_geometry(result, acoustic_geometry)
     return result
+
+
+def _room_with_acoustic_geometry(
+    room: Room,
+    acoustic_geometry: Sequence[Mapping[str, Any]],
+) -> Room:
+    objects = [_acoustic_object(item, index) for index, item in enumerate(acoustic_geometry)]
+    return Room(
+        id=room.id,
+        name=room.name,
+        corners=room.corners,
+        height_m=room.height_m,
+        materials=room.materials,
+        metadata={**dict(room.metadata), "objects": objects},
+    )
+
+
+def _acoustic_object(item: Mapping[str, Any], index: int) -> dict[str, Any]:
+    if not isinstance(item, Mapping):
+        raise TypeError(f"acoustic_geometry[{index}] must be an object")
+    raw_size = item.get("size", (1.0, 1.0, 1.0))
+    raw_position = item.get("position", (0.0, 0.0))
+    if not isinstance(raw_size, Sequence) or isinstance(raw_size, (str, bytes)) or len(raw_size) != 3:
+        raise ValueError(f"acoustic_geometry[{index}].size must contain width, depth, and height")
+    if not isinstance(raw_position, Sequence) or isinstance(raw_position, (str, bytes)) or len(raw_position) < 2:
+        raise ValueError(f"acoustic_geometry[{index}].position must contain x and y")
+    size = [float(value) for value in raw_size]
+    position = [float(raw_position[0]), float(raw_position[1])]
+    rotation = float(item.get("rotation", item.get("rotation_deg", 0.0)))
+    z = float(item.get("z", size[2] * 0.5))
+    values = (*size, *position, rotation, z)
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError(f"acoustic_geometry[{index}] contains non-finite values")
+    if min(size) <= 0.0:
+        raise ValueError(f"acoustic_geometry[{index}].size values must be positive")
+    return {
+        "id": str(item.get("id", f"object_{index}")),
+        "type": str(item.get("type", "cuboid")),
+        "title": str(item.get("title", item.get("type", "Acoustic object"))),
+        "material": str(item.get("material", "wood")),
+        "position": position,
+        "rotation": rotation,
+        "size": size,
+        "z": z,
+    }
 
 
 def _parametric_corners(
