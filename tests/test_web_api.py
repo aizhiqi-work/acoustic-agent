@@ -12,6 +12,7 @@ def test_simple_api_returns_exact_binary_artifacts_without_base64():
         "size": [3.0, 2.5, 2.4],
         "source": [0.7, 0.8, 1.2],
         "receiver": [2.2, 1.7, 1.2],
+        "source_model": {"type": "cardioid", "orientation_deg": 20.0},
         "config": {
             "fs": 8000,
             "duration_s": 0.04,
@@ -25,6 +26,8 @@ def test_simple_api_returns_exact_binary_artifacts_without_base64():
     assert "f32_base64" not in response
     assert response["files"]["wav"].endswith("/rir.wav")
     assert response["files"]["npy"].endswith("/rir.npy")
+    assert response["source_model"]["pattern"] == "cardioid"
+    assert response["source_model"]["orientation_deg"] == 20.0
 
     stored = _get_stored_result(response["id"])
     assert stored is not None

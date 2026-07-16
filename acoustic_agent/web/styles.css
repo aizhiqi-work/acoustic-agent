@@ -102,7 +102,8 @@ h3 { font-size: 12px; font-weight: 780; }
 p { margin-top: 4px; color: var(--muted); font-size: 12px; }
 
 #sceneStatus,
-#receiverType {
+#receiverType,
+#sourceDirectivityType {
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
@@ -442,6 +443,7 @@ pre {
 .presetSelect,
 .geometryParams label,
 #receiverInspector label,
+#sourceDirectivityInspector label,
 .solverCommandRow label,
 .propertyGrid label {
   display: grid;
@@ -470,6 +472,12 @@ input {
 }
 
 .micThumbStrip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.sourceDirectivityThumbStrip {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
@@ -506,6 +514,10 @@ input {
   aspect-ratio: 2.22;
 }
 
+.sourceDirectivityThumb canvas {
+  aspect-ratio: 2.22;
+}
+
 .thumb span {
   display: block;
   margin-top: 4px;
@@ -524,6 +536,36 @@ input {
 .micControlTray {
   display: grid;
   gap: 7px;
+}
+
+.sourceDirectionControls {
+  display: grid;
+  gap: 9px;
+}
+
+.sourceDirectionControls.hidden {
+  display: none;
+}
+
+.sourceDirectionAngles {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sourcePowerControl {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px 10px;
+}
+
+.sourcePowerControl input {
+  grid-column: 1 / -1;
+  min-height: 24px;
+  padding: 0;
+}
+
+.sourcePowerControl output {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .micControlTray.empty {
@@ -795,10 +837,32 @@ input[type="range"] { padding: 0; accent-color: var(--accent); }
 }
 
 @media (max-width: 920px) {
-  #app { grid-template-columns: 1fr; grid-template-rows: auto minmax(460px, 1fr) auto; overflow: auto; }
-  .sidePanel { height: auto; border-left: 0; border-right: 0; box-shadow: none; }
+  html,
+  body,
+  #app {
+    height: auto;
+    min-height: 100%;
+  }
+
+  body { overflow: auto; }
+
+  #app {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 460px auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .sidePanel {
+    height: auto;
+    min-height: auto;
+    overflow: visible;
+    border-left: 0;
+    border-right: 0;
+    box-shadow: none;
+  }
   #setupPanel { grid-row: auto; border-bottom: 1px solid var(--line); }
   #viewport { grid-column: auto; grid-row: auto; }
   #resultsPanel { grid-column: auto; grid-row: auto; border-top: 1px solid var(--line); }
-  #viewport { min-height: 460px; }
+  #viewport { height: 460px; min-height: 460px; }
 }

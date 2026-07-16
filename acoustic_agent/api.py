@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from typing import Any, Mapping, Sequence
 
+from .directivity import source_directivity
 from .engine import SimulationResult, simulate_rir
 from .geometry import make_room
 from .mic import microphone_array
@@ -41,6 +42,7 @@ class AcousticAgent:
         duration_s: float = 2.0,
         config: SimConfig | None = None,
         receiver_model: str | Mapping[str, Any] = "mono",
+        source_model: str | Mapping[str, Any] = "omni",
     ) -> None:
         self.room = _make_agent_room(room, shape=shape, materials=materials)
         preset = quality_preset(quality)
@@ -52,6 +54,7 @@ class AcousticAgent:
             rt_duration_s=float(preset["rt_duration_s"]),
         )
         self.receiver_model = _microphone_model(receiver_model)
+        self.source_model = source_directivity(source_model)
 
     def run(
         self,
@@ -60,16 +63,19 @@ class AcousticAgent:
         *,
         config: SimConfig | None = None,
         receiver_model: str | Mapping[str, Any] | None = None,
+        source_model: str | Mapping[str, Any] | None = None,
     ) -> SimulationResult:
         model = self.receiver_model
         if receiver_model is not None:
             model = _microphone_model(receiver_model)
+        emitter = self.source_model if source_model is None else source_directivity(source_model)
         return simulate_rir(
             self.room,
             source,
             receiver,
             config=config or self.config,
             receiver_model=model,
+            source_model=emitter,
         )
 
     __call__ = run

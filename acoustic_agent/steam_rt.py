@@ -19,6 +19,7 @@ from .acoustics import (
     propagation_band_gains,
     steam_audio_pathing_deviation,
 )
+from .directivity import source_directivity, source_directivity_gain, source_forward
 from .geometry import point_in_polygon
 from .materials import MaterialLibrary
 from .models import FREQUENCY_BANDS, AcousticPath, Room, SimConfig
@@ -439,11 +440,18 @@ def _scene_kernel_arrays(scene: RoomRayScene) -> dict[str, Any]:
     }
 
 
-def simulate_steam_room(room: Room, source: Sequence[float], listener: Sequence[float], config: SimConfig) -> SteamRender:
+def simulate_steam_room(
+    room: Room,
+    source: Sequence[float],
+    listener: Sequence[float],
+    config: SimConfig,
+    source_model: str | Mapping[str, Any] | None = None,
+) -> SteamRender:
     src = np.asarray(source, dtype=float)
     rcv = np.asarray(listener, dtype=float)
+    emitter = source_directivity(source_model)
     scene = RoomRayScene(room)
-    direct = simulate_direct(scene, src, rcv, config)
+    direct = simulate_direct(scene, src, rcv, config, emitter)
     fs = int(config.fs)
     total = max(1, int(round(config.duration_s * fs)))
     discrete_band = np.zeros((_NUM_BANDS, total), dtype=np.float32)
@@ -452,13 +460,20 @@ def simulate_steam_room(room: Room, source: Sequence[float], listener: Sequence[
     _add_band_impulse(discrete_band, float(direct["delay_s"]), direct["band_gains"], config)
 
     paths = [_direct_path(src, rcv, direct, config)]
-    diffraction_paths = _boundary_diffraction_paths(room, scene, src, rcv, direct, config)
+    diffraction_paths = [
+        _apply_source_directivity_to_path(path, emitter)
+        for path in _boundary_diffraction_paths(room, scene, src, rcv, direct, config)
+    ]
     for path in diffraction_paths:
         sample = int(round(path.delay_s * fs))
         if config.diffraction_audio_enabled and 0 <= sample < total:
             _add_band_impulse(discrete_band, float(path.delay_s), path.band_gains, config)
     paths.extend(diffraction_paths)
     rt_visual = scan_visual_rt_paths(room, scene, src, rcv, config)
+    rt_visual["paths"] = [
+        _apply_source_directivity_to_path(path, emitter)
+        for path in rt_visual["paths"]
+    ]
     paths.extend(rt_visual["paths"])
     rt60_bands = {band: 0.0 for band in FREQUENCY_BANDS}
     hybrid_rt60_bands = {band: 0.0 for band in FREQUENCY_BANDS}
@@ -466,7 +481,7 @@ def simulate_steam_room(room: Room, source: Sequence[float], listener: Sequence[
     reflection_metadata: dict[str, Any] = {"enabled": False}
 
     if config.reflections_enabled:
-        field = trace_energy_field(scene, src, rcv, config)
+        field = trace_energy_field(scene, src, rcv, config, emitter)
         rt60_bands = estimate_reverb_times(field, config)
         reconstruction_field, late_tail_meta = _extend_energy_field_late_tail(field, rt60_bands, config)
         hybrid_rt60_bands = estimate_reverb_times(reconstruction_field, config) if config.late_tail else dict(rt60_bands)
@@ -571,6 +586,7 @@ def simulate_steam_room(room: Room, source: Sequence[float], listener: Sequence[
                 "occlusion_surface": direct.get("occlusion_surface"),
                 "transmission": {band: float(direct["transmission"][i]) for i, band in enumerate(FREQUENCY_BANDS)},
                 "band_gains": {band: float(direct["band_gains"][band]) for band in FREQUENCY_BANDS},
+                "source_directivity_gain": float(direct["source_directivity_gain"]),
             },
             "diffraction": {
                 "enabled": bool(config.diffraction_enabled),
@@ -584,6 +600,7 @@ def simulate_steam_room(room: Room, source: Sequence[float], listener: Sequence[
             "reflections": reflection_metadata,
             "rt_visual": rt_visual["metadata"],
             "rt60_bands": rt60_bands,
+            "source_directivity": dict(emitter),
         },
     )
 
@@ -627,9 +644,17 @@ def _diffraction_metadata_model(paths: Sequence[AcousticPath]) -> str:
     return "mixed_edge_diffraction"
 
 
-def simulate_direct(scene: RoomRayScene, source: np.ndarray, listener: np.ndarray, config: SimConfig) -> dict[str, Any]:
+def simulate_direct(
+    scene: RoomRayScene,
+    source: np.ndarray,
+    listener: np.ndarray,
+    config: SimConfig,
+    source_model: str | Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    emitter = source_directivity(source_model)
     delta = source - listener
     distance = float(np.linalg.norm(delta))
+    directivity = source_directivity_gain(listener - source, emitter)
     distance_attenuation = 1.0 / max(distance, config.min_distance_m)
     air = np.asarray([math.exp(-AIR_ABSORPTION_NP_PER_M[b] * distance) for b in FREQUENCY_BANDS], dtype=float)
     delay = distance / config.c
@@ -647,8 +672,21 @@ def simulate_direct(scene: RoomRayScene, source: np.ndarray, listener: np.ndarra
                 if config.direct_transmission
                 else np.zeros(_NUM_BANDS, dtype=float)
             )
-    band_gains = {band: float(distance_attenuation * air[i] * (occlusion + (1.0 - occlusion) * transmission[i])) for i, band in enumerate(FREQUENCY_BANDS)}
-    return {"distance_m": distance, "delay_s": delay, "distance_attenuation": distance_attenuation, "air_absorption": air, "occlusion": occlusion, "transmission": transmission, "occlusion_surface": occlusion_surface, "band_gains": band_gains}
+    band_gains = {
+        band: float(directivity * distance_attenuation * air[i] * (occlusion + (1.0 - occlusion) * transmission[i]))
+        for i, band in enumerate(FREQUENCY_BANDS)
+    }
+    return {
+        "distance_m": distance,
+        "delay_s": delay,
+        "distance_attenuation": distance_attenuation,
+        "air_absorption": air,
+        "occlusion": occlusion,
+        "transmission": transmission,
+        "occlusion_surface": occlusion_surface,
+        "source_directivity_gain": directivity,
+        "band_gains": band_gains,
+    }
 
 
 def scan_visual_rt_paths(room: Room, scene: RoomRayScene, src: np.ndarray, rcv: np.ndarray, config: SimConfig) -> dict[str, Any]:
@@ -915,13 +953,27 @@ def _select_visual_candidate_indices(candidate_indices: list[int], orders: np.nd
     return sorted(selected[:retain_limit], key=lambda index: (int(orders[index]), float(distances[index])))
 
 
-def trace_energy_field(scene: RoomRayScene, source: np.ndarray, listener: np.ndarray, config: SimConfig) -> dict[str, Any]:
+def trace_energy_field(
+    scene: RoomRayScene,
+    source: np.ndarray,
+    listener: np.ndarray,
+    config: SimConfig,
+    source_model: str | Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    emitter = source_directivity(source_model)
     if njit is not None:
-        return _trace_energy_field_numba(scene, source, listener, config)
-    return _trace_energy_field_numpy(scene, source, listener, config)
+        return _trace_energy_field_numba(scene, source, listener, config, emitter)
+    return _trace_energy_field_numpy(scene, source, listener, config, emitter)
 
 
-def _trace_energy_field_numba(scene: RoomRayScene, source: np.ndarray, listener: np.ndarray, config: SimConfig) -> dict[str, Any]:
+def _trace_energy_field_numba(
+    scene: RoomRayScene,
+    source: np.ndarray,
+    listener: np.ndarray,
+    config: SimConfig,
+    source_model: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    emitter = source_directivity(source_model)
     arrays = _scene_kernel_arrays(scene)
     num_rays = int(config.rt_num_rays)
     num_bounces = int(config.rt_num_bounces)
@@ -960,6 +1012,9 @@ def _trace_energy_field_numba(scene: RoomRayScene, source: np.ndarray, listener:
         float(config.rt_source_radius),
         float(config.rt_irradiance_min_distance),
         float(config.rt_specular_exponent),
+        source_forward(emitter),
+        float(emitter["dipole_weight"]),
+        float(emitter["dipole_power"]),
         float(config.seed),
     )
     names = arrays["names"]
@@ -978,10 +1033,18 @@ def _trace_energy_field_numba(scene: RoomRayScene, source: np.ndarray, listener:
         "surface_contribution_count": {names[i]: int(contrib_counts[i]) for i in range(len(names)) if int(contrib_counts[i]) > 0},
         "surface_energy": {names[i]: float(surface_energy[i]) for i in range(len(names)) if float(surface_energy[i]) > 0.0},
         "accelerator": "numba",
+        "source_directivity": dict(emitter),
     }
 
 
-def _trace_energy_field_numpy(scene: RoomRayScene, source: np.ndarray, listener: np.ndarray, config: SimConfig) -> dict[str, Any]:
+def _trace_energy_field_numpy(
+    scene: RoomRayScene,
+    source: np.ndarray,
+    listener: np.ndarray,
+    config: SimConfig,
+    source_model: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    emitter = source_directivity(source_model)
     c = config.c
     num_rays = int(config.rt_num_rays)
     num_bounces = int(config.rt_num_bounces)
@@ -1000,6 +1063,9 @@ def _trace_energy_field_numpy(scene: RoomRayScene, source: np.ndarray, listener:
     alive = np.ones(num_rays, dtype=bool)
     rng = np.random.default_rng(config.seed + 1)
     diffuse_bank = _diffuse_sample_bank(config.rt_num_diffuse_samples)
+    emitter_forward = source_forward(emitter)
+    dipole_weight = float(emitter["dipole_weight"])
+    dipole_power = float(emitter["dipole_power"])
     surface_hit_count: dict[str, int] = {}
     surface_contribution_count: dict[str, int] = {}
     surface_energy: dict[str, float] = {}
@@ -1044,7 +1110,9 @@ def _trace_energy_field_numpy(scene: RoomRayScene, source: np.ndarray, listener:
                 cos_half = np.clip(np.sum(half * normal, axis=1), 0.0, None)
                 specular = ((float(config.rt_specular_exponent) + 2.0) / (8.0 * math.pi)) * (1.0 - scatter) * (cos_half ** float(config.rt_specular_exponent))
                 distance_term = (1.0 / (4.0 * math.pi)) * (1.0 / np.maximum(dist_to_source, float(config.rt_irradiance_min_distance))) ** 2
-                energy = ((4.0 * math.pi) / max(num_rays, 1)) * distance_term[:, None] * (diffuse + specular)[:, None] * (1.0 - absorption) * accum_energy
+                source_cosine = np.clip((-shadow_dir) @ emitter_forward, -1.0, 1.0)
+                source_gain = np.abs((1.0 - dipole_weight) + dipole_weight * source_cosine) ** dipole_power
+                energy = ((4.0 * math.pi) / max(num_rays, 1)) * source_gain[:, None] * distance_term[:, None] * (diffuse + specular)[:, None] * (1.0 - absorption) * accum_energy
                 rel_delay = np.where(
                     contribute,
                     (accum_distance + t + dist_to_source) / c - direct_delay,
@@ -1091,6 +1159,7 @@ def _trace_energy_field_numpy(scene: RoomRayScene, source: np.ndarray, listener:
         "surface_hit_count": dict(sorted(surface_hit_count.items())),
         "surface_contribution_count": dict(sorted(surface_contribution_count.items())),
         "surface_energy": {key: float(value) for key, value in sorted(surface_energy.items())},
+        "source_directivity": dict(emitter),
     }
 
 
@@ -1447,8 +1516,27 @@ def _direct_path(src: np.ndarray, rcv: np.ndarray, direct: dict[str, Any], confi
             "model": "same_room_direct_with_occlusion_transmission",
             "occlusion": float(direct["occlusion"]),
             "occlusion_surface": direct.get("occlusion_surface"),
+            "source_directivity_gain": float(direct.get("source_directivity_gain", 1.0)),
             "contributes_to_rir": True,
         },
+    )
+
+
+def _apply_source_directivity_to_path(path: AcousticPath, model: Mapping[str, Any]) -> AcousticPath:
+    if len(path.points) < 2:
+        return path
+    gain = source_directivity_gain(
+        np.asarray(path.points[1], dtype=np.float64) - np.asarray(path.points[0], dtype=np.float64),
+        model,
+    )
+    return AcousticPath(
+        path.kind,
+        path.distance_m,
+        path.delay_s,
+        float(path.gain) * gain,
+        {band: float(value) * gain for band, value in path.band_gains.items()},
+        path.points,
+        {**dict(path.metadata), "source_directivity_gain": gain},
     )
 
 
@@ -2485,7 +2573,7 @@ if njit is not None:
 
 
     @njit(parallel=True)
-    def _trace_energy_kernel(source, listener, directions, diffuse_bank, kinds, wall_a, wall_delta, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, reflection, scattering, corners, height, num_bounces, num_bins, bin_dur, c, max_path_len, direct_delay, listener_radius, source_radius, irradiance_min_distance, specular_exponent, seed):
+    def _trace_energy_kernel(source, listener, directions, diffuse_bank, kinds, wall_a, wall_delta, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, reflection, scattering, corners, height, num_bounces, num_bins, bin_dur, c, max_path_len, direct_delay, listener_radius, source_radius, irradiance_min_distance, specular_exponent, source_forward_vector, dipole_weight, dipole_power, seed):
         thread_count = get_num_threads()
         local_echogram = np.zeros((thread_count, _NUM_BANDS, num_bins), dtype=np.float64)
         local_ambisonic = np.zeros((thread_count, _NUM_BANDS, 4, num_bins), dtype=np.float64)
@@ -2555,6 +2643,8 @@ if njit is not None:
                             cos_half = max(0.0, halfx * nx + halfy * ny + halfz * nz)
                             specular = ((specular_exponent + 2.0) / (8.0 * math.pi)) * (1.0 - scattering[surf]) * (cos_half ** specular_exponent)
                             distance_term = (1.0 / (4.0 * math.pi)) * (1.0 / max(dist_to_source, irradiance_min_distance)) ** 2
+                            source_cosine = -(source_forward_vector[0] * sdx + source_forward_vector[1] * sdy + source_forward_vector[2] * sdz)
+                            source_gain = abs((1.0 - dipole_weight) + dipole_weight * source_cosine) ** dipole_power
                             rel_delay = (accum_distance + t + dist_to_source) / c - direct_delay
                             bin_index = int(math.floor(rel_delay / bin_dur))
                             if bin_index >= 0 and bin_index < num_bins:
@@ -2563,7 +2653,7 @@ if njit is not None:
                                 coeff_z = directions[ri, 2]
                                 energy_sum = 0.0
                                 for bi in range(_NUM_BANDS):
-                                    energy = ((4.0 * math.pi) / max(directions.shape[0], 1)) * distance_term * (diffuse + specular) * reflection[surf, bi] * accum_energy[bi]
+                                    energy = ((4.0 * math.pi) / max(directions.shape[0], 1)) * source_gain * distance_term * (diffuse + specular) * reflection[surf, bi] * accum_energy[bi]
                                     local_echogram[tid, bi, bin_index] += energy
                                     local_ambisonic[tid, bi, 0, bin_index] += energy
                                     local_ambisonic[tid, bi, 1, bin_index] += energy * coeff_x

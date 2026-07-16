@@ -28,6 +28,12 @@ const micOptions = [
   { id: "linear", title: "Linear array" },
   { id: "circular", title: "Circular array" }
 ];
+const sourceDirectivityOptions = [
+  { id: "omni", title: "Omni", dipole_weight: 0.0, dipole_power: 1.0 },
+  { id: "cardioid", title: "Cardioid", dipole_weight: 0.5, dipole_power: 1.0 },
+  { id: "dipole", title: "Dipole", dipole_weight: 1.0, dipole_power: 1.0 },
+  { id: "focused", title: "Focused", dipole_weight: 0.5, dipole_power: 4.0 }
+];
 const objectTypeOptions = [
   { id: "cuboid", title: "Cuboid" },
   { id: "panel", title: "Thin panel" },
@@ -75,7 +81,8 @@ const defaultState = {
   source: [1.2, 1.1, 1.5],
   receiver: [4.7, 2.8, 1.4],
   config: { fs: 16000, duration_s: 2.0, quality: "simulation", rt_num_rays: 32768, rt_num_bounces: 64, rt_duration_s: 2.0, diffraction_order: 3, max_diffraction_paths: 8 },
-  mic: { type: "mono", count: 4, spacing_m: 0.08, radius_m: 0.12, orientation_deg: 0 }
+  mic: { type: "mono", count: 4, spacing_m: 0.08, radius_m: 0.12, orientation_deg: 0 },
+  sourceDirectivity: { type: "omni", orientation_deg: 0, elevation_deg: 0, dipole_weight: 0.0, dipole_power: 1.0 }
 };
 
 let state = structuredClone(defaultState);
@@ -115,6 +122,7 @@ function bootstrap() {
   setupControls();
   renderThumbnails();
   renderMicThumbnails();
+  renderSourceDirectivityThumbnails();
   renderObjectThumbnails();
   bindEvents();
   updateControls();
@@ -221,7 +229,7 @@ function readGeometryParams() {
 }
 
 function bindEvents() {
-  const ids = ["shape", "sizeX", "sizeY", "height", "wallMaterial", "floorMaterial", "ceilingMaterial", "qualitySelect", "rirDuration", "sourceX", "sourceY", "sourceZ", "receiverX", "receiverY", "receiverZ", "micOrientation", "micCount", "micSpacing", "fs"];
+  const ids = ["shape", "sizeX", "sizeY", "height", "wallMaterial", "floorMaterial", "ceilingMaterial", "qualitySelect", "rirDuration", "sourceX", "sourceY", "sourceZ", "receiverX", "receiverY", "receiverZ", "micOrientation", "micCount", "micSpacing", "sourceOrientation", "sourceElevation", "sourcePower", "fs"];
   ids.forEach((id) => document.getElementById(id).addEventListener("input", () => {
     const oldShape = state.shape;
     readControls();
@@ -451,6 +459,11 @@ function readControls() {
   applyQualityPreset(false);
   state.source = [number("sourceX"), number("sourceY"), number("sourceZ")];
   state.receiver = [number("receiverX"), number("receiverY"), number("receiverZ")];
+  if (state.sourceDirectivity.type !== "omni") {
+    state.sourceDirectivity.orientation_deg = clamp(number("sourceOrientation"), -180, 180);
+    state.sourceDirectivity.elevation_deg = clamp(number("sourceElevation"), -90, 90);
+    state.sourceDirectivity.dipole_power = clamp(number("sourcePower"), 0.25, 8.0);
+  }
   const previousMicType = state.mic.type;
   if (isDirectionalMic(state.mic.type)) {
     state.mic.orientation_deg = clamp(number("micOrientation"), -180, 180);
@@ -485,6 +498,7 @@ function updateControls() {
   setValue("receiverY", state.receiver[1]);
   setValue("receiverZ", state.receiver[2]);
   syncMicControls();
+  syncSourceDirectivityControls();
   syncSelectedObjectControls(sceneObjectById(selectedObjectId));
   setValue("fs", state.config.fs);
   updatePanels();
@@ -521,6 +535,17 @@ function syncMicControls() {
   setValue("micOrientation", state.mic.orientation_deg);
   setValue("micCount", state.mic.count);
   setValue("micSpacing", state.mic.type === "circular" ? state.mic.radius_m : state.mic.spacing_m);
+}
+
+function syncSourceDirectivityControls() {
+  const directional = state.sourceDirectivity.type !== "omni";
+  document.getElementById("sourceDirectionControls").classList.toggle("hidden", !directional);
+  setValue("sourceOrientation", state.sourceDirectivity.orientation_deg);
+  setValue("sourceElevation", state.sourceDirectivity.elevation_deg);
+  setValue("sourcePower", state.sourceDirectivity.dipole_power);
+  document.getElementById("sourcePowerValue").textContent = Number(state.sourceDirectivity.dipole_power).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+  document.getElementById("sourceDirectivityType").textContent = state.sourceDirectivity.type;
+  refreshSourceDirectivityThumbnails();
 }
 
 function isArrayMic(type) {
@@ -593,7 +618,14 @@ function apiPayload() {
     source: state.source,
     receiver: state.receiver,
     config: state.config,
-    receiver_model: mic
+    receiver_model: mic,
+    source_model: {
+      type: state.sourceDirectivity.type,
+      orientation_deg: state.sourceDirectivity.orientation_deg,
+      elevation_deg: state.sourceDirectivity.elevation_deg,
+      dipole_weight: state.sourceDirectivity.dipole_weight,
+      dipole_power: state.sourceDirectivity.dipole_power
+    }
   };
 }
 
@@ -793,8 +825,23 @@ function pathHitMarker(point, color, radius) {
 
 function addMarkers3D() {
   addSphere(state.source, 0xef476f, 0.13);
+  addSourceDirection3D();
   addSphere(state.receiver, 0x0f7f9f, 0.13);
   for (const point of microphonePoints()) addSphere(point, 0x7d8cff, 0.055);
+}
+
+function addSourceDirection3D() {
+  if (state.sourceDirectivity.type === "omni") return;
+  const yaw = THREE.MathUtils.degToRad(Number(state.sourceDirectivity.orientation_deg || 0));
+  const pitch = THREE.MathUtils.degToRad(Number(state.sourceDirectivity.elevation_deg || 0));
+  const cosPitch = Math.cos(pitch);
+  const direction = new THREE.Vector3(
+    cosPitch * Math.cos(yaw),
+    Math.sin(pitch),
+    cosPitch * Math.sin(yaw)
+  ).normalize();
+  const origin = toVector3(state.source).addScaledVector(direction, 0.12);
+  markerGroup.add(new THREE.ArrowHelper(direction, origin, 0.72, 0xef476f, 0.18, 0.1));
 }
 
 function addFurniture3D() {
@@ -1021,7 +1068,7 @@ function makeClientScene(current) {
     objects: current.objects || [],
     paths: [],
     rt60: {},
-    metadata: {}
+    metadata: { source_model: { ...(current.sourceDirectivity || {}) } }
   };
 }
 
@@ -1156,6 +1203,75 @@ function renderMicThumbnails() {
   refreshMicThumbnails();
 }
 
+function renderSourceDirectivityThumbnails() {
+  const container = document.getElementById("sourceDirectivityThumbs");
+  container.innerHTML = "";
+  sourceDirectivityOptions.forEach((option) => {
+    const button = document.createElement("button");
+    button.className = "thumb sourceDirectivityThumb";
+    button.dataset.sourceDirectivity = option.id;
+    button.innerHTML = `<canvas width="160" height="72"></canvas><span>${option.title}</span>`;
+    button.addEventListener("click", () => {
+      state.sourceDirectivity = {
+        ...state.sourceDirectivity,
+        type: option.id,
+        dipole_weight: option.dipole_weight,
+        dipole_power: option.dipole_power
+      };
+      syncSourceDirectivityControls();
+      simData = makeClientScene(state);
+      rebuildThreeScene();
+      requestSimulation();
+    });
+    container.appendChild(button);
+    drawSourceDirectivityThumb(button.querySelector("canvas"), option);
+  });
+  refreshSourceDirectivityThumbnails();
+}
+
+function refreshSourceDirectivityThumbnails() {
+  document.querySelectorAll(".sourceDirectivityThumb").forEach((button) => {
+    button.classList.toggle("active", button.dataset.sourceDirectivity === state.sourceDirectivity.type);
+  });
+}
+
+function drawSourceDirectivityThumb(thumbCanvas, option) {
+  const ctx = thumbCanvas.getContext("2d");
+  const w = thumbCanvas.width;
+  const h = thumbCanvas.height;
+  const cx = w * 0.44;
+  const cy = h * 0.5;
+  const radius = Math.min(w * 0.29, h * 0.38);
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = "#d4dde1";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(14, cy);
+  ctx.lineTo(w - 14, cy);
+  ctx.stroke();
+  ctx.beginPath();
+  for (let index = 0; index <= 144; index += 1) {
+    const angle = Math.PI * 2 * index / 144;
+    const gain = Math.abs((1 - option.dipole_weight) + option.dipole_weight * Math.cos(angle)) ** option.dipole_power;
+    const x = cx + Math.cos(angle) * radius * gain;
+    const y = cy + Math.sin(angle) * radius * gain;
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = "rgba(239,71,111,.14)";
+  ctx.strokeStyle = "#ef476f";
+  ctx.lineWidth = 2;
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#ef476f";
+  ctx.beginPath();
+  ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
 function renderObjectThumbnails() {
   const container = document.getElementById("objectThumbs");
   if (!container) return;
@@ -1281,7 +1397,7 @@ function drawMicThumb(thumbCanvas, type) {
 }
 
 function refreshThumbnails() {
-  document.querySelectorAll(".thumb").forEach((button) => {
+  document.querySelectorAll(".thumb[data-shape]").forEach((button) => {
     button.classList.toggle("active", button.dataset.shape === state.shape);
   });
 }
@@ -1300,11 +1416,13 @@ function updatePanels() {
   updatePathLimitLabel();
   document.getElementById("hudMeta").textContent = `${presetTitle(state.shape)} | ${paths.length} paths | ${state.config.fs} Hz`;
   document.getElementById("receiverType").textContent = state.mic.type;
+  document.getElementById("sourceDirectivityType").textContent = state.sourceDirectivity.type;
   statsEl.innerHTML = statsHtml(paths);
   codeEl.textContent = acousticAgentCode();
   drawMiniMap();
   safeDrawRirPanel();
   refreshMicThumbnails();
+  refreshSourceDirectivityThumbnails();
   refreshThumbnails();
   const countLabel = document.getElementById("sceneObjectCount");
   if (countLabel) {
@@ -1403,6 +1521,7 @@ function drawAcousticMiniMap(ctx, width, height) {
     drawMiniAcousticPath(ctx, path, toCanvas, index === 0 ? "rgba(125,140,255,.96)" : "rgba(125,140,255,.62)", index === 0 ? 2.15 : 1.35, true, false);
   });
 
+  drawMiniSourceDirectivity(ctx, toCanvas(state.source));
   drawMiniMarker(ctx, toCanvas(state.source), "#ef476f", "SRC", 1);
   drawMiniMarker(ctx, toCanvas(state.receiver), "#0f7f9f", "MIC", -1);
 
@@ -1417,6 +1536,31 @@ function drawAcousticMiniMap(ctx, width, height) {
   ctx.fillStyle = "#69767d";
   ctx.font = "600 9px system-ui";
   ctx.fillText(`RT ${selection.rtCount}`, 7, height - 7);
+}
+
+function drawMiniSourceDirectivity(ctx, point) {
+  const model = state.sourceDirectivity;
+  const yaw = Number(model.orientation_deg || 0) * Math.PI / 180;
+  const radius = model.type === "omni" ? 9 : 15;
+  ctx.save();
+  ctx.translate(point[0], point[1]);
+  ctx.rotate(yaw);
+  ctx.beginPath();
+  for (let index = 0; index <= 96; index += 1) {
+    const angle = Math.PI * 2 * index / 96;
+    const gain = Math.abs((1 - model.dipole_weight) + model.dipole_weight * Math.cos(angle)) ** model.dipole_power;
+    const x = Math.cos(angle) * radius * gain;
+    const y = Math.sin(angle) * radius * gain;
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = "rgba(239,71,111,.11)";
+  ctx.strokeStyle = "rgba(239,71,111,.72)";
+  ctx.lineWidth = 1.2;
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawMiniFurniture(ctx, project, scale, rotationSign = -1) {
@@ -2150,6 +2294,16 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
       : micType === "hrtf"
         ? { orientation_deg: Number(micModel.orientation_deg ?? 0) }
         : {};
+  const emitterModel = payload.source_model || { type: "omni" };
+  const sourceType = String(emitterModel.pattern || emitterModel.type || "omni");
+  const sourceModel = sourceType === "omni"
+    ? { type: "omni" }
+    : {
+        type: sourceType,
+        orientation_deg: Number(emitterModel.orientation_deg ?? 0),
+        elevation_deg: Number(emitterModel.elevation_deg ?? 0),
+        dipole_power: Number(emitterModel.dipole_power ?? 1),
+      };
   const quality = String(payload.config?.quality || payload.quality || "simulation");
   const rirLength = Number(payload.config?.duration_s || 2.0);
   const sampleRate = Number(payload.config?.fs || 16000);
@@ -2158,6 +2312,7 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
     "",
     `room = ${JSON.stringify(room, null, 4)}`,
     `source = ${source}         # [x, y, z] m`,
+    `source_model = ${JSON.stringify(sourceModel, null, 4)}`,
     `mic = ${mic}               # [x, y, z] m`,
     `mic_type = "${micType}"   # mono / hrtf / linear / circular`,
     `mic_params = ${JSON.stringify(micParams, null, 4)}`,
@@ -2166,7 +2321,8 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
     `sample_rate = ${sampleRate} # Hz`,
     "",
     "agent = AcousticAgent(",
-    '    room=room, receiver_model={"type": mic_type, **mic_params},',
+    '    room=room, source_model=source_model,',
+    '    receiver_model={"type": mic_type, **mic_params},',
     "    quality=quality, duration_s=rir_length, fs=sample_rate,",
     ")",
     "rir = agent.run(source=source, receiver=mic).rir",
@@ -2181,6 +2337,14 @@ function applySceneToState(loaded) {
   state.size = [size[0], size[1], Number(room.height_m || state.size[2])];
   state.source = loaded.sources?.[0] || state.source;
   state.receiver = loaded.receivers?.[0] || state.receiver;
+  const loadedSourceModel = loaded.metadata?.source_model;
+  if (loadedSourceModel) {
+    state.sourceDirectivity = {
+      ...defaultState.sourceDirectivity,
+      ...loadedSourceModel,
+      type: loadedSourceModel.pattern || loadedSourceModel.type || "omni"
+    };
+  }
   clampScenePointsToRoom();
 }
 

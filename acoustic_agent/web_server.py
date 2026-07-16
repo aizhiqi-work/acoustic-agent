@@ -18,6 +18,7 @@ from uuid import uuid4
 import numpy as np
 
 from .api import quality_preset
+from .directivity import source_directivity
 from .engine import SimulationResult, simulate_rir
 from .geometry import make_room
 from .mic import microphone_array
@@ -40,6 +41,7 @@ class PayloadSimulation:
     objects: list[dict[str, Any]]
     geometry: dict[str, Any]
     receiver_model: dict[str, Any]
+    source_model: dict[str, Any]
     result: SimulationResult
 
 
@@ -284,6 +286,9 @@ def _simulate_payload(payload: dict[str, Any]) -> PayloadSimulation:
     geometry = payload.get("geometry") if isinstance(payload.get("geometry"), dict) else {}
     config_raw = payload.get("config") if isinstance(payload.get("config"), dict) else {}
     receiver_raw = payload.get("receiver_model") if isinstance(payload.get("receiver_model"), dict) else {"type": "mono"}
+    source_raw = payload.get("source_model", "omni")
+    if not isinstance(source_raw, (str, dict)):
+        raise ValueError("source_model must be a preset name or an object")
 
     room_kwargs: dict[str, Any] = {}
     if isinstance(payload.get("corners"), list):
@@ -332,8 +337,16 @@ def _simulate_payload(payload: dict[str, Any]) -> PayloadSimulation:
         max_diffraction_paths=int(config_raw.get("max_diffraction_paths", 8)),
     )
     receiver_model = _receiver_model(receiver_raw)
-    result = simulate_rir(room, source, receiver, config=config, receiver_model=receiver_model)
-    return PayloadSimulation(room, source, receiver, objects, geometry, receiver_model, result)
+    source_model = source_directivity(source_raw)
+    result = simulate_rir(
+        room,
+        source,
+        receiver,
+        config=config,
+        receiver_model=receiver_model,
+        source_model=source_model,
+    )
+    return PayloadSimulation(room, source, receiver, objects, geometry, receiver_model, source_model, result)
 
 
 def _scene_response(simulation: PayloadSimulation, *, include_exact_rir: bool) -> dict[str, Any]:
@@ -350,6 +363,7 @@ def _scene_response(simulation: PayloadSimulation, *, include_exact_rir: bool) -
         **dict(out.get("metadata", {})),
         "rir_shape": list(simulation.result.rir.shape),
         "receiver_model": simulation.receiver_model,
+        "source_model": simulation.source_model,
     }
     return out
 
@@ -367,6 +381,7 @@ def _store_result(result: SimulationResult) -> tuple[str, dict[str, Any]]:
         "shape": [int(values.shape[0]), int(values.shape[1])],
         "duration_s": float(values.shape[1] / max(fs, 1)),
         "receiver_model": result.receiver_model,
+        "source_model": result.source_model,
         "rt60": dict(result.rt60),
         "files": {
             "wav": f"{base_url}/rir.wav",

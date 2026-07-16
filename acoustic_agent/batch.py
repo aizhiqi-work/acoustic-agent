@@ -50,6 +50,7 @@ def simulate_batch(
     *,
     config: SimConfig | None = None,
     receiver_model: Mapping[str, Any] | None = None,
+    source_model: str | Mapping[str, Any] | None = None,
     workers: int = 1,
 ) -> BatchResult:
     jobs = tuple(_validate_pair(pair, index) for index, pair in enumerate(pairs))
@@ -60,7 +61,14 @@ def simulate_batch(
         item_config = base_config if pair.seed is None else SimConfig(**{**base_config.__dict__, "seed": int(pair.seed)})
         if pair.seed is None and base_config.seed is not None:
             item_config = SimConfig(**{**base_config.__dict__, "seed": int(base_config.seed + index)})
-        return simulate_rir(room, pair.source, pair.receiver, config=item_config, receiver_model=receiver_model)
+        return simulate_rir(
+            room,
+            pair.source,
+            pair.receiver,
+            config=item_config,
+            receiver_model=receiver_model,
+            source_model=source_model,
+        )
 
     indexed = tuple(enumerate(jobs))
     worker_count = max(1, int(workers))
@@ -79,6 +87,7 @@ def simulate_batch(
             "workers": worker_count,
             "sample_rate": int(base_config.fs),
             "receiver_model": dict(receiver_model or {"type": "mono"}),
+            "source_model": dict(items[0].source_model) if items else {},
         },
     )
 
@@ -91,4 +100,3 @@ def _validate_pair(pair: SimulationPair, index: int) -> SimulationPair:
         if values.shape != (3,) or not np.all(np.isfinite(values)):
             raise ValueError(f"pairs[{index}].{label} must be a finite xyz point")
     return pair
-

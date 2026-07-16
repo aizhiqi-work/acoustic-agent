@@ -6,6 +6,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from .acoustics import estimate_rt60
+from .directivity import source_directivity
 from .geometry import point_in_polygon, polygon_area, polygon_perimeter
 from .hrtf import render_binaural_sofa
 from .mic import channel_positions, microphone_array
@@ -21,6 +22,7 @@ class SimulationResult:
     receiver_model: Mapping[str, Any]
     metadata: Mapping[str, Any] = field(default_factory=dict)
     ambisonic_rir: np.ndarray | None = None
+    source_model: Mapping[str, Any] = field(default_factory=dict)
 
 
 def simulate_rir(
@@ -30,14 +32,16 @@ def simulate_rir(
     *,
     config: SimConfig | None = None,
     receiver_model: Mapping[str, Any] | None = None,
+    source_model: str | Mapping[str, Any] | None = None,
 ) -> SimulationResult:
     cfg = config or SimConfig()
     src = _validate_point(source, room, "source")
     rcv = _validate_point(receiver, room, "receiver")
     model = dict(receiver_model or microphone_array("mono"))
+    emitter = source_directivity(source_model)
     kind = str(model.get("type", "mono"))
     if kind == "hrtf":
-        mono = _simulate_mono(room, src, rcv, cfg)
+        mono = _simulate_mono(room, src, rcv, cfg, emitter)
         rendered, hrtf_meta = render_binaural_sofa(
             mono.rir,
             source=src,
@@ -53,28 +57,40 @@ def simulate_rir(
             ambisonic_rir=mono.ambisonic_rir,
         )
         merged_model = {**model, "render_metadata": hrtf_meta}
-        return SimulationResult(rendered, mono.paths, mono.rt60, merged_model, mono.metadata, mono.ambisonic_rir)
+        return SimulationResult(rendered, mono.paths, mono.rt60, merged_model, mono.metadata, mono.ambisonic_rir, emitter)
     if kind in {"linear_array", "circular_array"}:
-        channel_results = [_simulate_mono(room, src, position, cfg) for position in channel_positions(rcv, model)]
+        channel_results = [_simulate_mono(room, src, position, cfg, emitter) for position in channel_positions(rcv, model)]
         rir = np.stack([item.rir for item in channel_results], axis=0).astype(np.float32)
         paths = tuple(path for item in channel_results for path in item.paths)
         meta = dict(channel_results[0].metadata)
         meta["array_channel_count"] = int(rir.shape[0])
-        return SimulationResult(rir, paths, channel_results[0].rt60, model, meta)
-    mono = _simulate_mono(room, src, rcv, cfg)
-    return SimulationResult(mono.rir.reshape(1, -1), mono.paths, mono.rt60, model, mono.metadata, mono.ambisonic_rir)
+        return SimulationResult(rir, paths, channel_results[0].rt60, model, meta, source_model=emitter)
+    mono = _simulate_mono(room, src, rcv, cfg, emitter)
+    return SimulationResult(mono.rir.reshape(1, -1), mono.paths, mono.rt60, model, mono.metadata, mono.ambisonic_rir, emitter)
 
 
-def solve_paths(room: Room, source: Sequence[float], receiver: Sequence[float], config: SimConfig | None = None) -> tuple[AcousticPath, ...]:
+def solve_paths(
+    room: Room,
+    source: Sequence[float],
+    receiver: Sequence[float],
+    config: SimConfig | None = None,
+    source_model: str | Mapping[str, Any] | None = None,
+) -> tuple[AcousticPath, ...]:
     cfg = config or SimConfig()
     src = _validate_point(source, room, "source")
     rcv = _validate_point(receiver, room, "receiver")
-    result = simulate_steam_room(room, src, rcv, cfg)
+    result = simulate_steam_room(room, src, rcv, cfg, source_model=source_directivity(source_model))
     return tuple(sorted(result.paths, key=lambda path: (path.delay_s, path.kind, -abs(path.gain))))
 
 
-def _simulate_mono(room: Room, source: tuple[float, float, float], receiver: tuple[float, float, float], config: SimConfig) -> SimulationResult:
-    steam = simulate_steam_room(room, source, receiver, config)
+def _simulate_mono(
+    room: Room,
+    source: tuple[float, float, float],
+    receiver: tuple[float, float, float],
+    config: SimConfig,
+    source_model: Mapping[str, Any],
+) -> SimulationResult:
+    steam = simulate_steam_room(room, source, receiver, config, source_model=source_model)
     paths = tuple(sorted(tuple(steam.paths), key=lambda path: (path.delay_s, path.kind, -abs(path.gain))))
     rir = steam.rir
     area = abs(polygon_area(room.corners))
@@ -145,9 +161,11 @@ def _simulate_mono(room: Room, source: tuple[float, float, float], receiver: tup
                 "overlap_fraction": float(config.hybrid_overlap_fraction),
             },
             "steam_audio": steam.metadata,
+            "source_model": dict(source_model),
             "solver_pipeline": ["direct", "diffraction", "rt_energy_field", "reverb_estimate", "hybrid_late_reverb", "receiver_reconstruction"],
         },
         steam.ambisonic_rir,
+        dict(source_model),
     )
 
 
