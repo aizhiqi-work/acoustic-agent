@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AcousticAgent WebGL Workbench</title>
+  <script>
+    if (window.location.protocol === "file:") {
+      window.location.replace("http://127.0.0.1:8767/");
+    }
+  </script>
+  <link rel="stylesheet" href="./styles.css?v=64-audio-layout">
+</head>
+<body>
+  <main id="app">
+    <aside id="setupPanel" class="sidePanel">
+      <header class="panelHeader">
+        <div>
+          <h1>acoustic agent</h1>
+          <p>Scene setup</p>
+        </div>
+        <span id="sceneStatus">Live</span>
+      </header>
+
+      <section class="panelBlock editorBlock">
+        <div class="inspectorHeader">
+          <h2>Scene setup</h2>
+          <span id="status">Ready</span>
+        </div>
+
+        <label class="presetSelect" for="shape">Geometry
+          <select id="shape"></select>
+        </label>
+
+        <div id="thumbs" class="thumbStrip"></div>
+
+        <div class="propertyGrid">
+          <label>Width (m)<input id="sizeX" type="number" min="1" max="80" step="0.1"></label>
+          <label>Depth (m)<input id="sizeY" type="number" min="1" max="80" step="0.1"></label>
+          <label>Height (m)<input id="height" type="number" min="1" max="20" step="0.1"></label>
+        </div>
+
+        <div class="propertyGrid materialGrid">
+          <label>Wall
+            <select id="wallMaterial">
+              <option value="wall">Brick</option>
+              <option value="wood">Wood</option>
+              <option value="curtain">Curtain</option>
+            </select>
+          </label>
+          <label>Floor
+            <select id="floorMaterial">
+              <option value="floor">Marble</option>
+              <option value="floor_carpet">Carpet</option>
+              <option value="wood">Wood</option>
+            </select>
+          </label>
+          <label>Ceiling
+            <select id="ceilingMaterial">
+              <option value="ceiling">Wood</option>
+              <option value="ceiling_tile">Tile</option>
+              <option value="fabric">Fabric</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="geometryParams" class="geometryParams" aria-label="Geometry parameters"></div>
+
+        <div class="editorCommandRow">
+          <button id="reset" type="button">Reset</button>
+        </div>
+      </section>
+
+      <section class="panelBlock positionBlock">
+        <div class="inspectorHeader">
+          <h2>Positions</h2>
+          <button id="randomPositions" type="button">Random</button>
+        </div>
+        <div class="positionSet sourceSet">
+          <div class="positionSetHeader">
+            <span class="dot source"></span>
+            <h3>Source</h3>
+          </div>
+          <div class="propertyGrid">
+            <label>X<input id="sourceX" type="number" min="-100" max="100" step="0.05"></label>
+            <label>Y<input id="sourceY" type="number" min="-100" max="100" step="0.05"></label>
+            <label>Z<input id="sourceZ" type="number" min="0" max="20" step="0.05"></label>
+          </div>
+        </div>
+        <div class="positionSet receiverSet">
+          <div class="positionSetHeader">
+            <span class="dot receiver"></span>
+            <h3>Receiver</h3>
+          </div>
+          <div class="propertyGrid">
+            <label>X<input id="receiverX" type="number" min="-100" max="100" step="0.05"></label>
+            <label>Y<input id="receiverY" type="number" min="-100" max="100" step="0.05"></label>
+            <label>Z<input id="receiverZ" type="number" min="0" max="20" step="0.05"></label>
+          </div>
+        </div>
+      </section>
+
+      <section id="receiverPane" class="panelPane active">
+        <section id="receiverInspector" class="inspector">
+          <div class="inspectorHeader">
+            <h2>Microphone</h2>
+            <span id="receiverType">mono</span>
+          </div>
+          <div id="micThumbs" class="micThumbStrip" aria-label="Receiver model"></div>
+          <div id="micControlTray" class="micControlTray">
+            <div id="micDirectionControls" class="propertyGrid micDirectionControls">
+              <label>Orientation<input id="micOrientation" type="number" min="-180" max="180" step="5"></label>
+            </div>
+            <div id="micArrayControls" class="propertyGrid micArrayControls">
+              <label>Count<input id="micCount" type="number" min="1" max="32" step="1"></label>
+              <label><span id="micSpacingLabel">Spacing</span><input id="micSpacing" type="number" min="0.01" max="1" step="0.01"></label>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="panelBlock solverSetupBlock">
+        <div class="inspectorHeader">
+          <h2>Solver setup</h2>
+          <span>Engine</span>
+        </div>
+        <div class="solverCommandRow">
+          <label for="qualitySelect">Quality
+            <select id="qualitySelect">
+              <option value="preview">Preview</option>
+              <option value="simulation" selected>Simulation</option>
+              <option value="fine">Fine</option>
+              <option value="reference">Reference</option>
+            </select>
+          </label>
+          <label for="fs">Sample rate
+            <select id="fs"><option>16000</option><option>24000</option><option>48000</option></select>
+          </label>
+          <label for="rirDuration">RIR length (s)
+            <input id="rirDuration" type="number" min="0.3" max="6" step="0.1" value="2.0">
+          </label>
+        </div>
+        <div id="objectDesigner" class="objectDesigner">
+          <div class="inspectorHeader objectDesignerHeader">
+            <div>
+              <h3>Acoustic geometry</h3>
+              <p>Simple reflecting / diffracting objects</p>
+            </div>
+            <span id="sceneObjectCount">0 objects</span>
+          </div>
+          <div id="objectThumbs" class="objectThumbStrip" aria-label="Acoustic object type"></div>
+          <div id="objectSettings" class="objectSettings">
+            <label>X<input id="objectX" type="number" min="-100" max="100" step="0.05"></label>
+            <label>Y<input id="objectY" type="number" min="-100" max="100" step="0.05"></label>
+            <label>Z<input id="objectZ" type="number" min="0.03" max="20" step="0.05"></label>
+            <label>W<input id="objectWidth" type="number" min="0.05" max="8" step="0.05"></label>
+            <label>D<input id="objectDepth" type="number" min="0.03" max="8" step="0.05"></label>
+            <label>H<input id="objectHeight" type="number" min="0.05" max="4" step="0.05"></label>
+            <label class="wide">Angle<input id="objectRotation" type="number" min="-180" max="180" step="5"></label>
+          </div>
+          <div class="objectCommandRow">
+            <button id="addAsset" type="button">Add geometry</button>
+            <button id="confirmFurniture" class="confirm" type="button" hidden>Update simulation</button>
+          </div>
+          <p id="objectEditHint">Choose a geometry card, add it, then place it in the scene.</p>
+        </div>
+      </section>
+    </aside>
+
+    <section id="viewport">
+      <canvas id="view"></canvas>
+
+      <div id="miniMap">
+        <canvas id="miniCanvas" width="220" height="160"></canvas>
+      </div>
+
+      <div id="stageHud">
+        <strong>AcousticAgent</strong>
+        <span id="hudMeta">Simplified indoor scene</span>
+        <span id="viewMeta">View --</span>
+      </div>
+
+      <div id="selectionToolbar">
+        <div class="selectionToolbarHeader">
+          <strong id="selectionName">Scene</strong>
+          <span id="selectionHint">Click empty space to clear</span>
+        </div>
+        <div class="selectionToolbarActions">
+          <button id="deleteFurniture" class="danger" type="button">Delete</button>
+        </div>
+      </div>
+
+    </section>
+
+    <aside id="resultsPanel" class="sidePanel">
+      <header class="panelHeader">
+        <div>
+          <h1>simulation</h1>
+          <p>Results</p>
+        </div>
+      </header>
+
+      <section class="panelBlock pathDisplayBlock">
+        <div class="inspectorHeader">
+          <h2>Path visibility</h2>
+          <span>Display</span>
+        </div>
+        <div class="layerGrid" aria-label="Acoustic path layers">
+          <label><span><i class="pathDirect"></i>Direct</span><input id="layerDirect" type="checkbox" checked></label>
+          <label><span><i class="pathDiffraction"></i>Diffraction</span><input id="layerDiffraction" type="checkbox" checked></label>
+          <label><span><i class="pathRt"></i>RT sample paths</span><input id="layerRt" type="checkbox" checked></label>
+        </div>
+        <label class="pathLimitControl">RT sample limit <output id="pathCount">512 max</output>
+          <input id="pathLimit" type="range" min="0" max="512" value="512" step="1">
+        </label>
+      </section>
+
+      <section id="acousticPane" class="panelPane resultPane active">
+        <section class="inspector">
+          <div class="inspectorHeader">
+            <h2>Metrics</h2>
+            <span>Summary</span>
+          </div>
+          <div id="stats" class="stats"></div>
+        </section>
+        <section id="rirInspector" class="inspector">
+          <div class="inspectorHeader">
+            <h2>RIR</h2>
+          </div>
+          <canvas id="rirCanvas" width="320" height="210"></canvas>
+        </section>
+        <section id="calibrationInspector" class="inspector">
+          <div class="inspectorHeader">
+            <h2>Calibration audio</h2>
+            <span id="calibrationAudioMeta">reading.wav · waiting</span>
+          </div>
+          <div class="audioCompare">
+            <article class="audioTrack">
+              <div><strong>Original dry voice</strong><small>Resampled input</small></div>
+              <audio id="dryAudio" controls preload="metadata"></audio>
+            </article>
+            <article class="audioTrack wet">
+              <div><strong>First-channel wet voice</strong><small>Dry voice × displayed RIR Ch 1</small></div>
+              <audio id="wetAudio" controls preload="metadata"></audio>
+            </article>
+          </div>
+        </section>
+        <section id="codeDock" class="inspector">
+          <div id="codeDockHeader">
+            <span>Acoustic Agent API</span>
+            <button id="copyCode" type="button">Copy</button>
+          </div>
+          <pre id="code"></pre>
+        </section>
+      </section>
+    </aside>
+  </main>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module" src="app.js?v=66-room-materials"></script>
+</body>
+</html>
