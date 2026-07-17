@@ -145,6 +145,52 @@ def test_resplan_cross_room_scene_builds_global_portals_and_vertical_openings():
     assert all(item["z_min"] == 2.1 and item["z_max"] == 2.8 for item in lintels)
 
 
+def test_resplan_global_scene_keeps_entry_doors_closed_but_opens_balcony_doors():
+    record = _record()
+    balcony = box(100.0, 0.0, 120.0, 50.0)
+    record["inner"] = MultiPolygon([box(0.0, 0.0, 120.0, 50.0)])
+    record["graph"].add_node("balcony_0", geometry=balcony, type="balcony", area=balcony.area)
+    record["graph"].add_edge("bedroom_0", "balcony_0", type="via_door")
+    record["door"] = MultiPolygon([
+        box(48.0, 20.0, 52.0, 30.0),
+        box(98.0, 20.0, 102.0, 30.0),
+    ])
+    record["front_door"] = box(10.0, -2.0, 20.0, 2.0)
+
+    scene = scene_from_record(
+        record,
+        index=7,
+        room_id="living_0",
+        receiver_room_id="bedroom_0",
+    )
+    multi_room = scene["room"]["metadata"]["multi_room"]
+    features = scene["room"]["metadata"]["boundary_features"]
+    surfaces = scene["room"]["metadata"]["surface_segments"]
+
+    assert multi_room["route_portal_ids"] == ["door_0"]
+    balcony_door = next(feature for feature in features if feature["id"] == "door_1")
+    front_door = next(feature for feature in features if feature["id"] == "front_door_0")
+    assert balcony_door["open"] is True
+    assert front_door["open"] is False
+    assert set(balcony_door["room_ids"]) == {"bedroom_0", "balcony_0"}
+    assert front_door["room_ids"] == ["living_0"]
+    assert not any(item["name"] == "bedroom_0_door_1_door" for item in surfaces)
+    assert any(item["name"] == "bedroom_0_door_1_lintel" and item["type"] == "wall" for item in surfaces)
+    assert any(item["name"] == "living_0_front_door_0_door" and item["type"] == "door" for item in surfaces)
+
+    balcony_scene = scene_from_record(
+        record,
+        index=7,
+        room_id="balcony_0",
+        receiver_room_id="bedroom_0",
+    )
+    balcony_route = balcony_scene["room"]["metadata"]["multi_room"]
+    assert balcony_scene["selected_room"]["id"] == "balcony_0"
+    assert balcony_scene["receiver_room"]["id"] == "bedroom_0"
+    assert balcony_route["route_portal_ids"] == ["door_1"]
+    assert any(room["id"] == "balcony_0" for room in balcony_scene["rooms"])
+
+
 def test_cross_room_solver_routes_around_wall_through_open_door_with_jit_visual_scan():
     scene = scene_from_record(
         _record(),
@@ -181,6 +227,8 @@ def test_cross_room_solver_routes_around_wall_through_open_door_with_jit_visual_
     assert steam["reflections"]["accelerator"] == "numba"
     assert steam["rt_visual"]["accelerator"] == "numba"
     assert steam["rt_visual"]["model"] == "source_space_specular_ray_scan_jit"
+    assert "footprint_filter" not in steam["rt_visual"]
+    assert steam["diffraction"]["path_count"] == 0
     assert result.metadata["solver_pipeline"][1] == "portal_pathing"
     assert np.isfinite(result.rir).all()
     assert float(np.sum(result.rir * result.rir)) > 0.0

@@ -272,6 +272,7 @@ function updateResplanMeta() {
     ["Scale", Number.isFinite(Number(dataset.meters_per_unit)) ? `${Number(dataset.meters_per_unit).toFixed(4)} m/u` : "-"],
     ["Scale source", String(dataset.scale_source || "-").replaceAll("_", " ")],
     ["Doors", String(features.filter((item) => item.type === "door").length)],
+    ["Openings", String(features.filter((item) => item.type === "opening").length)],
     ["Windows", String(features.filter((item) => item.type === "window").length)],
     ["Route", String(state.resplan.roomMetadata?.multi_room?.route_portal_ids?.length || 0) + " portals"],
     ["Connections", exteriorExposures.length ? `${connections.length} · ${exteriorExposures.length} exterior` : String(connections.length)],
@@ -298,7 +299,7 @@ function drawResplanOverview() {
   const planWidth = Math.max(Number(plan.size?.[0]), 1e-6);
   const planDepth = Math.max(Number(plan.size?.[1]), 1e-6);
   const scale = Math.min((width - pad * 2) / planWidth, (height - pad * 2) / planDepth);
-  const toCanvas = ([x, y]) => [pad + Number(x) * scale, height - pad - Number(y) * scale];
+  const toCanvas = ([x, y]) => [pad + Number(x) * scale, pad + Number(y) * scale];
   const colors = { living: "#c7e4df", bedroom: "#d7def4", kitchen: "#efd8ad", bathroom: "#cce5ee", storage: "#d9dddf", balcony: "#cee0c4" };
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#f8fafb";
@@ -306,19 +307,24 @@ function drawResplanOverview() {
   (plan.rooms || []).forEach((room) => {
     drawCanvasPolygon(ctx, room.polygon || [], toCanvas);
     ctx.fillStyle = colors[room.type] || "#e2e6e8";
-    ctx.strokeStyle = room.selected ? "#0f7f9f" : room.receiver ? "#d34f72" : "#65727a";
+    ctx.strokeStyle = room.selected ? "#ef476f" : room.receiver ? "#0f7f9f" : "#65727a";
     ctx.lineWidth = room.selected || room.receiver ? 3 : 1;
     ctx.fill();
     ctx.stroke();
   });
-  (plan.apertures || []).forEach((feature) => {
-    drawCanvasPolygon(ctx, feature.polygon || [], toCanvas);
-    ctx.fillStyle = feature.type === "window" ? "#54a8c1" : "#ce6545";
-    ctx.globalAlpha = 0.9;
-    ctx.fill();
-    ctx.globalAlpha = 1;
-  });
-  [[state.source, "#0f7f9f", "S"], [state.receiver, "#d34f72", "M"]].forEach(([point, color, label]) => {
+  const semanticFeatures = state.resplan.roomMetadata?.boundary_features || [];
+  if (semanticFeatures.length) {
+    drawResplanOverviewFeatures(ctx, semanticFeatures, toCanvas);
+  } else {
+    (plan.apertures || []).forEach((feature) => {
+      drawCanvasPolygon(ctx, feature.polygon || [], toCanvas);
+      ctx.fillStyle = feature.type === "window" ? "#54a8c1" : "#ce6545";
+      ctx.globalAlpha = 0.9;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    });
+  }
+  [[state.source, "#ef476f", "S"], [state.receiver, "#0f7f9f", "M"]].forEach(([point, color, label]) => {
     const [x, y] = toCanvas(point);
     ctx.beginPath();
     ctx.arc(x, y, 6, 0, Math.PI * 2);
@@ -330,6 +336,63 @@ function drawResplanOverview() {
     ctx.textBaseline = "middle";
     ctx.fillText(label, x, y + 0.5);
   });
+}
+
+function drawResplanOverviewFeatures(ctx, features, toCanvas) {
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  features.forEach((feature) => {
+    (feature.segments || []).forEach((segment) => {
+      if (!Array.isArray(segment) || segment.length < 2) return;
+      drawPlanBoundarySymbol(ctx, feature, segment, toCanvas, 1);
+    });
+  });
+}
+
+function drawPlanBoundarySymbol(ctx, feature, segment, toCanvas, scale = 1) {
+  const [ax, ay] = toCanvas(segment[0]);
+  const [bx, by] = toCanvas(segment[1]);
+  const dx = bx - ax;
+  const dy = by - ay;
+  const length = Math.hypot(dx, dy);
+  if (length < 0.2) return;
+  const ux = dx / length;
+  const uy = dy / length;
+  const stroke = (color, width, from = 0, to = 1) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width * scale;
+    ctx.beginPath();
+    ctx.moveTo(ax + dx * from, ay + dy * from);
+    ctx.lineTo(ax + dx * to, ay + dy * to);
+    ctx.stroke();
+  };
+
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.setLineDash([]);
+  if (feature.type === "window") {
+    const nx = -uy * 1.25 * scale;
+    const ny = ux * 1.25 * scale;
+    ctx.strokeStyle = "rgba(70,108,119,.86)";
+    ctx.lineWidth = 1.4 * scale;
+    for (const offset of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(ax + nx * offset, ay + ny * offset);
+      ctx.lineTo(bx + nx * offset, by + ny * offset);
+      ctx.stroke();
+    }
+    stroke("rgba(133,207,224,.96)", 1.2);
+  } else if (feature.type === "opening") {
+    stroke("rgba(33,105,91,.78)", 2.5, 0, 0.24);
+    stroke("rgba(33,105,91,.78)", 2.5, 0.76, 1);
+  } else if (feature.open) {
+    stroke("rgba(184,126,88,.92)", 2.6, 0, 0.22);
+    stroke("rgba(184,126,88,.92)", 2.6, 0.78, 1);
+  } else {
+    stroke("rgba(104,81,69,.9)", 3.1);
+    stroke("rgba(206,168,142,.96)", 1.25, 0.06, 0.94);
+  }
+  ctx.restore();
 }
 
 function drawCanvasPolygon(ctx, polygon, transform) {
@@ -970,12 +1033,17 @@ function addMultiRoomShell3D(corners, roomHeight) {
     const segmentHeight = zMax - zMin;
     if (length < 0.015 || segmentHeight < 0.015) return;
     const isWindow = segment.type === "window";
+    const isDoor = segment.type === "door";
+    if (isWindow || isDoor) {
+      addArchitecturalPanel3D(a, b, zMin, zMax, isWindow ? "window" : "door", false);
+      return;
+    }
     const material = new THREE.MeshStandardMaterial({
-      color: isWindow ? 0x54a8c1 : 0xbfc7cb,
+      color: 0xbfc7cb,
       transparent: true,
-      opacity: isWindow ? 0.5 : 0.35,
-      roughness: isWindow ? 0.25 : 0.88,
-      metalness: isWindow ? 0.08 : 0,
+      opacity: 0.35,
+      roughness: 0.88,
+      metalness: 0,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
@@ -985,6 +1053,15 @@ function addMultiRoomShell3D(corners, roomHeight) {
     wall.receiveShadow = true;
     shellGroup.add(wall);
   });
+  (simData.room?.metadata?.boundary_features || []).forEach((feature) => {
+    if (feature.type !== "door" || !feature.open) return;
+    const zMin = clamp(Number(feature.sill_height_m || 0), 0, roomHeight);
+    const zMax = clamp(zMin + Number(feature.height_m || 2.1), zMin, roomHeight);
+    (feature.segments || []).forEach((segment) => {
+      if (!Array.isArray(segment) || segment.length < 2) return;
+      addArchitecturalPanel3D(segment[0], segment[1], zMin, zMax, "door", true);
+    });
+  });
   const ceiling = new THREE.Mesh(
     new THREE.ShapeGeometry(shapeFromCorners(corners)),
     new THREE.MeshStandardMaterial({ color: 0x9fb8c0, transparent: true, opacity: 0.055, roughness: 0.9, side: THREE.DoubleSide, depthWrite: false })
@@ -992,6 +1069,86 @@ function addMultiRoomShell3D(corners, roomHeight) {
   ceiling.rotation.x = Math.PI / 2;
   ceiling.position.y = roomHeight;
   shellGroup.add(ceiling);
+}
+
+function addArchitecturalPanel3D(a, b, zMin, zMax, kind, open) {
+  const dx = Number(b[0]) - Number(a[0]);
+  const dy = Number(b[1]) - Number(a[1]);
+  const length = Math.hypot(dx, dy);
+  const height = zMax - zMin;
+  if (length < 0.04 || height < 0.04) return;
+
+  const group = new THREE.Group();
+  group.position.set(
+    (Number(a[0]) + Number(b[0])) * 0.5,
+    zMin + height * 0.5,
+    (Number(a[1]) + Number(b[1])) * 0.5
+  );
+  group.rotation.y = -Math.atan2(dy, dx);
+  const frameDepth = kind === "window" ? 0.12 : 0.085;
+  const frameSize = Math.min(0.065, Math.max(0.025, Math.min(length, height) * 0.1));
+  const frameMaterial = new THREE.MeshStandardMaterial({
+    color: kind === "window" ? 0x506a72 : 0x5e5550,
+    transparent: true,
+    opacity: 0.86,
+    roughness: 0.72,
+    metalness: kind === "window" ? 0.12 : 0.02,
+    depthWrite: false,
+  });
+  const addBar = (width, barHeight, x, y, depth = frameDepth) => {
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(width, barHeight, depth), frameMaterial);
+    bar.position.set(x, y, 0);
+    group.add(bar);
+  };
+
+  if (kind === "window") {
+    const glass = new THREE.Mesh(
+      new THREE.BoxGeometry(Math.max(0.015, length - frameSize * 1.35), Math.max(0.015, height - frameSize * 1.35), 0.045),
+      new THREE.MeshStandardMaterial({
+        color: 0x8ccbd8,
+        transparent: true,
+        opacity: 0.3,
+        roughness: 0.08,
+        metalness: 0.05,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      })
+    );
+    group.add(glass);
+    addBar(frameSize, height, -length * 0.5 + frameSize * 0.5, 0);
+    addBar(frameSize, height, length * 0.5 - frameSize * 0.5, 0);
+    addBar(length, frameSize, 0, -height * 0.5 + frameSize * 0.5);
+    addBar(length, frameSize, 0, height * 0.5 - frameSize * 0.5);
+    if (length > 0.72) addBar(frameSize * 0.72, Math.max(0.02, height - frameSize * 1.4), 0, 0, frameDepth * 0.78);
+    if (height > 1.05) addBar(Math.max(0.02, length - frameSize * 1.4), frameSize * 0.66, 0, 0, frameDepth * 0.78);
+  } else {
+    addBar(frameSize, height, -length * 0.5 + frameSize * 0.5, 0);
+    addBar(frameSize, height, length * 0.5 - frameSize * 0.5, 0);
+    addBar(length, frameSize, 0, height * 0.5 - frameSize * 0.5);
+    if (open) {
+      addBar(Math.max(0.02, length - frameSize * 1.5), 0.025, 0, -height * 0.5 + 0.014, frameDepth * 0.75);
+    } else {
+      const leaf = new THREE.Mesh(
+        new THREE.BoxGeometry(Math.max(0.02, length - frameSize * 1.55), Math.max(0.02, height - frameSize * 1.35), 0.045),
+        new THREE.MeshStandardMaterial({ color: 0xa8795f, transparent: true, opacity: 0.76, roughness: 0.82, depthWrite: false })
+      );
+      leaf.position.z = -0.006;
+      group.add(leaf);
+      const inset = new THREE.LineSegments(
+        new THREE.EdgesGeometry(new THREE.BoxGeometry(Math.max(0.03, length * 0.68), Math.max(0.04, height * 0.34), 0.052), 30),
+        new THREE.LineBasicMaterial({ color: 0x6f5141, transparent: true, opacity: 0.5 })
+      );
+      inset.position.set(0, -height * 0.13, 0.012);
+      group.add(inset);
+      const handle = new THREE.Mesh(
+        new THREE.SphereGeometry(Math.min(0.035, Math.max(0.018, length * 0.04)), 10, 8),
+        new THREE.MeshStandardMaterial({ color: 0xd8c6a5, roughness: 0.26, metalness: 0.7 })
+      );
+      handle.position.set(length * 0.31, 0.02, frameDepth * 0.55);
+      group.add(handle);
+    }
+  }
+  shellGroup.add(group);
 }
 
 function addBoundaryFeatures3D(roomHeight) {
@@ -1012,17 +1169,27 @@ function addBoundaryFeatures3D(roomHeight) {
       if (length < 0.015) return;
       const material = new THREE.MeshStandardMaterial({
         color,
-        transparent: kind === "window",
-        opacity: kind === "window" ? 0.58 : 0.9,
+        transparent: true,
+        opacity: kind === "window" ? 0.58 : 0.34,
         roughness: kind === "window" ? 0.28 : 0.72,
         metalness: kind === "window" ? 0.08 : 0,
         side: THREE.DoubleSide,
+        depthWrite: kind !== "door",
       });
-      const panel = new THREE.Mesh(new THREE.BoxGeometry(length, featureHeight, 0.145), material);
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(length, featureHeight, kind === "door" ? 0.045 : 0.145), material);
       panel.position.set((Number(a[0]) + Number(b[0])) * 0.5, sill + featureHeight * 0.5, (Number(a[1]) + Number(b[1])) * 0.5);
       panel.rotation.y = -Math.atan2(dy, dx);
       panel.userData.boundaryFeature = `${kind}_${featureIndex}_${segmentIndex}`;
       shellGroup.add(panel);
+      if (kind === "door") {
+        const edge = new THREE.LineSegments(
+          new THREE.EdgesGeometry(panel.geometry, 30),
+          new THREE.LineBasicMaterial({ color: 0x9a4f2f, transparent: true, opacity: 0.62 })
+        );
+        edge.position.copy(panel.position);
+        edge.rotation.copy(panel.rotation);
+        shellGroup.add(edge);
+      }
     });
   });
 }
@@ -1818,10 +1985,13 @@ function drawAcousticMiniMap(ctx, width, height) {
   ctx.fill();
   ctx.stroke();
 
+  drawMiniRoomPlan(ctx, toCanvas);
   drawMiniBoundaryFeatures(ctx, toCanvas);
   drawMiniFurniture(ctx, toCanvas, scale, 1);
 
-  if (selection.direct) {
+  if (selection.portal) {
+    drawMiniAcousticPath(ctx, selection.portal, toCanvas, "rgba(242,165,65,.96)", 2.35, true, false);
+  } else if (selection.direct) {
     drawMiniAcousticPath(ctx, selection.direct, toCanvas, "rgba(239,71,111,.96)", 2.25, false, selection.nlos);
   }
   selection.diffractions.forEach((path, index) => {
@@ -1832,12 +2002,13 @@ function drawAcousticMiniMap(ctx, width, height) {
   drawMiniMarker(ctx, toCanvas(state.source), "#ef476f", "SRC", 1);
   drawMiniMarker(ctx, toCanvas(state.receiver), "#0f7f9f", "MIC", -1);
 
-  const stateLabel = selection.nlos ? "NLOS / UTD" : "LOS";
+  const routeIsPortal = selection.routeType === "portal";
+  const stateLabel = routeIsPortal ? "PORTAL" : selection.nlos ? "NLOS / UTD" : "LOS";
   ctx.font = "700 9px system-ui";
   const badgeWidth = ctx.measureText(stateLabel).width + 12;
-  ctx.fillStyle = selection.nlos ? "rgba(125,140,255,.14)" : "rgba(239,71,111,.12)";
+  ctx.fillStyle = routeIsPortal ? "rgba(242,165,65,.16)" : selection.nlos ? "rgba(125,140,255,.14)" : "rgba(239,71,111,.12)";
   ctx.fillRect(width - badgeWidth - 6, 6, badgeWidth, 17);
-  ctx.fillStyle = selection.nlos ? "#5968d8" : "#c93658";
+  ctx.fillStyle = routeIsPortal ? "#a75c10" : selection.nlos ? "#5968d8" : "#c93658";
   ctx.fillText(stateLabel, width - badgeWidth, 18);
 
   ctx.fillStyle = "#69767d";
@@ -1845,19 +2016,53 @@ function drawAcousticMiniMap(ctx, width, height) {
   ctx.fillText(`RT ${selection.rtCount}`, 7, height - 7);
 }
 
+function drawMiniRoomPlan(ctx, toCanvas) {
+  const metadata = simData.room?.metadata || {};
+  const multiRoom = metadata.multi_room;
+  if (!multiRoom?.enabled) return;
+  const roomColors = {
+    living: "#eef6f4",
+    bedroom: "#f0f2f9",
+    kitchen: "#faf4e8",
+    bathroom: "#edf6f8",
+    storage: "#f1f3f4",
+    balcony: "#f1f6ed",
+  };
+  ctx.save();
+  (multiRoom.rooms || []).forEach((room) => {
+    if (!Array.isArray(room.corners) || room.corners.length < 3) return;
+    drawCanvasPolygon(ctx, room.corners, toCanvas);
+    ctx.fillStyle = roomColors[room.type] || "#f1f4f5";
+    ctx.globalAlpha = 0.92;
+    ctx.fill();
+  });
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = "rgba(52,65,73,.9)";
+  ctx.lineWidth = 2.1;
+  ctx.lineCap = "square";
+  (metadata.surface_segments || []).forEach((segment) => {
+    if (segment.type !== "wall") return;
+    const zMin = Number(segment.z_min || 0);
+    const zMax = Number(segment.z_max || 0);
+    if (zMin > 0.18 || zMax < 0.55) return;
+    if (!Array.isArray(segment.a) || !Array.isArray(segment.b)) return;
+    const [ax, ay] = toCanvas(segment.a);
+    const [bx, by] = toCanvas(segment.b);
+    if (Math.hypot(bx - ax, by - ay) < 0.25) return;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+  });
+  ctx.restore();
+}
+
 function drawMiniBoundaryFeatures(ctx, toCanvas) {
   const features = simData.room?.metadata?.boundary_features || [];
   features.forEach((feature) => {
-    ctx.strokeStyle = feature.type === "window" ? "#3b98b4" : "#ce6545";
-    ctx.lineWidth = 3.2;
     (feature.segments || []).forEach((segment) => {
       if (!Array.isArray(segment) || segment.length < 2) return;
-      const [ax, ay] = toCanvas(segment[0]);
-      const [bx, by] = toCanvas(segment[1]);
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
-      ctx.stroke();
+      drawPlanBoundarySymbol(ctx, feature, segment, toCanvas, 0.92);
     });
   });
 }
@@ -1906,15 +2111,41 @@ function drawMiniFurniture(ctx, project, scale, rotationSign = -1) {
 }
 
 function miniMapPathSelection(paths) {
+  const solvedPortal = paths
+    .filter((path) => path.kind === "portal_path")
+    .sort((a, b) => Number(a.delay_s || 0) - Number(b.delay_s || 0))[0] || null;
+  const multiRoom = simData.room?.metadata?.multi_room;
+  const sourceRoomId = multiRoom?.source_room_id || state.resplan.roomId;
+  const receiverRoomId = multiRoom?.receiver_room_id || state.resplan.receiverRoomId;
+  const crossRoom = Boolean(sourceRoomId && receiverRoomId && sourceRoomId !== receiverRoomId);
+  const portalById = new Map((multiRoom?.portals || []).map((portal) => [portal.id, portal]));
+  const routeCenters = (multiRoom?.route_portal_ids || [])
+    .map((portalId) => portalById.get(portalId)?.center)
+    .filter((point) => Array.isArray(point) && point.length >= 2);
+  const provisionalPortal = crossRoom && routeCenters.length
+    ? { kind: "portal_path", points: [state.source, ...routeCenters, state.receiver], provisional: true }
+    : null;
+  const portalRoute = solvedPortal || provisionalPortal;
+  const portal = layerState.portal ? portalRoute : null;
   const direct = paths.find((path) => path.kind === "direct" || path.kind === "direct_transmitted");
-  const visibleByGeometry = segmentInsidePolygon2D(state.source, state.receiver, simData.room?.corners || cornersFor(state.shape, state.size, state.geometry));
-  const nlos = direct?.kind === "direct_transmitted" || Number(simData.metadata?.steam_audio?.direct?.occlusion ?? (visibleByGeometry ? 1 : 0)) < 1;
+  const sourceRoomCorners = (multiRoom?.rooms || []).find((room) => room.id === sourceRoomId)?.corners;
+  const visibilityPolygon = crossRoom
+    ? null
+    : sourceRoomCorners || simData.room?.corners || cornersFor(state.shape, state.size, state.geometry);
+  const visibleByGeometry = Boolean(visibilityPolygon) && segmentInsidePolygon2D(state.source, state.receiver, visibilityPolygon);
+  const nlos = !portalRoute && (
+    crossRoom
+    || direct?.kind === "direct_transmitted"
+    || Number(simData.metadata?.steam_audio?.direct?.occlusion ?? (visibleByGeometry ? 1 : 0)) < 1
+  );
   const diffraction = displayPaths(paths)
     .filter((path) => path.kind === "diffraction")
     .sort((a, b) => Number(a.delay_s || 0) - Number(b.delay_s || 0));
   return {
     nlos,
-    direct: direct || { kind: nlos ? "direct_transmitted" : "direct", points: [state.source, state.receiver] },
+    routeType: portalRoute ? "portal" : nlos ? "nlos" : "los",
+    portal,
+    direct: portalRoute ? null : direct || { kind: nlos ? "direct_transmitted" : "direct", points: [state.source, state.receiver] },
     diffractions: diffraction.slice(0, 3),
     rtCount: paths.filter((path) => path.kind === "rt_reflection").length,
   };

@@ -16,7 +16,7 @@ from shapely.geometry.base import BaseGeometry
 
 DEFAULT_RESPLAN_PATH = Path(__file__).resolve().parents[2] / "ResPlan.pkl"
 _ROOM_TYPES = {"living", "kitchen", "bedroom", "bathroom", "storage", "balcony"}
-_INTERIOR_ROOM_TYPES = _ROOM_TYPES - {"balcony"}
+_INTERIOR_ROOM_TYPES = _ROOM_TYPES
 _OUTDOOR_LAYERS = ("balcony", "garden", "veranda", "parking", "pool")
 _ROOM_AREA_LIMITS = {
     "living": (6.0, 120.0),
@@ -615,6 +615,58 @@ def _multi_room_surfaces(
     windows_by_room: dict[str, list[tuple[int, Polygon, tuple[tuple[float, float], tuple[float, float]]]]] = {
         room["id"]: [] for room in rooms
     }
+    surfaces: list[dict[str, Any]] = []
+    features: list[dict[str, Any]] = []
+    portal_door_indices = {
+        int(portal["id"].split("_", 1)[1])
+        for portal in portals
+        if portal.get("type") == "door" and str(portal.get("id", "")).startswith("door_")
+    }
+    visual_door_cutouts: dict[str, list[dict[str, Any]]] = {room["id"]: [] for room in rooms}
+    closed_door_surfaces: dict[str, list[dict[str, Any]]] = {room["id"]: [] for room in rooms}
+    proximity = max(wall_depth * 1.1, 1.25)
+    for layer_name, layer in (("door", record.get("door")), ("front_door", record.get("front_door"))):
+        for door_index, polygon in enumerate(_iter_polygons(layer)):
+            if layer_name == "door" and door_index in portal_door_indices:
+                continue
+            zone = polygon.buffer(max(wall_depth * 0.28, 0.4), cap_style=2, join_style=2)
+            matches: list[tuple[dict[str, Any], tuple[tuple[float, float], tuple[float, float]]]] = []
+            for room in rooms:
+                segment = _primary_segment(room["geometry"].boundary.intersection(zone))
+                if segment is not None:
+                    matches.append((room, segment))
+            if not matches:
+                continue
+            metric_segments = [_metric_segment(segment, scale, origin) for _room, segment in matches]
+            room_ids = [room["id"] for room, _segment in matches]
+            connection = "outdoor_entry" if layer_name == "front_door" else _connector_connection(
+                "door",
+                polygon,
+                matches[0][0]["geometry"],
+                rooms,
+                proximity,
+            )
+            open_door = connection in {"interior_room", "outdoor_balcony"}
+            target = visual_door_cutouts if open_door else closed_door_surfaces
+            for room, segment in matches:
+                target[room["id"]].append({
+                    "id": f"{layer_name}_{door_index}",
+                    "type": "door",
+                    "raw_segment": segment,
+                    "raw_polygon": polygon,
+                    "sill_height_m": 0.0,
+                    "height_m": min(2.1, height_m),
+                })
+            features.append({
+                "id": f"{layer_name}_{door_index}",
+                "type": "door",
+                "segments": metric_segments,
+                "sill_height_m": 0.0,
+                "height_m": min(2.1, height_m),
+                "connection": connection,
+                "open": open_door,
+                "room_ids": room_ids,
+            })
     for window_index, polygon in enumerate(_iter_polygons(record.get("window"))):
         zone = polygon.buffer(max(wall_depth * 0.28, 0.4), cap_style=2, join_style=2)
         for room in rooms:
@@ -622,8 +674,6 @@ def _multi_room_surfaces(
             if segment is not None:
                 windows_by_room[room["id"]].append((window_index, polygon, segment))
 
-    surfaces: list[dict[str, Any]] = []
-    features: list[dict[str, Any]] = []
     for portal in portals:
         metric_segments = [
             _metric_segment(portal["raw_segments"][room_id], scale, origin)
@@ -644,7 +694,7 @@ def _multi_room_surfaces(
         remaining: BaseGeometry = room["geometry"].boundary
         for portal in room_portals.get(room["id"], []):
             raw_segment = portal["raw_segments"][room["id"]]
-            zone = LineString(raw_segment).buffer(max(wall_depth * 0.08, 0.25), cap_style=2)
+            zone = _door_cut_zone(portal.get("raw_polygon"), raw_segment, wall_depth)
             opening = _primary_segment(remaining.intersection(zone)) or raw_segment
             remaining = remaining.difference(zone)
             if portal["type"] == "door" and portal["height_m"] < height_m - 1e-6:
@@ -657,6 +707,52 @@ def _multi_room_surfaces(
                     z_min=float(portal["height_m"]),
                     z_max=height_m,
                     name=f"{room['id']}_{portal['id']}_lintel",
+                    room_id=room["id"],
+                )
+        for cutout in visual_door_cutouts.get(room["id"], []):
+            raw_segment = cutout["raw_segment"]
+            zone = _door_cut_zone(cutout.get("raw_polygon"), raw_segment, wall_depth)
+            opening = _primary_segment(remaining.intersection(zone)) or raw_segment
+            remaining = remaining.difference(zone)
+            if cutout["height_m"] < height_m - 1e-6:
+                _append_surface_segment(
+                    surfaces,
+                    opening,
+                    "wall",
+                    scale,
+                    origin,
+                    z_min=float(cutout["height_m"]),
+                    z_max=height_m,
+                    name=f"{room['id']}_{cutout['id']}_lintel",
+                    room_id=room["id"],
+                )
+        for closed_door in closed_door_surfaces.get(room["id"], []):
+            raw_segment = closed_door["raw_segment"]
+            zone = _door_cut_zone(closed_door.get("raw_polygon"), raw_segment, wall_depth)
+            door_segment = _primary_segment(remaining.intersection(zone)) or raw_segment
+            remaining = remaining.difference(zone)
+            door_height = float(closed_door["height_m"])
+            _append_surface_segment(
+                surfaces,
+                door_segment,
+                "door",
+                scale,
+                origin,
+                z_min=0.0,
+                z_max=door_height,
+                name=f"{room['id']}_{closed_door['id']}_door",
+                room_id=room["id"],
+            )
+            if door_height < height_m - 1e-6:
+                _append_surface_segment(
+                    surfaces,
+                    door_segment,
+                    "wall",
+                    scale,
+                    origin,
+                    z_min=door_height,
+                    z_max=height_m,
+                    name=f"{room['id']}_{closed_door['id']}_lintel",
                     room_id=room["id"],
                 )
         for window_index, _polygon, raw_segment in windows_by_room.get(room["id"], []):
@@ -690,6 +786,16 @@ def _multi_room_surfaces(
                 room_id=room["id"],
             )
     return surfaces, features
+
+
+def _door_cut_zone(
+    raw_polygon: Any,
+    raw_segment: tuple[tuple[float, float], tuple[float, float]],
+    wall_depth: float,
+) -> BaseGeometry:
+    if isinstance(raw_polygon, BaseGeometry) and not raw_polygon.is_empty:
+        return raw_polygon.buffer(max(wall_depth * 0.28, 0.4), cap_style=2, join_style=2)
+    return LineString(raw_segment).buffer(max(wall_depth * 0.08, 0.25), cap_style=2)
 
 
 def _append_surface_segment(
