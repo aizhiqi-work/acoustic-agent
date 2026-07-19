@@ -18,6 +18,7 @@ class Material:
     scattering: Mapping[str, float] = field(default_factory=dict)
     transmission_loss_db: Mapping[str, float] = field(default_factory=dict)
     source: str = "fallback"
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def reflection(self) -> dict[str, float]:
@@ -87,6 +88,14 @@ class SimConfig:
     rt_receiver_radius_m: float = 0.25
     rt_visual_num_rays: int | None = None
     rt_visual_num_bounces: int | None = None
+    adaptive_geometry_bounces: bool = True
+    geometry_max_bounces: int = 128
+    adaptive_cross_room_bounces: bool = True
+    cross_room_min_bounces: int = 96
+    cross_room_max_bounces: int = 128
+    # Steam Audio pathing already applies distance and UTD deviation losses.
+    # Keep the additional diffuse-aperture heuristic as an explicit opt-in.
+    portal_aperture_attenuation: bool = False
     late_tail_cutoff_s: float = 0.08
     hybrid_transition_s: float = 1.0
     hybrid_overlap_fraction: float = 0.25

@@ -1,48 +1,25 @@
-# AudioMaterialDB
+# acoustic_materials
 
-This directory is generated from `audiomaterialdb.xlsx`.
+The runtime source of truth is `acoustic_materials_v3.sqlite3`, compiled losslessly for the fields used by the simulator from `acoustic_material_db_v3_20260717`.
 
-## Editable Source
+- 20 VLM semantic object classes
+- 16 material families
+- 3,741 measured material instances
+- four mid-band absorption classes
+- six absorption bands: 125, 250, 500, 1000, 2000, and 4000 Hz
 
-- `audiomaterialdb.xlsx`: the human-editable source workbook.
+Selection follows:
 
-## Runtime Files
-
-- `materials.jsonl`: canonical material rows from `Normalized_DB`.
-- `materials.csv`: compact editable table for quick inspection.
-- `object_material_candidates.jsonl`: VLM semantic object to material candidates.
-- `object_material_candidates.csv`: compact candidate table.
-- `semantic_object_map.json`: VLM aliases, object roles, candidate material types, and sampling policy.
-- `aliases.json`: normalized material-name lookup index.
-- `taxonomy.json`: compact counts for VLM type, material type, absorption level, and semantic objects.
-- `index.json`: database metadata and build statistics.
-
-## Current Build
-
-- Materials: `3741`
-- Object candidates: `887`
-- Semantic objects: `19`
-- Absorption levels: `reflective, semi_reflective, absorptive, highly_absorptive`
-
-Runtime code should use the JSONL/JSON files. Rebuild them after editing the workbook:
-
-```bash
-python scripts/build_audio_material_db.py
+```text
+semantic object -> compatible material family -> absorption class -> material instance -> six-band table
 ```
 
-## Hybrid GA Defaults
+`MaterialLibrary.load()` caches the parsed runtime index for the process. Sampling is deterministic for a semantic, class, optional material family, and seed. The older JSONL/CSV files remain packaged for backward compatibility and inspection, but are not loaded when the v3 SQLite resource is present.
 
-The workbook currently provides absorption coefficients. Runtime material lookup
-and VLM sampling also attach an `acoustic_model` object with engineering
-defaults for hybrid geometrical acoustics:
+Rebuild the runtime resource after changing the source database:
 
-- `scattering`: 6-band roughness-based diffuse split for smooth, medium, or rough surfaces.
-- `transmission_loss_db`: 6-band isolation preset for glass, gypsum, wood, masonry, light, door, or open surfaces.
-- `transmission`: pressure gain `10 ** (-R / 20)` per band, applied once per
-  physical barrier crossed by the direct path.
-- `specular_reflection` and `diffuse_reflection`: Steam-style reflected energy
-  fractions using `(1 - alpha) * (1 - s)` and `(1 - alpha) * s`.
-
-These defaults are intentionally conservative. They give the current direct,
-diffraction, and path-traced RT solver material semantics without requiring
-measured scattering or transmission data in the source workbook.
+```bash
+python scripts/build_acoustic_material_resource.py \
+  ../acoustic_material_db_v3_20260717 \
+  acoustic_agent/resources/acoustic_materials/acoustic_materials_v3.sqlite3
+```

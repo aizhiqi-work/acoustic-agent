@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -16,6 +16,8 @@ def make_room(
     corners: Sequence[Sequence[float]] | None = None,
     materials: Mapping[str, str | Material] | None = None,
     material_library: MaterialLibrary | None = None,
+    material_profile: str | Mapping[str, Any] | None = None,
+    material_seed: int = 0,
     circle_segments: int = 32,
     room_id: str = "room",
     name: str | None = None,
@@ -88,14 +90,33 @@ def make_room(
     if polygon_area(xy) < 0.0:
         xy = tuple(reversed(xy))
     library = material_library or MaterialLibrary.load()
-    resolved = resolve_materials(materials or {}, library)
+    resolved = resolve_materials(
+        materials or {},
+        library,
+        material_profile=material_profile,
+        material_seed=material_seed,
+    )
     return Room(
         id=room_id,
         name=name or key,
         corners=tuple((float(x), float(y)) for x, y in xy),
         height_m=float(height),
         materials=resolved,
-        metadata={"shape": key, "geometry_model": geometry_model},
+        metadata={
+            "shape": key,
+            "geometry_model": geometry_model,
+            "material_seed": int(material_seed),
+            "material_profile": dict(material_profile) if isinstance(material_profile, Mapping) else material_profile or "auto",
+            "material_selection": {
+                surface: {
+                    "semantic": material.semantic,
+                    "material_id": material.id,
+                    "material_name": material.name,
+                    **dict(material.metadata),
+                }
+                for surface, material in resolved.items()
+            },
+        },
     )
 
 
@@ -139,11 +160,17 @@ def _normalize_corners(corners: Sequence[Sequence[float]], sx: float, sy: float,
     return tuple((float(x), float(y)) for x, y in scaled)
 
 
-def resolve_materials(raw: Mapping[str, str | Material], library: MaterialLibrary) -> dict[str, Material]:
-    defaults = {"wall": "wall", "floor": "floor", "ceiling": "ceiling"}
-    out: dict[str, Material] = {}
-    for surface, semantic in {**defaults, **dict(raw)}.items():
-        out[surface] = semantic if isinstance(semantic, Material) else library.sample_object(str(semantic))
+def resolve_materials(
+    raw: Mapping[str, str | Mapping[str, Any] | Material],
+    library: MaterialLibrary,
+    *,
+    material_profile: str | Mapping[str, Any] | None = None,
+    material_seed: int = 0,
+) -> dict[str, Material]:
+    out = library.sample_surface_set(material_profile, seed=int(material_seed), overrides=raw)
+    for surface, spec in raw.items():
+        if surface not in out:
+            out[surface] = library.resolve(spec, default_semantic=str(surface), seed=int(material_seed))
     return out
 
 

@@ -1,3 +1,4 @@
+from dataclasses import replace
 import math
 
 import numpy as np
@@ -11,19 +12,28 @@ from acoustic_agent.acoustics import (
     steam_audio_utd_deviation,
 )
 from acoustic_agent.hrtf import _render_directional_path_signal
+from acoustic_agent.engine import simulate_rir
 from acoustic_agent.models import FREQUENCY_BANDS, AcousticPath
 from acoustic_agent.rir import render_impulses
 from acoustic_agent.steam_rt import (
     RoomRayScene,
+    _air_absorption_amplitude,
+    _air_absorption_energy_weights,
+    _apply_coupled_late_reverb_prior,
+    _adaptive_reflection_config,
     _boundary_diffraction_paths,
-    _extend_energy_field_late_tail,
+    _energy_decay_profile,
+    _render_parametric_fdn_late_reverb,
     _schroeder_fit_rt60,
     _segment_inside_room,
     _sphere_samples,
+    _steam_compensated_multiband_coefficients,
     _trace_energy_field_numba,
     _trace_energy_field_numpy,
     _volumetric_occlusion,
     bandlimit_band_signals,
+    estimate_late_reverb_times,
+    estimate_reconstructed_reverb_times,
     reconstruct_band_irs,
     simulate_direct,
 )
@@ -39,6 +49,123 @@ def test_schroeder_fit_matches_steam_audio_extrapolation():
     estimated = _schroeder_fit_rt60(energy, bin_duration)
 
     assert estimated == pytest.approx(target_rt60, rel=0.01)
+
+
+def test_compensated_fdn_filters_preserve_sharp_six_band_feedback_targets():
+    fs = 16000
+    desired = np.asarray((0.81, 0.72, 0.93, 0.76, 0.66, 0.79), dtype=np.float64)
+    coeffs = _steam_compensated_multiband_coefficients(desired, fs)
+    centers = np.asarray([float(band) for band in FREQUENCY_BANDS], dtype=np.float64)
+    z = np.exp(-2.0j * math.pi * centers / fs)
+    transfer = np.ones(len(FREQUENCY_BANDS), dtype=np.complex128)
+    for band_coeffs in coeffs:
+        transfer *= (
+            band_coeffs[0] + band_coeffs[1] * z + band_coeffs[2] * z * z
+        ) / (
+            1.0 + band_coeffs[3] * z + band_coeffs[4] * z * z
+        )
+
+    np.testing.assert_allclose(np.abs(transfer), desired, rtol=0.02, atol=0.002)
+
+
+def test_low_energy_cross_room_decay_uses_wide_range_fit_instead_of_zero_rt(monkeypatch):
+    for band in FREQUENCY_BANDS:
+        monkeypatch.setitem(AIR_ABSORPTION_NP_PER_M, band, 0.0)
+    bin_duration = 0.01
+    target_rt60 = 0.8
+    times = np.arange(200, dtype=np.float64) * bin_duration
+    energy = 1e-8 * np.power(10.0, -6.0 * times / target_rt60)
+    field = {
+        "echogram": np.repeat(energy[None, :], len(FREQUENCY_BANDS), axis=0),
+        "bin_duration_s": bin_duration,
+        "num_bins": energy.size,
+    }
+
+    targets, profiles = estimate_late_reverb_times(
+        field,
+        SimConfig(),
+        fallback={band: 0.0 for band in FREQUENCY_BANDS},
+    )
+
+    for band in FREQUENCY_BANDS:
+        assert targets[band] == pytest.approx(target_rt60, rel=0.03)
+        assert profiles[band]["selected_target_source"] == "fitted_wide_range_single_slope"
+
+
+def _energy_from_target_edc_db(edc_db):
+    edc = np.power(10.0, np.asarray(edc_db, dtype=np.float64) / 10.0)
+    return np.maximum(0.0, np.concatenate((edc[:-1] - edc[1:], edc[-1:])))
+
+
+def test_decay_profile_keeps_single_exponential_as_one_slope():
+    times = np.arange(200, dtype=np.float64) * 0.01
+    energy = _energy_from_target_edc_db(-60.0 * times)
+
+    profile = _energy_decay_profile(energy, 0.01)
+
+    assert profile["model"] == "single_slope"
+    assert len(profile["segments"]) == 1
+    assert profile["segments"][0]["equivalent_rt60_s"] == pytest.approx(1.0, rel=0.01)
+
+
+def test_decay_profile_detects_significant_coupled_space_break():
+    times = np.arange(200, dtype=np.float64) * 0.01
+    transition_s = 0.25
+    edc_db = np.where(
+        times <= transition_s,
+        -60.0 * times,
+        -60.0 * transition_s - 120.0 * (times - transition_s),
+    )
+    energy = _energy_from_target_edc_db(edc_db)
+
+    profile = _energy_decay_profile(energy, 0.01)
+
+    assert profile["model"] == "double_slope"
+    assert profile["transition_time_s"] == pytest.approx(transition_s, abs=0.02)
+    assert profile["segments"][0]["equivalent_rt60_s"] == pytest.approx(1.0, rel=0.03)
+    assert profile["segments"][1]["equivalent_rt60_s"] == pytest.approx(0.5, rel=0.03)
+
+
+def test_coupled_space_tail_target_uses_the_fitted_late_slope(monkeypatch):
+    for band in FREQUENCY_BANDS:
+        monkeypatch.setitem(AIR_ABSORPTION_NP_PER_M, band, 0.0)
+    times = np.arange(200, dtype=np.float64) * 0.01
+    transition_s = 0.2
+    edc_db = np.where(
+        times <= transition_s,
+        -100.0 * times,
+        -100.0 * transition_s - 50.0 * (times - transition_s),
+    )
+    energy = _energy_from_target_edc_db(edc_db)
+    field = {
+        "echogram": np.tile(energy, (len(FREQUENCY_BANDS), 1)),
+        "num_bins": energy.size,
+        "bin_duration_s": 0.01,
+    }
+    fallback = {band: 0.6 for band in FREQUENCY_BANDS}
+
+    targets, profiles = estimate_late_reverb_times(field, SimConfig(), fallback=fallback)
+
+    for band in FREQUENCY_BANDS:
+        assert profiles[band]["model"] == "double_slope"
+        assert profiles[band]["selected_target_source"] == "fitted_late_slope"
+        assert targets[band] == pytest.approx(1.2, rel=0.03)
+
+
+def test_coupled_room_prior_stabilizes_only_the_late_tail_target():
+    traced = {band: 0.7 + 0.1 * index for index, band in enumerate(FREQUENCY_BANDS)}
+    prior = {band: 1.4 + 0.05 * index for index, band in enumerate(FREQUENCY_BANDS)}
+    profiles = {
+        band: {"selected_target_source": "fitted_late_slope", "selected_target_rt60_s": traced[band]}
+        for band in FREQUENCY_BANDS
+    }
+
+    targets, updated = _apply_coupled_late_reverb_prior(traced, profiles, prior)
+
+    assert targets == prior
+    for band in FREQUENCY_BANDS:
+        assert updated[band]["traced_target_rt60_s"] == pytest.approx(traced[band])
+        assert updated[band]["selected_target_source"] == "coupled_room_energy_matrix"
 
 
 def test_solver_presets_match_quality_tiers():
@@ -67,6 +194,19 @@ def test_air_absorption_uses_steam_audio_octave_defaults():
         "2000": 0.0011513,
         "4000": 0.0034539,
     }
+
+
+def test_reflection_air_absorption_uses_distance_and_energy_units():
+    coefficient = 0.01
+    travel_time_s = 0.2
+    speed = 343.0
+    expected_amplitude = math.exp(-coefficient * speed * travel_time_s)
+
+    amplitude = _air_absorption_amplitude(coefficient, travel_time_s, speed)
+    energy = _air_absorption_energy_weights(coefficient, np.asarray([travel_time_s]), speed)[0]
+
+    assert amplitude == pytest.approx(expected_amplitude)
+    assert energy == pytest.approx(expected_amplitude ** 2)
 
 
 def test_disabling_transmission_does_not_restore_occluded_direct_sound():
@@ -278,28 +418,156 @@ def test_default_distance_attenuation_matches_steam_audio_unit_distance():
     assert direct["distance_attenuation"] == pytest.approx(1.0)
 
 
-def test_hybrid_tail_extrapolates_when_trace_ends_before_transition():
-    num_bins = 200
-    traced = np.zeros((len(FREQUENCY_BANDS), num_bins), dtype=np.float64)
-    times = np.arange(50, dtype=np.float64) * 0.01
-    traced[:, :50] = np.exp(-6.0 * math.log(10.0) * times / 1.5)
-    field = {
-        "echogram": traced,
-        "ambisonic_echogram": np.zeros((len(FREQUENCY_BANDS), 4, num_bins), dtype=np.float64),
-        "num_bins": num_bins,
-        "bin_duration_s": 0.01,
-    }
-
-    projected, metadata = _extend_energy_field_late_tail(
-        field,
-        {band: 1.5 for band in FREQUENCY_BANDS},
-        SimConfig(hybrid_transition_s=1.0, hybrid_overlap_fraction=0.25),
+def test_reflective_geometry_adapts_simulation_bounces_for_rt_convergence():
+    room = make_room(
+        "rectangle",
+        size=(6.0, 4.0, 2.8),
+        materials={"wall": "wall", "floor": "floor", "ceiling": "ceiling"},
     )
+    requested = SimConfig(rt_num_rays=32768, rt_num_bounces=64)
+
+    effective, metadata = _adaptive_reflection_config(RoomRayScene(room), requested)
 
     assert metadata["applied"] is True
+    assert metadata["reason"] == "geometry_tail_convergence"
+    assert metadata["requested"] == 64
+    assert metadata["effective"] == 128
+    assert effective.rt_num_bounces == 128
+
+    disabled, disabled_metadata = _adaptive_reflection_config(
+        RoomRayScene(room),
+        replace(requested, adaptive_geometry_bounces=False),
+    )
+    assert disabled_metadata["applied"] is False
+    assert disabled_metadata["reason"] == "disabled"
+    assert disabled.rt_num_bounces == 64
+
+
+def test_parametric_fdn_on_off_must_change_the_late_tail():
+    fs = 8000
+    num_samples = 12000
+    rng = np.random.default_rng(81)
+    times = np.arange(num_samples, dtype=np.float64) / fs
+    envelope = np.exp(-3.0 * math.log(10.0) * times / 1.2)
+    traced = np.vstack([rng.uniform(-1.0, 1.0, num_samples) * envelope for _ in FREQUENCY_BANDS])
+    field = {"bin_duration_s": 0.01}
+    rt60 = {band: 1.2 for band in FREQUENCY_BANDS}
+
+    enabled, fdn, metadata = _render_parametric_fdn_late_reverb(
+        traced,
+        field,
+        rt60,
+        SimConfig(fs=fs, duration_s=1.5, hybrid_transition_s=0.5, hybrid_overlap_fraction=0.25),
+    )
+    disabled, disabled_fdn, disabled_metadata = _render_parametric_fdn_late_reverb(
+        traced,
+        field,
+        rt60,
+        SimConfig(fs=fs, duration_s=1.5, hybrid_transition_s=0.5, hybrid_overlap_fraction=0.25, late_tail=False),
+    )
+
+    start = int(metadata["transition_start_s"] * fs)
+    assert metadata["applied"] is True
     assert metadata["added"] is True
-    assert set(metadata["anchor_model_by_band"].values()) == {"rt60_extrapolated_recent_bins"}
-    assert np.any(projected["echogram"][:, 75:] > 0.0)
+    assert metadata["delay_line_count"] == 16
+    assert metadata["fdn_tail_energy"] > 0.0
+    assert disabled_metadata["applied"] is False
+    np.testing.assert_allclose(disabled, traced, rtol=1e-6, atol=1e-7)
+    assert not np.any(disabled_fdn)
+    assert float(np.sum(np.square(enabled[:, start:] - disabled[:, start:]))) > 1e-6
+    assert float(np.sum(np.square(fdn[:, start:]))) > 1e-6
+
+
+def test_hybrid_multiband_fdn_tracks_rt60_targets_at_production_sample_rate():
+    fs = 16000
+    num_samples = 2 * fs
+    target_rt60 = 1.2
+    rng = np.random.default_rng(83)
+    times = np.arange(num_samples, dtype=np.float64) / fs
+    envelope = np.exp(-3.0 * math.log(10.0) * times / target_rt60)
+    traced = np.vstack([rng.uniform(-1.0, 1.0, num_samples) * envelope for _ in FREQUENCY_BANDS])
+    config = SimConfig(
+        fs=fs,
+        duration_s=2.0,
+        hybrid_transition_s=0.5,
+        hybrid_overlap_fraction=0.25,
+    )
+
+    rendered, _, metadata = _render_parametric_fdn_late_reverb(
+        traced,
+        {"bin_duration_s": 0.01},
+        {band: target_rt60 for band in FREQUENCY_BANDS},
+        config,
+    )
+
+    assert metadata["transition_start_s"] > 0.0
+    measured = estimate_reconstructed_reverb_times(rendered, config)
+    for band in FREQUENCY_BANDS:
+        assert measured[band] == pytest.approx(target_rt60, rel=0.12)
+
+
+def test_coupled_space_fdn_crossfade_finishes_at_the_fitted_breakpoint():
+    fs = 8000
+    num_samples = int(1.5 * fs)
+    rng = np.random.default_rng(89)
+    traced = rng.uniform(-1.0, 1.0, (len(FREQUENCY_BANDS), num_samples))
+    traced *= np.exp(-5.0 * np.arange(num_samples, dtype=np.float64) / fs)[None, :]
+    config = SimConfig(
+        fs=fs,
+        duration_s=1.5,
+        hybrid_transition_s=1.0,
+        hybrid_overlap_fraction=0.25,
+    )
+
+    _, _, metadata = _render_parametric_fdn_late_reverb(
+        traced,
+        {"bin_duration_s": 0.01},
+        {band: 1.0 for band in FREQUENCY_BANDS},
+        config,
+        decay_profiles={
+            "125": {
+                "model": "double_slope",
+                "transition_time_s": 0.4,
+                "selected_target_source": "fitted_late_slope",
+            },
+        },
+    )
+
+    assert metadata["transition_by_band"]["125"] == {
+        "start_s": 0.3,
+        "end_s": 0.4,
+        "model": "coupled_space_breakpoint",
+        "anchor_s": 0.4,
+    }
+    assert metadata["transition_by_band"]["250"] == {
+        "start_s": 0.75,
+        "end_s": 1.0,
+        "model": "configured_hybrid_transition",
+        "anchor_s": 0.75,
+    }
+
+
+def test_full_solver_fdn_toggle_changes_the_rendered_tail():
+    room = make_room("rectangle", size=(5.0, 4.0, 2.8))
+    config = SimConfig(
+        fs=8000,
+        duration_s=0.9,
+        rt_duration_s=0.9,
+        rt_num_rays=1024,
+        rt_num_bounces=24,
+        rt_visual_num_rays=32,
+        rt_visual_num_bounces=2,
+        hybrid_transition_s=0.3,
+    )
+
+    enabled = simulate_rir(room, (1.0, 1.0, 1.4), (4.0, 3.0, 1.4), config=config)
+    disabled = simulate_rir(room, (1.0, 1.0, 1.4), (4.0, 3.0, 1.4), config=replace(config, late_tail=False))
+
+    metadata = enabled.metadata["steam_audio"]["reflections"]["late_tail"]
+    start = int(float(metadata["transition_start_s"]) * config.fs)
+    assert metadata["model"] == "steam_style_16_line_hadamard_fdn"
+    assert metadata["applied"] is True
+    assert float(np.sum(np.square(enabled.rir[0, start:] - disabled.rir[0, start:]))) > 1e-6
 
 
 def test_diffraction_segment_validation_detects_a_narrow_notch():

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections import OrderedDict
+from dataclasses import dataclass, field, replace
+from functools import lru_cache
 import heapq
 from itertools import permutations
 import math
+from threading import RLock
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -23,7 +26,7 @@ from .acoustics import (
 )
 from .directivity import source_directivity, source_directivity_gain, source_forward
 from .geometry import point_in_polygon
-from .materials import MaterialLibrary, fallback_material
+from .materials import MaterialLibrary, fallback_material, material_summary
 from .models import FREQUENCY_BANDS, AcousticPath, Room, SimConfig
 from .rir import render_impulses
 
@@ -35,6 +38,21 @@ _ENERGY_THRESHOLD = 1e-9
 _HIT_OFFSET = 1e-2
 _RT_VISUAL_RETAIN_LIMIT = 512
 _RT_VISUAL_CANDIDATE_FACTOR = 32
+_STATIC_SCENE_CACHE_LIMIT = 32
+_WORKSPACE_CACHE_BYTES = 256 * 1024 * 1024
+_STATIC_CACHE_LOCK = RLock()
+_SCENE_SURFACE_CACHE: OrderedDict[tuple[Any, ...], tuple[Any, ...]] = OrderedDict()
+_SCENE_ARRAY_CACHE: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
+_RANDOM_WORKSPACE_CACHE: OrderedDict[tuple[int, int, int, int], tuple[np.ndarray, np.ndarray]] = OrderedDict()
+_RANDOM_WORKSPACE_BYTES = 0
+_STATIC_CACHE_STATS = {
+    "scene_hits": 0,
+    "scene_misses": 0,
+    "array_hits": 0,
+    "array_misses": 0,
+    "workspace_hits": 0,
+    "workspace_misses": 0,
+}
 
 
 @dataclass(frozen=True)
@@ -194,9 +212,7 @@ class _BoxSurface(_Surface):
 
 class RoomRayScene:
     def __init__(self, room: Room) -> None:
-        self.room = room
-        multi_room = room.metadata.get("multi_room") if isinstance(room.metadata, Mapping) else None
-        self.is_multi_room = bool(isinstance(multi_room, Mapping) and multi_room.get("enabled"))
+        self._set_room_state(room)
         corners = [np.asarray(c[:2], dtype=float) for c in room.corners]
         wall = room.materials.get("wall") or next(iter(room.materials.values()))
         floor = room.materials.get("floor", wall)
@@ -207,6 +223,19 @@ class RoomRayScene:
         self.surfaces.append(_HorizontalSurface(room.height_m, False, room.corners, "ceiling", _band_array(ceiling, "absorption", 0.1), _band_array(ceiling, "scattering", 0.1), _band_array(ceiling, "transmission", 10.0 ** (-30.0 / 20.0))))
         self.surfaces.extend(_object_box_surfaces(room, wall))
         self._batch_ready = False
+
+    def _set_room_state(self, room: Room) -> None:
+        self.room = room
+        multi_room = room.metadata.get("multi_room") if isinstance(room.metadata, Mapping) else None
+        self.is_multi_room = bool(isinstance(multi_room, Mapping) and multi_room.get("enabled"))
+        source_room_id = str(multi_room.get("source_room_id", "")) if isinstance(multi_room, Mapping) else ""
+        receiver_room_id = str(multi_room.get("receiver_room_id", "")) if isinstance(multi_room, Mapping) else ""
+        self.is_cross_room = bool(
+            self.is_multi_room
+            and source_room_id
+            and receiver_room_id
+            and source_room_id != receiver_room_id
+        )
 
     def closest_hit(self, origin: np.ndarray, direction: np.ndarray) -> dict[str, Any]:
         best_t = np.inf
@@ -266,6 +295,77 @@ class RoomRayScene:
         return np.any((t_all > _EPS) & (t_all < (max_distance - _EPS)[None, :]), axis=0)
 
 
+def _freeze_cache_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return tuple(sorted((str(key), _freeze_cache_value(item)) for key, item in value.items()))
+    if isinstance(value, np.ndarray):
+        array = np.ascontiguousarray(value)
+        return ("ndarray", array.dtype.str, tuple(array.shape), array.tobytes())
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(_freeze_cache_value(item) for item in value)
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, (str, bytes, int, float, bool, type(None))):
+        return value
+    wkb = getattr(value, "wkb", None)
+    if isinstance(wkb, bytes):
+        return (type(value).__name__, wkb)
+    return (type(value).__name__, repr(value))
+
+
+def _scene_geometry_cache_key(room: Room) -> tuple[Any, ...]:
+    material_signature = tuple(
+        sorted(
+            (
+                str(kind),
+                str(material.id),
+                tuple(float(material.absorption.get(band, 0.2)) for band in FREQUENCY_BANDS),
+                tuple(float(material.scattering.get(band, 0.1)) for band in FREQUENCY_BANDS),
+                tuple(float(material.transmission.get(band, 10.0 ** (-30.0 / 20.0))) for band in FREQUENCY_BANDS),
+            )
+            for kind, material in room.materials.items()
+        )
+    )
+    metadata = room.metadata if isinstance(room.metadata, Mapping) else {}
+    geometry_metadata = {
+        key: metadata.get(key)
+        for key in ("surface_segments", "objects", "material_seed")
+        if key in metadata
+    }
+    return (
+        tuple((float(corner[0]), float(corner[1])) for corner in room.corners),
+        float(room.height_m),
+        material_signature,
+        _freeze_cache_value(geometry_metadata),
+    )
+
+
+def _cached_room_ray_scene(room: Room) -> RoomRayScene:
+    key = _scene_geometry_cache_key(room)
+    with _STATIC_CACHE_LOCK:
+        cached_surfaces = _SCENE_SURFACE_CACHE.get(key)
+        if cached_surfaces is not None:
+            _SCENE_SURFACE_CACHE.move_to_end(key)
+            _STATIC_CACHE_STATS["scene_hits"] += 1
+    if cached_surfaces is None:
+        scene = RoomRayScene(room)
+        cached_surfaces = tuple(scene.surfaces)
+        with _STATIC_CACHE_LOCK:
+            _SCENE_SURFACE_CACHE[key] = cached_surfaces
+            _SCENE_SURFACE_CACHE.move_to_end(key)
+            _STATIC_CACHE_STATS["scene_misses"] += 1
+            while len(_SCENE_SURFACE_CACHE) > _STATIC_SCENE_CACHE_LIMIT:
+                expired_key, _ = _SCENE_SURFACE_CACHE.popitem(last=False)
+                _SCENE_ARRAY_CACHE.pop(expired_key, None)
+        return scene
+
+    scene = RoomRayScene.__new__(RoomRayScene)
+    scene._set_room_state(room)
+    scene.surfaces = list(cached_surfaces)
+    scene._batch_ready = False
+    return scene
+
+
 def _points_in_polygon_batch(pts: np.ndarray, corners: np.ndarray) -> np.ndarray:
     x, y = pts[:, 0], pts[:, 1]
     inside = np.zeros(pts.shape[0], dtype=bool)
@@ -316,7 +416,7 @@ def _boundary_wall_surfaces(room: Room, corners: Sequence[np.ndarray], wall: Any
 
     surfaces: list[_WallSurface] = []
     for a, b, kind, z_min, z_max, name in segments:
-        material = wall if kind == "wall" else fallback_material(kind)
+        material = room.materials.get(kind, wall if kind == "wall" else fallback_material(kind))
         surfaces.append(_WallSurface(
             a,
             b,
@@ -385,17 +485,18 @@ def _object_box_surfaces(room: Room, fallback_material: Any) -> list[_BoxSurface
     for index, item in enumerate(raw_objects):
         if not isinstance(item, dict):
             continue
+        if str(item.get("semantic", "")) == "small_objects_ignore":
+            continue
         try:
-            boxes = _object_proxy_boxes(item, room.height_m)
-            if not boxes:
-                continue
-            material_key = str(item.get("material", "wood"))
             if library is None:
                 library = MaterialLibrary.load()
-            material = library.sample_object(material_key)
+            boxes, material, object_absorption = _resolved_object_acoustics(room, item, index, library)
+            if not boxes:
+                continue
         except Exception:
             material = fallback_material
             boxes = _object_proxy_boxes(item, room.height_m)
+            object_absorption = _band_array(material, "absorption", 0.2)
         for box in boxes:
             center = np.asarray(box["center"], dtype=float)
             if not point_in_polygon(center, room.corners):
@@ -406,11 +507,92 @@ def _object_box_surfaces(room: Room, fallback_material: Any) -> list[_BoxSurface
                 rotation_deg=float(box["rotation"]),
                 z_center=float(box["z"]),
                 name=f"object_{index}_{str(item.get('type', 'furniture'))}_{str(box['part'])}",
-                absorption=_band_array(material, "absorption", 0.2),
+                absorption=object_absorption,
                 scattering=_band_array(material, "scattering", 0.18),
                 transmission=_band_array(material, "transmission", 10.0 ** (-24.0 / 20.0)),
             ))
     return surfaces
+
+
+def _resolved_object_acoustics(
+    room: Room,
+    item: dict[str, Any],
+    index: int,
+    library: MaterialLibrary,
+) -> tuple[list[dict[str, Any]], Any, np.ndarray]:
+    boxes = _object_proxy_boxes(item, room.height_m)
+    if not boxes:
+        return [], fallback_material("structural_element"), np.zeros(_NUM_BANDS, dtype=np.float64)
+    semantic = str(item.get("semantic", item.get("type", "structural_element")))
+    selected = item.get("material_selection") if isinstance(item.get("material_selection"), Mapping) else {}
+    if selected.get("material_id"):
+        material = library.resolve(
+            {"material_id": str(selected["material_id"])},
+            default_semantic=semantic,
+        )
+    else:
+        material = library.sample_geometry(item, seed=int(room.metadata.get("material_seed", 0)) + index + 1)
+        item["material_selection"] = material_summary(material)
+    object_absorption = _effective_object_absorption(material, boxes)
+    if str(material.metadata.get("coefficient_kind", "")) == "equivalent_absorption_area_m2":
+        selection = item.get("material_selection")
+        if isinstance(selection, dict):
+            selection["equivalent_absorption_area_m2"] = dict(material.absorption)
+            selection["effective_absorption"] = {
+                band: float(value) for band, value in zip(FREQUENCY_BANDS, object_absorption)
+            }
+    return boxes, material, object_absorption
+
+
+def object_absorption_areas(room: Room) -> list[dict[str, Any]]:
+    """Return furniture absorption areas using the ray tracer's proxy geometry."""
+    raw_objects = room.metadata.get("objects") if isinstance(room.metadata, Mapping) else None
+    if not isinstance(raw_objects, list):
+        return []
+    library = MaterialLibrary.load()
+    records: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_objects):
+        if not isinstance(item, dict) or str(item.get("semantic", "")) == "small_objects_ignore":
+            continue
+        try:
+            boxes, _material, absorption = _resolved_object_acoustics(room, item, index, library)
+        except Exception:
+            continue
+        total_area = 0.0
+        weighted_center = np.zeros(2, dtype=np.float64)
+        for box in boxes:
+            size = np.asarray(box.get("size", ()), dtype=np.float64)
+            center = np.asarray(box.get("center", ()), dtype=np.float64)
+            if size.shape != (3,) or center.shape != (2,):
+                continue
+            width, depth, height = np.maximum(size, 0.0)
+            box_area = float(2.0 * (width * depth + width * height + depth * height))
+            total_area += box_area
+            weighted_center += box_area * center
+        if total_area <= 1e-12:
+            continue
+        records.append({
+            "id": str(item.get("id", f"object_{index}")),
+            "center": weighted_center / total_area,
+            "surface_area_m2": total_area,
+            "absorption_area_m2": np.asarray(absorption, dtype=np.float64) * total_area,
+        })
+    return records
+
+
+def _effective_object_absorption(material: Any, boxes: Sequence[Mapping[str, Any]]) -> np.ndarray:
+    values = _band_array(material, "absorption", 0.2)
+    metadata = getattr(material, "metadata", {}) or {}
+    if str(metadata.get("coefficient_kind", "")) != "equivalent_absorption_area_m2":
+        return values
+    total_area = 0.0
+    for box in boxes:
+        size = np.asarray(box.get("size", (0.0, 0.0, 0.0)), dtype=float)
+        if size.shape != (3,) or not np.all(np.isfinite(size)):
+            continue
+        width, depth, height = np.maximum(size, 0.0)
+        total_area += 2.0 * (width * depth + width * height + depth * height)
+    return np.clip(values / max(total_area, 1.0e-6), 0.0, 0.99)
 
 
 def _object_proxy_boxes(item: dict[str, Any], room_height: float) -> list[dict[str, Any]]:
@@ -426,10 +608,10 @@ def _object_proxy_boxes(item: dict[str, Any], room_height: float) -> list[dict[s
         return []
     object_type = str(item.get("type", "furniture"))
     height = float(size[2])
+    angle = math.radians(rotation)
+    axis_u = np.asarray([math.cos(angle), math.sin(angle)], dtype=float)
+    axis_v = np.asarray([-math.sin(angle), math.cos(angle)], dtype=float)
     if object_type == "table":
-        angle = math.radians(rotation)
-        axis_u = np.asarray([math.cos(angle), math.sin(angle)], dtype=float)
-        axis_v = np.asarray([-math.sin(angle), math.cos(angle)], dtype=float)
         leg_h = max(0.05, height)
         boxes = [{
             "part": "top",
@@ -448,6 +630,58 @@ def _object_proxy_boxes(item: dict[str, Any], room_height: float) -> list[dict[s
                 "rotation": rotation,
             })
         return boxes
+    if object_type == "sanitary_fixture":
+        base_z = z_center - height * 0.5
+        wall_height = height * 0.72
+        boxes = [{
+            "part": "base",
+            "center": center,
+            "size": np.asarray([size[0] * 0.82, size[1] * 0.72, height * 0.16], dtype=float),
+            "z": min(room_height, base_z + height * 0.08),
+            "rotation": rotation,
+        }]
+        for part, offset in (("back", -0.44), ("front", 0.44)):
+            boxes.append({
+                "part": part,
+                "center": center + axis_v * (size[1] * offset),
+                "size": np.asarray([size[0], size[1] * 0.12, wall_height], dtype=float),
+                "z": min(room_height, base_z + wall_height * 0.5),
+                "rotation": rotation,
+            })
+        for part, offset in (("left", -0.445), ("right", 0.445)):
+            boxes.append({
+                "part": part,
+                "center": center + axis_u * (size[0] * offset),
+                "size": np.asarray([size[0] * 0.11, size[1] * 0.76, wall_height], dtype=float),
+                "z": min(room_height, base_z + wall_height * 0.5),
+                "rotation": rotation,
+            })
+        return boxes
+    if object_type == "structural_element":
+        base_z = z_center - height * 0.5
+        return [
+            {
+                "part": "base",
+                "center": center,
+                "size": np.asarray([size[0], size[1], height * 0.06], dtype=float),
+                "z": min(room_height, base_z + height * 0.03),
+                "rotation": rotation,
+            },
+            {
+                "part": "shaft",
+                "center": center,
+                "size": np.asarray([size[0] * 0.78, size[1] * 0.78, height * 0.88], dtype=float),
+                "z": min(room_height, base_z + height * 0.5),
+                "rotation": rotation,
+            },
+            {
+                "part": "capital",
+                "center": center,
+                "size": np.asarray([size[0], size[1], height * 0.06], dtype=float),
+                "z": min(room_height, base_z + height * 0.97),
+                "rotation": rotation,
+            },
+        ]
     return [{
         "part": "body",
         "center": center,
@@ -458,6 +692,13 @@ def _object_proxy_boxes(item: dict[str, Any], room_height: float) -> list[dict[s
 
 
 def _scene_kernel_arrays(scene: RoomRayScene) -> dict[str, Any]:
+    cache_key = _scene_geometry_cache_key(scene.room)
+    with _STATIC_CACHE_LOCK:
+        cached = _SCENE_ARRAY_CACHE.get(cache_key)
+        if cached is not None:
+            _SCENE_ARRAY_CACHE.move_to_end(cache_key)
+            _STATIC_CACHE_STATS["array_hits"] += 1
+            return cached
     kinds = np.zeros(len(scene.surfaces), dtype=np.int64)
     wall_a = np.zeros((len(scene.surfaces), 2), dtype=np.float64)
     wall_b = np.zeros((len(scene.surfaces), 2), dtype=np.float64)
@@ -493,7 +734,7 @@ def _scene_kernel_arrays(scene: RoomRayScene) -> dict[str, Any]:
         else:
             kinds[index] = 1
             z_values[index] = float(surface.z)
-    return {
+    arrays = {
         "kinds": kinds,
         "wall_a": wall_a,
         "wall_delta": wall_b - wall_a,
@@ -508,10 +749,20 @@ def _scene_kernel_arrays(scene: RoomRayScene) -> dict[str, Any]:
         "absorption": absorption,
         "reflection": 1.0 - absorption,
         "scattering": scattering,
-        "names": names,
+        "names": tuple(names),
         "corners": np.asarray(scene.room.corners, dtype=np.float64)[:, :2],
         "height": float(scene.room.height_m),
     }
+    for value in arrays.values():
+        if isinstance(value, np.ndarray):
+            value.setflags(write=False)
+    with _STATIC_CACHE_LOCK:
+        _STATIC_CACHE_STATS["array_misses"] += 1
+        _SCENE_ARRAY_CACHE[cache_key] = arrays
+        _SCENE_ARRAY_CACHE.move_to_end(cache_key)
+        while len(_SCENE_ARRAY_CACHE) > _STATIC_SCENE_CACHE_LIMIT:
+            _SCENE_ARRAY_CACHE.popitem(last=False)
+    return arrays
 
 
 def simulate_steam_room(
@@ -520,11 +771,12 @@ def simulate_steam_room(
     listener: Sequence[float],
     config: SimConfig,
     source_model: str | Mapping[str, Any] | None = None,
+    late_reverb_prior: Mapping[str, float] | None = None,
 ) -> SteamRender:
     src = np.asarray(source, dtype=float)
     rcv = np.asarray(listener, dtype=float)
     emitter = source_directivity(source_model)
-    scene = RoomRayScene(room)
+    scene = _cached_room_ray_scene(room)
     direct = simulate_direct(scene, src, rcv, config, emitter)
     fs = int(config.fs)
     total = max(1, int(round(config.duration_s * fs)))
@@ -535,9 +787,10 @@ def simulate_steam_room(
 
     paths = [_direct_path(src, rcv, direct, config)]
     portal_paths = _multi_room_portal_paths(room, scene, src, rcv, direct, config, emitter)
-    diffraction_paths = [] if scene.is_multi_room else [
+    diffraction_room = _same_room_diffraction_room(room, scene)
+    diffraction_paths = [] if scene.is_cross_room else [
         _apply_source_directivity_to_path(path, emitter)
-        for path in _boundary_diffraction_paths(room, scene, src, rcv, direct, config)
+        for path in _boundary_diffraction_paths(diffraction_room, scene, src, rcv, direct, config)
     ]
     for path in portal_paths:
         sample = int(round(path.delay_s * fs))
@@ -549,24 +802,65 @@ def simulate_steam_room(
             _add_band_impulse(discrete_band, float(path.delay_s), path.band_gains, config)
     paths.extend(portal_paths)
     paths.extend(diffraction_paths)
-    rt_visual = scan_visual_rt_paths(room, scene, src, rcv, config)
-    rt_visual["paths"] = [
-        _apply_source_directivity_to_path(path, emitter)
-        for path in rt_visual["paths"]
-    ]
-    paths.extend(rt_visual["paths"])
+    rt_visual: dict[str, Any] = {
+        "paths": [],
+        "metadata": {
+            "enabled": False,
+            "model": "energy_trace_representatives_pending",
+            "ray_count": int(config.rt_num_rays),
+            "max_bounces": int(config.rt_num_bounces),
+            "follows_simulation": True,
+            "retain_limit": int(_RT_VISUAL_RETAIN_LIMIT),
+            "retained_path_count": 0,
+        },
+    }
     rt60_bands = {band: 0.0 for band in FREQUENCY_BANDS}
+    late_tail_target_rt60_bands = {band: 0.0 for band in FREQUENCY_BANDS}
+    late_decay_profiles: dict[str, Any] = {}
+    rendered_late_decay_profiles: dict[str, Any] = {}
     hybrid_rt60_bands = {band: 0.0 for band in FREQUENCY_BANDS}
     reconstructed_rt60_bands = {band: 0.0 for band in FREQUENCY_BANDS}
     reflection_metadata: dict[str, Any] = {"enabled": False}
 
     if config.reflections_enabled:
-        field = trace_energy_field(scene, src, rcv, config, emitter)
-        rt60_bands = estimate_reverb_times(field, config)
-        reconstruction_field, late_tail_meta = _extend_energy_field_late_tail(field, rt60_bands, config)
-        hybrid_rt60_bands = estimate_reverb_times(reconstruction_field, config) if config.late_tail else dict(rt60_bands)
-        band_irs = reconstruct_band_irs(reconstruction_field, config)
-        ambisonic_band_irs = reconstruct_ambisonic_band_irs(reconstruction_field, config)
+        reflection_config, adaptive_bounce_meta = _adaptive_reflection_config(scene, config)
+        field = trace_energy_field(scene, src, rcv, reflection_config, emitter)
+        rt_visual = _visual_rt_paths_from_energy_field(field, src, rcv, reflection_config)
+        paths.extend(rt_visual["paths"])
+        rt60_bands = estimate_reverb_times(field, reflection_config)
+        if scene.is_multi_room:
+            late_tail_target_rt60_bands, late_decay_profiles = estimate_late_reverb_times(
+                field,
+                reflection_config,
+                fallback=rt60_bands,
+            )
+            late_tail_target_rt60_bands, late_decay_profiles = _apply_coupled_late_reverb_prior(
+                late_tail_target_rt60_bands,
+                late_decay_profiles,
+                late_reverb_prior,
+            )
+        else:
+            late_tail_target_rt60_bands = dict(rt60_bands)
+        traced_band_irs = reconstruct_band_irs(field, config)
+        band_irs, fdn_component, late_tail_meta = _render_parametric_fdn_late_reverb(
+            traced_band_irs,
+            field,
+            late_tail_target_rt60_bands,
+            config,
+            decay_profiles=late_decay_profiles,
+        )
+        hybrid_rt60_bands = estimate_reconstructed_reverb_times(band_irs, config)
+        rendered_late_decay_profiles = {
+            band: estimate_signal_decay_profile(band_irs[band_index], config)
+            for band_index, band in enumerate(FREQUENCY_BANDS)
+        }
+        traced_ambisonic_band_irs = reconstruct_ambisonic_band_irs(field, config)
+        ambisonic_band_irs = _hybridize_ambisonic_tail(
+            traced_ambisonic_band_irs,
+            fdn_component,
+            late_tail_meta,
+            config,
+        )
         seg_len = min(band_irs.shape[1], total - direct_sample) if direct_sample < total else 0
         ambisonic_rir = np.zeros((4, total), dtype=np.float32)
         if seg_len > 0:
@@ -575,33 +869,34 @@ def simulate_steam_room(
         quality_warnings: list[str] = []
         if int(config.rt_num_rays) < 4096:
             quality_warnings.append("ray count is below the Steam Audio realtime reference")
-        if int(config.rt_num_bounces) < 64:
+        if int(reflection_config.rt_num_bounces) < 64:
             quality_warnings.append("RT60 is biased by bounce truncation; use at least 64 bounces")
         max_rt60 = max(rt60_bands.values(), default=0.0)
         if max_rt60 > 0.0 and float(config.rt_duration_s) < 1.2 * max_rt60:
             quality_warnings.append("reflection duration is shorter than 1.2 times the estimated RT60")
-        late_start_bin = min(
-            int(max(0.0, float(late_tail_meta.get("transition_start_s", 0.0))) / max(float(field["bin_duration_s"]), 1e-9)),
-            field["echogram"].shape[1],
-        )
         reflection_metadata = {
             "enabled": True,
             "num_rays": int(config.rt_num_rays),
-            "num_bounces": int(config.rt_num_bounces),
+            "requested_num_bounces": int(config.rt_num_bounces),
+            "num_bounces": int(reflection_config.rt_num_bounces),
+            "adaptive_bounces": adaptive_bounce_meta,
             "num_bins": int(field["num_bins"]),
             "bin_duration_s": float(field["bin_duration_s"]),
             "actual_bounces": int(field.get("actual_bounces", 0)),
             "active_ray_count": int(field.get("active_ray_count", 0)),
             "last_energy_time_s": float(field.get("last_energy_time_s", 0.0)),
             "traced_energy": float(np.sum(field["echogram"])),
-            "late_tail_energy": float(np.sum(reconstruction_field["echogram"][:, late_start_bin:])),
-            "traced_late_tail_energy": float(np.sum(field["echogram"][:, late_start_bin:])),
+            "late_tail_energy": float(late_tail_meta.get("rendered_tail_energy", 0.0)),
+            "traced_late_tail_energy": float(late_tail_meta.get("traced_tail_energy", 0.0)),
             "model": "monte_carlo_path_tracing_energy_field",
             "late_tail_enabled": bool(config.late_tail),
             "late_tail_cutoff_s": float(late_tail_meta.get("transition_start_s", 0.0)),
             "late_tail": late_tail_meta,
+            "late_tail_target_rt60_bands": late_tail_target_rt60_bands,
+            "late_decay_profiles": late_decay_profiles,
+            "rendered_late_decay_profiles": rendered_late_decay_profiles,
             "hybrid_rt60_bands": hybrid_rt60_bands,
-            "quality": _reflection_quality_label(config),
+            "quality": _reflection_quality_label(reflection_config),
             "quality_warnings": quality_warnings,
             "surface_hit_count": field.get("surface_hit_count", {}),
             "surface_contribution_count": field.get("surface_contribution_count", {}),
@@ -646,7 +941,13 @@ def simulate_steam_room(
             "reverb_estimator": {
                 "traced_model": "schroeder_fit_from_path_traced_energy_field",
                 "rir_model": "schroeder_fit_from_final_reconstructed_band_rirs",
-                "tail_target_model": "steam_hybrid_energy_envelope_from_traced_energy_field",
+                "tail_target_model": (
+                    "coupled_room_energy_matrix_prior"
+                    if scene.is_multi_room and late_reverb_prior
+                    else "coupled_space_late_slope_from_traced_energy_field"
+                    if scene.is_multi_room
+                    else "steam_style_single_slope_from_traced_energy_field"
+                ),
                 "fit_range_db": [-5.0, -25.0],
                 "extrapolation_db": -60.0,
                 "bin_duration_s": float(config.rt_bin_duration_s),
@@ -657,7 +958,8 @@ def simulate_steam_room(
                     "cutoffs_hz": {"low": [0.0, 800.0], "mid": [800.0, 8000.0], "high": [8000.0, 22000.0]},
                     "rt60_bands": steam_audio_rt60_bands,
                 },
-                "tail_target_rt60_bands": hybrid_rt60_bands,
+                "tail_target_rt60_bands": late_tail_target_rt60_bands,
+                "rendered_hybrid_rt60_bands": hybrid_rt60_bands,
             },
             "direct": {
                 "distance_m": round(float(direct["distance_m"]), 5),
@@ -681,7 +983,7 @@ def simulate_steam_room(
             "portal_propagation": {
                 "enabled": bool(scene.is_multi_room),
                 "path_count": len(portal_paths),
-                "model": "verified_portal_visibility_graph_pathing_v1" if scene.is_multi_room else "not_applicable",
+                "model": "verified_portal_visibility_graph_pathing_v2" if scene.is_multi_room else "not_applicable",
                 "accelerator": "python_visibility_graph" if scene.is_multi_room else None,
                 "contributes_to_rir": bool(portal_paths),
             },
@@ -714,6 +1016,84 @@ def _reflection_quality_label(config: SimConfig) -> str:
     if rays >= 8192 and bounces >= 32:
         return "preview"
     return "custom"
+
+
+def _adaptive_reflection_config(scene: RoomRayScene, config: SimConfig) -> tuple[SimConfig, dict[str, Any]]:
+    requested = max(1, int(config.rt_num_bounces))
+    metadata: dict[str, Any] = {
+        "enabled": bool(config.adaptive_cross_room_bounces or config.adaptive_geometry_bounces),
+        "applied": False,
+        "requested": requested,
+        "effective": requested,
+        "reason": "not_applicable",
+    }
+    if int(config.rt_num_rays) < 32768 or requested < 64:
+        metadata["reason"] = "explicit_or_preview_budget"
+        return config, metadata
+
+    absorption = np.asarray([surface.absorption for surface in scene.surfaces], dtype=np.float64)
+    mean_survival = float(np.max(np.mean(1.0 - absorption, axis=0))) if absorption.size else 0.0
+    if not scene.is_multi_room:
+        metadata["enabled"] = bool(config.adaptive_geometry_bounces)
+        if not config.adaptive_geometry_bounces:
+            metadata["reason"] = "disabled"
+            return config, metadata
+        if not 0.0 < mean_survival < 1.0:
+            metadata["reason"] = "no_decay_estimate"
+            return config, metadata
+        target_energy_ratio = 10.0 ** (-25.0 / 10.0)
+        required = int(math.ceil(math.log(target_energy_ratio) / math.log(mean_survival)))
+        required = 16 * int(math.ceil(max(1, required) / 16.0))
+        maximum = max(requested, int(config.geometry_max_bounces))
+        effective = min(maximum, max(requested, required))
+        metadata.update({
+            "effective": effective,
+            "maximum": maximum,
+            "estimated_bounces_to_fit_floor": required,
+            "fit_floor_db": -25.0,
+            "mean_max_band_survival": round(mean_survival, 4),
+        })
+        if effective <= requested:
+            metadata["reason"] = "requested_budget_sufficient"
+            return config, metadata
+        metadata.update({
+            "applied": True,
+            "reason": "geometry_tail_convergence",
+        })
+        return replace(config, rt_num_bounces=effective), metadata
+
+    if not scene.is_cross_room:
+        metadata["reason"] = "same_room_resplan"
+        return config, metadata
+    metadata["enabled"] = bool(config.adaptive_cross_room_bounces)
+    if not config.adaptive_cross_room_bounces:
+        metadata["reason"] = "disabled"
+        return config, metadata
+
+    minimum = max(96, int(config.cross_room_min_bounces))
+    maximum = max(minimum, int(config.cross_room_max_bounces))
+    multi_room = scene.room.metadata.get("multi_room") if isinstance(scene.room.metadata, Mapping) else None
+    route_portals = multi_room.get("route_portal_ids", []) if isinstance(multi_room, Mapping) else []
+    if len(route_portals) > 1 or mean_survival >= 0.90:
+        extra = 32
+    elif mean_survival >= 0.82:
+        extra = 16
+    else:
+        extra = 0
+    effective = min(maximum, max(minimum, minimum + extra))
+    if requested >= effective:
+        metadata.update({"reason": "requested_budget_sufficient", "effective": requested})
+        return config, metadata
+    metadata.update({
+        "applied": True,
+        "effective": effective,
+        "minimum": minimum,
+        "maximum": maximum,
+        "route_portal_count": len(route_portals),
+        "mean_max_band_survival": round(mean_survival, 4),
+        "reason": "cross_room_tail_convergence",
+    })
+    return replace(config, rt_num_bounces=effective), metadata
 
 
 def _diffraction_max_order(paths: Sequence[AcousticPath], fallback: int) -> int:
@@ -1043,6 +1423,118 @@ def _select_visual_candidate_indices(candidate_indices: list[int], orders: np.nd
     return sorted(selected[:retain_limit], key=lambda index: (int(orders[index]), float(distances[index])))
 
 
+def _visual_rt_paths_from_energy_field(
+    field: Mapping[str, Any],
+    source: np.ndarray,
+    listener: np.ndarray,
+    config: SimConfig,
+) -> dict[str, Any]:
+    candidates = field.get("visual_candidates")
+    if not isinstance(candidates, Mapping):
+        return {
+            "paths": [],
+            "metadata": {
+                "enabled": False,
+                "model": "energy_trace_representatives_unavailable",
+                "ray_count": int(config.rt_num_rays),
+                "max_bounces": int(field.get("actual_bounces", config.rt_num_bounces)),
+                "follows_simulation": True,
+                "retain_limit": int(_RT_VISUAL_RETAIN_LIMIT),
+                "retained_path_count": 0,
+            },
+        }
+
+    hit_points = np.asarray(candidates["hit_points"], dtype=np.float64)
+    surface_indices = np.asarray(candidates["surface_indices"], dtype=np.int64)
+    ray_indices = np.asarray(candidates["ray_indices"], dtype=np.int64)
+    orders = np.asarray(candidates["orders"], dtype=np.int64)
+    distances = np.asarray(candidates["distances"], dtype=np.float64)
+    gains = np.asarray(candidates["gains"], dtype=np.float64)
+    surface_names = tuple(str(value) for value in candidates.get("surface_names", ()))
+    energy_trace_bounces = int(field.get("actual_bounces", config.rt_num_bounces))
+    visual_max_bounces = (
+        energy_trace_bounces
+        if config.rt_visual_num_bounces is None
+        else min(energy_trace_bounces, max(1, int(config.rt_visual_num_bounces)))
+    )
+    candidate_indices = [
+        int(index)
+        for index in np.flatnonzero(
+            (orders > 0)
+            & (orders <= visual_max_bounces)
+            & np.isfinite(gains)
+            & (gains > 0.0)
+        )
+    ]
+    retained_indices = _select_visual_candidate_indices(
+        candidate_indices,
+        orders,
+        gains,
+        distances,
+        int(_RT_VISUAL_RETAIN_LIMIT),
+    )
+    paths: list[AcousticPath] = []
+    for index in retained_indices:
+        order = int(orders[index])
+        points: list[tuple[float, float, float]] = [tuple(float(value) for value in source)]
+        surfaces: list[str] = []
+        for bounce in range(order - 1, -1, -1):
+            points.append(tuple(float(value) for value in hit_points[index, bounce]))
+            surface_index = int(surface_indices[index, bounce])
+            if 0 <= surface_index < len(surface_names):
+                surfaces.append(surface_names[surface_index])
+        points.append(tuple(float(value) for value in listener))
+        gain = float(gains[index])
+        bands = {band: gain for band in FREQUENCY_BANDS}
+        paths.append(
+            AcousticPath(
+                "rt_reflection",
+                float(distances[index]),
+                float(distances[index]) / float(config.c),
+                gain,
+                bands,
+                tuple(points),
+                {
+                    "model": "listener_space_energy_trace_representative",
+                    "ray_index": int(ray_indices[index]),
+                    "order": order,
+                    "surfaces": surfaces,
+                    "contributes_to_rir": True,
+                },
+            )
+        )
+
+    bounce_histogram: dict[str, int] = {}
+    for index in candidate_indices:
+        key = str(int(orders[index]))
+        bounce_histogram[key] = bounce_histogram.get(key, 0) + 1
+    contribution_count = sum(int(value) for value in field.get("surface_contribution_count", {}).values())
+    return {
+        "paths": paths,
+        "metadata": {
+            "enabled": True,
+            "model": "listener_space_energy_trace_representatives",
+            "accelerator": field.get("accelerator", "numpy"),
+            "ray_count": int(config.rt_num_rays),
+            "max_bounces": int(visual_max_bounces),
+            "energy_trace_max_bounces": int(energy_trace_bounces),
+            "follows_simulation": True,
+            "receiver_radius_m": float(config.rt_receiver_radius_m),
+            "accepted_event_count": int(contribution_count),
+            "receiver_hit_ray_count": len(candidate_indices),
+            "representative_ray_count": len(candidate_indices),
+            "retain_limit": int(_RT_VISUAL_RETAIN_LIMIT),
+            "retained_path_count": len(paths),
+            "candidate_limit": int(candidates.get("candidate_limit", len(orders))),
+            "candidate_path_count": len(candidate_indices),
+            "candidate_stride": int(candidates.get("stride", 1)),
+            "retention_policy": "stratified_order_then_strongest_gain",
+            "bounce_count_histogram": dict(sorted(bounce_histogram.items(), key=lambda item: int(item[0]))),
+            "shares_energy_trace": True,
+        },
+    }
+
+
 def trace_energy_field(
     scene: RoomRayScene,
     source: np.ndarray,
@@ -1079,7 +1571,29 @@ def _trace_energy_field_numba(
         int(config.seed),
     )
     direct_delay = float(np.linalg.norm(np.asarray(source, dtype=float) - np.asarray(listener, dtype=float))) / float(config.c)
-    echogram, ambisonic, hit_counts, contrib_counts, surface_energy, actual_bounces, active_count = _trace_energy_kernel(
+    default_visual_candidates = int(_RT_VISUAL_RETAIN_LIMIT * 4)
+    requested_visual_candidates = (
+        default_visual_candidates
+        if config.rt_visual_num_rays is None
+        else max(1, min(int(config.rt_visual_num_rays), default_visual_candidates))
+    )
+    visual_candidate_limit = min(num_rays, requested_visual_candidates)
+    visual_stride = max(1, num_rays // max(visual_candidate_limit, 1))
+    (
+        echogram,
+        ambisonic,
+        hit_counts,
+        contrib_counts,
+        surface_energy,
+        actual_bounces,
+        active_count,
+        visual_hit_points,
+        visual_surface_indices,
+        visual_ray_indices,
+        visual_orders,
+        visual_distances,
+        visual_gains,
+    ) = _trace_energy_kernel(
         np.asarray(source, dtype=np.float64),
         np.asarray(listener, dtype=np.float64),
         np.asarray(directions, dtype=np.float64),
@@ -1114,6 +1628,8 @@ def _trace_energy_field_numba(
         source_forward(emitter),
         float(emitter["dipole_weight"]),
         float(emitter["dipole_power"]),
+        int(visual_candidate_limit),
+        int(visual_stride),
     )
     names = arrays["names"]
     total_energy = np.sum(echogram, axis=0)
@@ -1130,6 +1646,17 @@ def _trace_energy_field_numba(
         "surface_hit_count": {names[i]: int(hit_counts[i]) for i in range(len(names)) if int(hit_counts[i]) > 0},
         "surface_contribution_count": {names[i]: int(contrib_counts[i]) for i in range(len(names)) if int(contrib_counts[i]) > 0},
         "surface_energy": {names[i]: float(surface_energy[i]) for i in range(len(names)) if float(surface_energy[i]) > 0.0},
+        "visual_candidates": {
+            "hit_points": visual_hit_points,
+            "surface_indices": visual_surface_indices,
+            "ray_indices": visual_ray_indices,
+            "orders": visual_orders,
+            "distances": visual_distances,
+            "gains": visual_gains,
+            "surface_names": tuple(names),
+            "candidate_limit": int(visual_candidate_limit),
+            "stride": int(visual_stride),
+        },
         "accelerator": "numba",
         "source_directivity": dict(emitter),
     }
@@ -1262,6 +1789,20 @@ def _trace_energy_field_numpy(
     }
 
 
+def _air_absorption_amplitude(coefficient_per_m: float, travel_time_s: float, speed_m_s: float) -> float:
+    distance_m = max(0.0, float(travel_time_s)) * max(0.0, float(speed_m_s))
+    return math.exp(-max(0.0, float(coefficient_per_m)) * distance_m)
+
+
+def _air_absorption_energy_weights(
+    coefficient_per_m: float,
+    travel_times_s: np.ndarray,
+    speed_m_s: float,
+) -> np.ndarray:
+    distances_m = np.maximum(np.asarray(travel_times_s, dtype=np.float64), 0.0) * max(0.0, float(speed_m_s))
+    return np.exp(-2.0 * max(0.0, float(coefficient_per_m)) * distances_m)
+
+
 def reconstruct_band_irs(field: dict[str, Any], config: SimConfig) -> np.ndarray:
     echogram = field["echogram"]
     samples_per_bin = max(1, int(math.ceil(float(field["bin_duration_s"]) * int(config.fs))))
@@ -1270,6 +1811,7 @@ def reconstruct_band_irs(field: dict[str, Any], config: SimConfig) -> np.ndarray
     white = rng.uniform(-1.0, 1.0, size=num_samples).astype(np.float64)
     raw_band_irs = np.zeros((_NUM_BANDS, num_samples), dtype=np.float64)
     sample_weights = np.arange(samples_per_bin, dtype=np.float64) / samples_per_bin
+    direct_delay_s = max(0.0, float(field.get("direct_delay_s", 0.0)))
     for band_index, band in enumerate(FREQUENCY_BANDS):
         coeff = AIR_ABSORPTION_NP_PER_M[band]
         # The local echogram stores the unnormalized ray energy. Steam Audio's
@@ -1284,134 +1826,457 @@ def reconstruct_band_irs(field: dict[str, Any], config: SimConfig) -> np.ndarray
             prev = amps[b] if b == 0 else amps[b - 1]
             w = sample_weights[:hi - lo]
             seg = (1.0 - w) * prev + w * amps[b]
-            bin_time = (b + 0.5) * samples_per_bin / int(config.fs)
-            seg *= math.exp(-coeff * (0.5 * config.c * bin_time))
+            path_time_s = direct_delay_s + (b + 0.5) * samples_per_bin / int(config.fs)
+            seg *= _air_absorption_amplitude(coeff, path_time_s, float(config.c))
             sample_amp[lo:hi] = seg
         raw_band_irs[band_index] = sample_amp * white
     return bandlimit_band_signals(raw_band_irs, int(config.fs))
 
 
-def _extend_energy_field_late_tail(field: dict[str, Any], rt60_bands: Mapping[str, float], config: SimConfig) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Project Steam-style hybrid late energy from the traced EnergyField.
+def _fdn_impulse_kernel(
+    delays: np.ndarray,
+    absorptive_coeffs: np.ndarray,
+    num_samples: int,
+    allpass_delays: np.ndarray,
+    tone_coeffs: np.ndarray,
+) -> np.ndarray:
+    """Render Steam Audio's multiband 16-line Hadamard FDN topology."""
+    num_delays = int(delays.size)
+    num_bands = int(absorptive_coeffs.shape[1])
+    max_delay = int(np.max(delays)) + 1
+    delay_buffers = np.zeros((num_delays, max_delay), dtype=np.float64)
+    delay_positions = np.zeros(num_delays, dtype=np.int64)
+    delayed = np.zeros(num_delays, dtype=np.float64)
+    mixed = np.zeros(num_delays, dtype=np.float64)
+    output = np.zeros(num_samples, dtype=np.float64)
+    absorptive_state = np.zeros((num_delays, num_bands, 4), dtype=np.float64)
+    tone_state = np.zeros((num_bands, 4), dtype=np.float64)
 
-    Steam Audio estimates per-band reverb time from the traced EnergyField, then
-    starts its parametric branch at ``(1 - overlap) * transitionTime``.  The
-    production engine renders that branch with a feedback-delay network.  This
-    offline RIR renderer uses the same transition, overlap, traced RT60, and
-    cutoff-bin energy to project an equivalent diffuse energy envelope before
-    stochastic reconstruction.  Material/Sabine RT60 is deliberately not used
-    as a target.
-    """
-    out = dict(field)
-    echogram = np.array(field["echogram"], dtype=np.float64, copy=True)
-    ambisonic = field.get("ambisonic_echogram")
-    if ambisonic is not None:
-        out["ambisonic_echogram"] = np.array(ambisonic, dtype=np.float64, copy=True)
-    out["echogram"] = echogram
+    max_allpass = int(np.max(allpass_delays)) + 1
+    allpass_buffers = np.zeros((allpass_delays.size, max_allpass), dtype=np.float64)
+    allpass_positions = np.zeros(allpass_delays.size, dtype=np.int64)
+    for sample in range(num_samples):
+        for line in range(num_delays):
+            value = delay_buffers[line, delay_positions[line]]
+            for band in range(num_bands):
+                b0 = absorptive_coeffs[line, band, 0]
+                b1 = absorptive_coeffs[line, band, 1]
+                b2 = absorptive_coeffs[line, band, 2]
+                a1 = absorptive_coeffs[line, band, 3]
+                a2 = absorptive_coeffs[line, band, 4]
+                x1 = absorptive_state[line, band, 0]
+                x2 = absorptive_state[line, band, 1]
+                y1 = absorptive_state[line, band, 2]
+                y2 = absorptive_state[line, band, 3]
+                filtered = b0 * value + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+                absorptive_state[line, band, 1] = x1
+                absorptive_state[line, band, 0] = value
+                absorptive_state[line, band, 3] = y1
+                absorptive_state[line, band, 2] = filtered
+                value = filtered
+            delayed[line] = value
+            mixed[line] = value
 
-    bin_dur = float(field["bin_duration_s"])
-    num_bins = int(field["num_bins"])
-    duration_s = num_bins * bin_dur
-    transition_s = min(duration_s, max(bin_dur, float(config.hybrid_transition_s)))
-    overlap = float(np.clip(float(config.hybrid_overlap_fraction), 0.0, 0.95))
+        stride = 1
+        while stride < num_delays:
+            block = stride * 2
+            for base in range(0, num_delays, block):
+                for offset in range(stride):
+                    first = mixed[base + offset]
+                    second = mixed[base + offset + stride]
+                    mixed[base + offset] = first + second
+                    mixed[base + offset + stride] = first - second
+            stride = block
+
+        injection = 1.0 if sample == 0 else 0.0
+        for line in range(num_delays):
+            delay_buffers[line, delay_positions[line]] = injection + 0.25 * mixed[line]
+            delay_positions[line] += 1
+            if delay_positions[line] >= delays[line]:
+                delay_positions[line] = 0
+
+        value = 0.0
+        for line in range(num_delays):
+            value += delayed[line]
+        value /= num_delays
+        for stage in range(allpass_delays.size):
+            position = allpass_positions[stage]
+            previous = allpass_buffers[stage, position]
+            internal = value + 0.5 * previous
+            allpass_buffers[stage, position] = internal
+            value = previous - 0.5 * internal
+            position += 1
+            if position >= allpass_delays[stage]:
+                position = 0
+            allpass_positions[stage] = position
+        for band in range(num_bands):
+            b0 = tone_coeffs[band, 0]
+            b1 = tone_coeffs[band, 1]
+            b2 = tone_coeffs[band, 2]
+            a1 = tone_coeffs[band, 3]
+            a2 = tone_coeffs[band, 4]
+            x1 = tone_state[band, 0]
+            x2 = tone_state[band, 1]
+            y1 = tone_state[band, 2]
+            y2 = tone_state[band, 3]
+            filtered = b0 * value + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+            tone_state[band, 1] = x1
+            tone_state[band, 0] = value
+            tone_state[band, 3] = y1
+            tone_state[band, 2] = filtered
+            value = filtered
+        output[sample] = value
+    return output
+
+
+_fdn_impulse_kernel_jit = njit(cache=True)(_fdn_impulse_kernel) if njit is not None else None
+
+
+def _steam_fdn_delays(fs: int, seed: int) -> np.ndarray:
+    primes = np.asarray((2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53), dtype=np.int64)
+    delay_min = max(1, int(0.15 * 10.0 * max(int(fs), 1) / len(primes)))
+    offsets = np.random.default_rng(int(seed) + 1701).integers(0, 101, size=primes.size)
+    delays = np.empty(primes.size, dtype=np.int64)
+    for index, prime in enumerate(primes):
+        target = max(1, delay_min + int(offsets[index]))
+        exponent = max(1, int(round(math.log(target) / math.log(int(prime)))))
+        delays[index] = max(1, int(prime) ** exponent)
+    return delays
+
+
+def _low_shelf_coefficients(cutoff: float, gain: float, fs: int) -> np.ndarray:
+    q = 0.707
+    w0 = 2.0 * math.pi * float(cutoff) / max(float(fs), 1.0)
+    cw0, sw0 = math.cos(w0), math.sin(w0)
+    alpha = sw0 / (2.0 * q)
+    a = math.sqrt(max(float(gain), 1e-6))
+    root_a = math.sqrt(a)
+    a0 = (a + 1.0) + (a - 1.0) * cw0 + 2.0 * root_a * alpha
+    return np.asarray((
+        a * ((a + 1.0) - (a - 1.0) * cw0 + 2.0 * root_a * alpha) / a0,
+        2.0 * a * ((a - 1.0) - (a + 1.0) * cw0) / a0,
+        a * ((a + 1.0) - (a - 1.0) * cw0 - 2.0 * root_a * alpha) / a0,
+        -2.0 * ((a - 1.0) + (a + 1.0) * cw0) / a0,
+        ((a + 1.0) + (a - 1.0) * cw0 - 2.0 * root_a * alpha) / a0,
+    ), dtype=np.float64)
+
+
+def _high_shelf_coefficients(cutoff: float, gain: float, fs: int) -> np.ndarray:
+    q = 0.707
+    w0 = 2.0 * math.pi * float(cutoff) / max(float(fs), 1.0)
+    cw0, sw0 = math.cos(w0), math.sin(w0)
+    alpha = sw0 / (2.0 * q)
+    a = math.sqrt(max(float(gain), 1e-6))
+    root_a = math.sqrt(a)
+    a0 = (a + 1.0) - (a - 1.0) * cw0 + 2.0 * root_a * alpha
+    return np.asarray((
+        a * ((a + 1.0) + (a - 1.0) * cw0 + 2.0 * root_a * alpha) / a0,
+        -2.0 * a * ((a - 1.0) + (a + 1.0) * cw0) / a0,
+        a * ((a + 1.0) + (a - 1.0) * cw0 - 2.0 * root_a * alpha) / a0,
+        2.0 * ((a - 1.0) - (a + 1.0) * cw0) / a0,
+        ((a + 1.0) - (a - 1.0) * cw0 - 2.0 * root_a * alpha) / a0,
+    ), dtype=np.float64)
+
+
+def _peaking_coefficients(low: float, high: float, gain: float, fs: int) -> np.ndarray:
+    center = math.sqrt(max(float(low) * float(high), 1e-12))
+    q_inverse = (float(high) - float(low)) / center
+    w0 = 2.0 * math.pi * center / max(float(fs), 1.0)
+    cw0, sw0 = math.cos(w0), math.sin(w0)
+    alpha = sw0 * q_inverse / 2.0
+    a = math.sqrt(max(float(gain), 1e-6))
+    a0 = 1.0 + alpha / a
+    return np.asarray((
+        (1.0 + alpha * a) / a0,
+        -2.0 * cw0 / a0,
+        (1.0 - alpha * a) / a0,
+        -2.0 * cw0 / a0,
+        (1.0 - alpha / a) / a0,
+    ), dtype=np.float64)
+
+
+def _steam_multiband_filter_coefficients(gains: np.ndarray, fs: int) -> np.ndarray:
+    values = np.asarray(gains, dtype=np.float64).reshape(_NUM_BANDS)
+    edges = _band_edges(fs)
+    nyquist = max(1.0, 0.5 * float(fs))
+    coeffs = np.empty((_NUM_BANDS, 5), dtype=np.float64)
+    for band_index, (low, high) in enumerate(edges):
+        if band_index == 0:
+            cutoff = float(np.clip(high, 1e-3, nyquist * 0.999))
+            coeffs[band_index] = _low_shelf_coefficients(cutoff, values[band_index], fs)
+        elif band_index == _NUM_BANDS - 1:
+            cutoff = float(np.clip(low, 1e-3, nyquist * 0.999))
+            coeffs[band_index] = _high_shelf_coefficients(cutoff, values[band_index], fs)
+        else:
+            lower = float(np.clip(low, 1e-3, nyquist * 0.998))
+            upper = float(np.clip(high, lower + 1e-3, nyquist * 0.999))
+            coeffs[band_index] = _peaking_coefficients(lower, upper, values[band_index], fs)
+    return coeffs
+
+
+def _steam_multiband_response_matrix(fs: int) -> np.ndarray:
+    centers = np.minimum(
+        np.asarray([float(band) for band in FREQUENCY_BANDS], dtype=np.float64),
+        0.9 * 0.5 * max(float(fs), 1.0),
+    )
+    z = np.exp(-2.0j * math.pi * centers / max(float(fs), 1.0))
+    probe_gain = 0.5
+    response = np.empty((_NUM_BANDS, _NUM_BANDS), dtype=np.float64)
+    for filter_index in range(_NUM_BANDS):
+        gains = np.ones(_NUM_BANDS, dtype=np.float64)
+        gains[filter_index] = probe_gain
+        coeffs = _steam_multiband_filter_coefficients(gains, fs)
+        transfer = np.ones(_NUM_BANDS, dtype=np.complex128)
+        for band_coeffs in coeffs:
+            numerator = band_coeffs[0] + band_coeffs[1] * z + band_coeffs[2] * z * z
+            denominator = 1.0 + band_coeffs[3] * z + band_coeffs[4] * z * z
+            transfer *= numerator / denominator
+        response[:, filter_index] = np.log(np.maximum(np.abs(transfer), 1e-12)) / math.log(probe_gain)
+    return response
+
+
+def _steam_compensated_multiband_coefficients(
+    gains: np.ndarray,
+    fs: int,
+    response: np.ndarray | None = None,
+) -> np.ndarray:
+    desired = np.clip(np.asarray(gains, dtype=np.float64).reshape(_NUM_BANDS), 1e-3, 0.999999)
+    response_matrix = response if response is not None else _steam_multiband_response_matrix(fs)
+    try:
+        filter_log_gains = np.linalg.solve(response_matrix, np.log(desired))
+    except np.linalg.LinAlgError:
+        filter_log_gains = np.linalg.pinv(response_matrix) @ np.log(desired)
+    # Individual EQ sections may need a small boost to offset neighboring
+    # cuts; the solved cascade still follows sub-unity feedback targets.
+    filter_gains = np.clip(np.exp(filter_log_gains), 1e-3, 4.0)
+    return _steam_multiband_filter_coefficients(filter_gains, fs)
+
+
+def _steam_fdn_filter_coefficients(
+    delays: np.ndarray,
+    rt60_bands: Mapping[str, float],
+    fs: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    rt60 = np.asarray(
+        [max(0.1, float(rt60_bands.get(band, 0.0) or 0.0)) for band in FREQUENCY_BANDS],
+        dtype=np.float64,
+    )
+    absorptive = np.empty((delays.size, _NUM_BANDS, 5), dtype=np.float64)
+    response = _steam_multiband_response_matrix(fs)
+    for line, delay in enumerate(np.asarray(delays, dtype=np.float64)):
+        gains = np.maximum(np.exp(-(6.91 * delay) / (rt60 * max(float(fs), 1.0))), 1e-3)
+        absorptive[line] = _steam_compensated_multiband_coefficients(gains, fs, response)
+    tone_gains = np.sqrt(1.0 / rt60)
+    tone_gains /= max(float(np.max(tone_gains)), 1e-12)
+    return absorptive, _steam_multiband_filter_coefficients(tone_gains, fs)
+
+
+def _late_tail_start_power(signal: np.ndarray, start_sample: int, rt60: float, fs: int, bin_samples: int) -> float:
+    squared = np.square(np.asarray(signal, dtype=np.float64))
+    start_sample = min(max(0, int(start_sample)), squared.size)
+    measured = squared[start_sample:min(squared.size, start_sample + bin_samples)]
+    measured_power = float(np.mean(measured)) if measured.size else 0.0
+    if start_sample <= 0:
+        return measured_power
+    prior = squared[:start_sample]
+    num_bins = int(math.ceil(prior.size / bin_samples))
+    energies = np.zeros(num_bins, dtype=np.float64)
+    for index in range(num_bins):
+        lo = index * bin_samples
+        hi = min(prior.size, lo + bin_samples)
+        energies[index] = float(np.sum(prior[lo:hi]))
+    positive = np.flatnonzero(energies > 1e-18)
+    if positive.size == 0:
+        return measured_power
+    recent = positive[-min(5, positive.size):]
+    decay = 6.0 * math.log(10.0) / max(float(rt60), 0.1)
+    estimates = []
+    for index in recent:
+        center_sample = (float(index) + 0.5) * bin_samples
+        elapsed = max(0.0, (start_sample - center_sample) / max(float(fs), 1.0))
+        estimates.append((energies[index] / bin_samples) * math.exp(-decay * elapsed))
+    return max(measured_power, float(np.median(estimates)))
+
+
+def _render_parametric_fdn_late_reverb(
+    traced_band_irs: np.ndarray,
+    field: Mapping[str, Any],
+    rt60_bands: Mapping[str, float],
+    config: SimConfig,
+    *,
+    decay_profiles: Mapping[str, Any] | None = None,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Crossfade traced convolution into a calibrated parametric FDN tail."""
+    traced = np.asarray(traced_band_irs, dtype=np.float64)
+    if traced.ndim != 2 or traced.shape[0] != _NUM_BANDS:
+        raise ValueError(f"expected {_NUM_BANDS} traced band IRs, got {traced.shape}")
+    fs = max(1, int(config.fs))
+    num_samples = int(traced.shape[1])
+    duration_s = num_samples / fs
+    transition_s = min(max(1.0 / fs, float(config.hybrid_transition_s)), max(1.0 / fs, (num_samples - 1) / fs))
+    overlap = float(np.clip(config.hybrid_overlap_fraction, 0.0, 0.95))
     start_s = (1.0 - overlap) * transition_s
-    start_bin = min(num_bins, max(0, int(math.ceil(start_s / max(bin_dur, 1e-9)))))
-    transition_bin = min(num_bins, max(start_bin + 1, int(math.ceil(transition_s / max(bin_dur, 1e-9)))))
-    if not config.late_tail or start_bin >= num_bins:
-        return out, {
+    start_samples = np.full(_NUM_BANDS, min(num_samples, max(0, int(math.floor(start_s * fs)))), dtype=np.int64)
+    end_samples = np.full(
+        _NUM_BANDS,
+        min(num_samples, max(int(start_samples[0]) + 1, int(math.ceil(transition_s * fs)))),
+        dtype=np.int64,
+    )
+    transition_by_band: dict[str, dict[str, float | str]] = {}
+    profiles = decay_profiles if isinstance(decay_profiles, Mapping) else {}
+    for band_index, band in enumerate(FREQUENCY_BANDS):
+        profile = profiles.get(band)
+        source = str(profile.get("selected_target_source", "")) if isinstance(profile, Mapping) else ""
+        breakpoint = float(profile.get("transition_time_s", 0.0) or 0.0) if isinstance(profile, Mapping) else 0.0
+        if source == "fitted_late_slope" and 0.0 < breakpoint < duration_s:
+            band_start_s = (1.0 - overlap) * breakpoint
+            band_start = min(num_samples - 1, max(0, int(math.floor(band_start_s * fs))))
+            band_end = min(num_samples, max(band_start + 1, int(math.ceil(breakpoint * fs))))
+            start_samples[band_index] = band_start
+            end_samples[band_index] = band_end
+            model = "coupled_space_breakpoint"
+        else:
+            model = "configured_hybrid_transition"
+        transition_by_band[band] = {
+            "start_s": round(float(start_samples[band_index]) / fs, 6),
+            "end_s": round(float(end_samples[band_index]) / fs, 6),
+            "model": model,
+        }
+    start_sample = int(np.min(start_samples))
+    end_sample = int(np.max(end_samples))
+    empty_tail = np.zeros_like(traced, dtype=np.float32)
+    if not config.late_tail or start_sample >= num_samples:
+        return traced.astype(np.float32), empty_tail, {
             "applied": False,
             "added": False,
-            "reason": "disabled" if not config.late_tail else "tail_start_outside_field",
-            "model": "steam_hybrid_energy_envelope_projection",
+            "reason": "disabled" if not config.late_tail else "tail_start_outside_rir",
+            "model": "steam_style_16_line_hadamard_fdn",
             "transition_start_s": round(start_s, 6),
             "transition_end_s": round(transition_s, 6),
             "overlap_fraction": overlap,
         }
 
-    added_by_band: dict[str, float] = {}
-    target_by_band: dict[str, float] = {}
-    anchor_by_band: dict[str, float] = {}
-    anchor_model_by_band: dict[str, str] = {}
-    traced_by_band: dict[str, float] = {}
-    early_by_band: dict[str, float] = {}
-    rt60_used: dict[str, float] = {}
+    delays = _steam_fdn_delays(fs, config.seed)
+    allpass_delays = np.asarray((225, 341, 441, 556), dtype=np.int64)
+    rt60_used = {
+        band: round(float(rt60_bands.get(band, 0.0) or 0.0), 4)
+        for band in FREQUENCY_BANDS
+        if float(rt60_bands.get(band, 0.0) or 0.0) > 0.0
+    }
+    absorptive_coeffs, tone_coeffs = _steam_fdn_filter_coefficients(delays, rt60_bands, fs)
+    kernel = _fdn_impulse_kernel_jit or _fdn_impulse_kernel
+    # Start the statistical tail with populated delay and allpass states. This
+    # is equivalent to running the FDN before the hybrid window, and is needed
+    # when a coupled-space breakpoint occurs before the longest delay line.
+    preroll_samples = int(np.max(delays) + np.sum(allpass_delays))
+    raw_fdn = kernel(
+        delays,
+        absorptive_coeffs,
+        num_samples + preroll_samples,
+        allpass_delays,
+        tone_coeffs,
+    )[preroll_samples:]
+    fdn = np.asarray(
+        bandlimit_band_signals(np.repeat(raw_fdn[None, :], _NUM_BANDS, axis=0), fs),
+        dtype=np.float64,
+    )
 
+    bin_samples = max(1, int(round(float(field.get("bin_duration_s", config.rt_bin_duration_s)) * fs)))
+    scales: dict[str, float] = {}
+    anchor_power: dict[str, float] = {}
+    fdn_energy_by_band: dict[str, float] = {}
     for band_index, band in enumerate(FREQUENCY_BANDS):
         rt60 = float(rt60_bands.get(band, 0.0) or 0.0)
         if rt60 <= 0.0:
             continue
+        band_start = int(start_samples[band_index])
+        transition_model = str(transition_by_band[band]["model"])
+        anchor_sample = int(end_samples[band_index]) if transition_model == "coupled_space_breakpoint" else band_start
+        remaining = num_samples - anchor_sample
+        power = _late_tail_start_power(traced[band_index], anchor_sample, rt60, fs, bin_samples)
         decay = 6.0 * math.log(10.0) / max(rt60, 0.1)
-        early_energy = float(np.sum(echogram[band_index, :start_bin]))
-        traced_late_energy = float(np.sum(echogram[band_index, start_bin:]))
-        anchor = float(echogram[band_index, start_bin]) if start_bin < num_bins else 0.0
-        anchor_model = "cutoff_bin"
-        if anchor <= 0.0:
-            lo = max(0, start_bin - 2)
-            hi = min(num_bins, start_bin + 3)
-            positive = echogram[band_index, lo:hi]
-            positive = positive[positive > 0.0]
-            if positive.size:
-                anchor = float(np.mean(positive))
-                anchor_model = "five_bin_nonzero_mean_fallback"
-        if anchor <= 0.0 and start_bin > 0:
-            prior_indices = np.flatnonzero(echogram[band_index, :start_bin] > 0.0)
-            if prior_indices.size:
-                recent = prior_indices[-5:]
-                estimates = echogram[band_index, recent] * np.exp(-decay * (start_bin - recent) * bin_dur)
-                anchor = float(np.median(estimates))
-                anchor_model = "rt60_extrapolated_recent_bins"
-        relative_t = np.arange(num_bins - start_bin, dtype=np.float64) * bin_dur
-        target = anchor * np.exp(-decay * relative_t)
-        traced = np.array(echogram[band_index, start_bin:], dtype=np.float64, copy=True)
-        blend = np.ones_like(relative_t)
-        overlap_bins = max(1, transition_bin - start_bin)
-        blend[:overlap_bins] = np.arange(overlap_bins, dtype=np.float64) / overlap_bins
-        projected = (1.0 - blend) * traced + blend * target
-        target_late_energy = float(np.sum(projected))
-        delta_energy = target_late_energy - traced_late_energy
-        early_by_band[band] = round(early_energy, 12)
-        traced_by_band[band] = round(traced_late_energy, 12)
-        target_by_band[band] = round(target_late_energy, 12)
-        anchor_by_band[band] = round(anchor, 12)
-        anchor_model_by_band[band] = anchor_model
-        rt60_used[band] = round(rt60, 4)
-        echogram[band_index, start_bin:] = projected
-        added_by_band[band] = round(delta_energy, 12)
+        expected = power * np.exp(-decay * np.arange(remaining, dtype=np.float64) / fs)
+        target_energy = float(np.sum(expected))
+        unit_energy = float(np.sum(np.square(fdn[band_index, anchor_sample:])))
+        scale = math.sqrt(target_energy / max(unit_energy, 1e-24)) if target_energy > 0.0 else 0.0
+        fdn[band_index, band_start:] *= scale
+        scales[band] = round(scale, 8)
+        anchor_power[band] = round(power, 14)
+        transition_by_band[band]["anchor_s"] = round(float(anchor_sample) / fs, 6)
+        fdn_energy_by_band[band] = round(float(np.sum(np.square(fdn[band_index, band_start:]))), 12)
 
-    if ambisonic is not None and start_bin < num_bins:
-        early_weight = np.ones(num_bins - start_bin, dtype=np.float64)
-        overlap_bins = max(1, transition_bin - start_bin)
-        early_weight[:overlap_bins] = 1.0 - np.arange(overlap_bins, dtype=np.float64) / overlap_bins
-        early_weight[overlap_bins:] = 0.0
-        out["ambisonic_echogram"][:, 1:, start_bin:] *= early_weight[None, None, :]
+    out = np.array(traced, copy=True)
+    fdn_component = np.zeros_like(traced)
+    traced_tail_energy = 0.0
+    rendered_tail_energy = 0.0
+    for band_index in range(_NUM_BANDS):
+        band_start = int(start_samples[band_index])
+        band_end = int(end_samples[band_index])
+        ramp_count = max(1, band_end - band_start)
+        alpha = np.linspace(1.0, 0.0, ramp_count, endpoint=False, dtype=np.float64)
+        out[band_index, band_start:band_end] *= np.sqrt(alpha)
+        if band_end < num_samples:
+            out[band_index, band_end:] = 0.0
+        parametric_weight = np.ones(num_samples - band_start, dtype=np.float64)
+        parametric_weight[:ramp_count] = np.sqrt(1.0 - alpha)
+        fdn_component[band_index, band_start:] = fdn[band_index, band_start:] * parametric_weight
+        traced_tail_energy += float(np.sum(np.square(traced[band_index, band_start:])))
+    out += fdn_component
+    for band_index in range(_NUM_BANDS):
+        rendered_tail_energy += float(np.sum(np.square(out[band_index, int(start_samples[band_index]):])))
 
-    added_energy = float(sum(max(0.0, value) for value in added_by_band.values()))
-    removed_energy = float(sum(max(0.0, -value) for value in added_by_band.values()))
-    net_energy_delta = added_energy - removed_energy
-    changed_energy = added_energy + removed_energy
-    nonzero_bins = np.flatnonzero(np.sum(echogram, axis=0) > 0.0)
-    out["last_energy_time_s"] = float(nonzero_bins[-1] * bin_dur) if nonzero_bins.size else float(field.get("last_energy_time_s", 0.0))
-    return out, {
-        "applied": bool(rt60_used),
-        "changed": bool(changed_energy > 1e-14),
-        "added": bool(added_energy > 1e-14),
-        "transition_start_s": round(start_s, 6),
-        "transition_end_s": round(transition_s, 6),
-        "overlap_fraction": overlap,
-        "model": "steam_hybrid_energy_envelope_projection",
+    fdn_energy = float(np.sum(np.square(fdn_component)))
+    return out.astype(np.float32), fdn_component.astype(np.float32), {
+        "applied": bool(rt60_used and fdn_energy > 1e-18),
+        "changed": bool(not np.allclose(out[:, start_sample:], traced[:, start_sample:], rtol=1e-7, atol=1e-12)),
+        "added": bool(fdn_energy > 1e-18),
+        "model": "steam_style_16_line_hadamard_fdn",
         "rt60_source": "steam_audio_reverb_estimator_from_traced_energy_field",
-        "calibration": "cutoff-bin energy and traced RT60; power crossfade over Steam hybrid overlap",
-        "added_energy": round(added_energy, 12),
-        "removed_energy": round(removed_energy, 12),
-        "net_energy_delta": round(net_energy_delta, 12),
-        "early_energy_by_band": early_by_band,
-        "traced_late_energy_by_band": traced_by_band,
-        "target_late_energy_by_band": target_by_band,
-        "anchor_energy_by_band": anchor_by_band,
-        "anchor_model_by_band": anchor_model_by_band,
-        "added_energy_by_band": added_by_band,
+        "calibration": "steady-state pre-rolled feedback-loop multiband absorption, traced cutoff power, duration-integrated energy normalization, and equal-power hybrid crossfade",
+        "transition_start_s": round(float(start_sample) / fs, 6),
+        "transition_end_s": round(float(end_sample) / fs, 6),
+        "configured_transition_end_s": round(transition_s, 6),
+        "transition_by_band": transition_by_band,
+        "overlap_fraction": overlap,
+        "delay_line_count": int(delays.size),
+        "delay_samples": [int(value) for value in delays],
+        "allpass_delay_samples": [int(value) for value in allpass_delays],
+        "preroll_samples": preroll_samples,
+        "traced_tail_energy": round(traced_tail_energy, 12),
+        "fdn_tail_energy": round(fdn_energy, 12),
+        "rendered_tail_energy": round(rendered_tail_energy, 12),
+        "anchor_power_by_band": anchor_power,
+        "scale_by_band": scales,
+        "fdn_energy_by_band": fdn_energy_by_band,
         "rt60_bands": rt60_used,
     }
+
+
+def _hybridize_ambisonic_tail(
+    traced: np.ndarray,
+    fdn_component: np.ndarray,
+    metadata: Mapping[str, Any],
+    config: SimConfig,
+) -> np.ndarray:
+    out = np.asarray(traced, dtype=np.float64).copy()
+    if not bool(metadata.get("applied", False)):
+        return out.astype(np.float32)
+    fs = max(1, int(config.fs))
+    num_samples = int(out.shape[-1])
+    transitions = metadata.get("transition_by_band") if isinstance(metadata.get("transition_by_band"), Mapping) else {}
+    for band_index, band in enumerate(FREQUENCY_BANDS):
+        transition = transitions.get(band) if isinstance(transitions, Mapping) else None
+        start_s = float(transition.get("start_s", metadata["transition_start_s"])) if isinstance(transition, Mapping) else float(metadata["transition_start_s"])
+        end_s = float(transition.get("end_s", metadata["transition_end_s"])) if isinstance(transition, Mapping) else float(metadata["transition_end_s"])
+        start = min(num_samples, max(0, int(math.floor(start_s * fs))))
+        end = min(num_samples, max(start + 1, int(math.ceil(end_s * fs))))
+        ramp_count = max(1, end - start)
+        alpha = np.linspace(1.0, 0.0, ramp_count, endpoint=False, dtype=np.float64)
+        out[band_index, :, start:end] *= np.sqrt(alpha)[None, :]
+        if end < num_samples:
+            out[band_index, :, end:] = 0.0
+    out[:, 0, :] += np.asarray(fdn_component, dtype=np.float64)
+    return out.astype(np.float32)
 
 
 def reconstruct_ambisonic_band_irs(field: dict[str, Any], config: SimConfig) -> np.ndarray:
@@ -1428,6 +2293,7 @@ def reconstruct_ambisonic_band_irs(field: dict[str, Any], config: SimConfig) -> 
     white = rng.uniform(-1.0, 1.0, size=num_samples).astype(np.float64)
     raw = np.zeros((_NUM_BANDS, 4, num_samples), dtype=np.float64)
     sample_weights = np.arange(samples_per_bin, dtype=np.float64) / samples_per_bin
+    direct_delay_s = max(0.0, float(field.get("direct_delay_s", 0.0)))
     for band_index, band in enumerate(FREQUENCY_BANDS):
         coeff = AIR_ABSORPTION_NP_PER_M[band]
         energy = np.clip(echogram[band_index], 0.0, None)
@@ -1445,8 +2311,8 @@ def reconstruct_ambisonic_band_irs(field: dict[str, Any], config: SimConfig) -> 
             prev = amps[b] if b == 0 else amps[b - 1]
             w = sample_weights[:hi - lo]
             seg = (1.0 - w) * prev + w * amps[b]
-            bin_time = (b + 0.5) * samples_per_bin / int(config.fs)
-            seg *= math.exp(-coeff * (0.5 * config.c * bin_time))
+            path_time_s = direct_delay_s + (b + 0.5) * samples_per_bin / int(config.fs)
+            seg *= _air_absorption_amplitude(coeff, path_time_s, float(config.c))
             for ci in range(4):
                 prev_ratio = ratios[ci, b] if b == 0 else ratios[ci, b - 1]
                 ratio_seg = (1.0 - w) * prev_ratio + w * ratios[ci, b]
@@ -1464,12 +2330,96 @@ def estimate_reverb_times(field: dict[str, Any], config: SimConfig) -> dict[str,
     bin_dur = float(field["bin_duration_s"])
     num_bins = int(field["num_bins"])
     out: dict[str, float] = {}
+    times = bin_dur * np.arange(num_bins, dtype=np.float64)
     for band_index, band in enumerate(FREQUENCY_BANDS):
-        weights = np.exp(-AIR_ABSORPTION_NP_PER_M[band] * (bin_dur * np.arange(num_bins)))
+        weights = _air_absorption_energy_weights(
+            AIR_ABSORPTION_NP_PER_M[band],
+            times,
+            float(config.c),
+        )
         # Steam Audio stores Y00 * E in channel 0 of the EnergyField.
         weighted = (_SH_Y00 * echogram[band_index]) * weights
         out[band] = _schroeder_fit_rt60(weighted, bin_dur, min_total_energy=1e-4)
     return out
+
+
+def estimate_late_reverb_times(
+    field: dict[str, Any],
+    config: SimConfig,
+    *,
+    fallback: Mapping[str, float] | None = None,
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """Select the actual late EDC slope for a coupled-space parametric tail."""
+    echogram = np.asarray(field["echogram"], dtype=np.float64)
+    bin_dur = float(field["bin_duration_s"])
+    num_bins = int(field["num_bins"])
+    standard = dict(fallback or estimate_reverb_times(field, config))
+    targets: dict[str, float] = {}
+    profiles: dict[str, Any] = {}
+    times = bin_dur * np.arange(num_bins, dtype=np.float64)
+    for band_index, band in enumerate(FREQUENCY_BANDS):
+        weighted = (
+            _SH_Y00
+            * echogram[band_index]
+            * _air_absorption_energy_weights(
+                AIR_ABSORPTION_NP_PER_M[band],
+                times,
+                float(config.c),
+            )
+        )
+        profile = _energy_decay_profile(weighted, bin_dur)
+        target = float(standard.get(band, 0.0) or 0.0)
+        source = "steam_single_slope"
+        if profile.get("model") == "double_slope":
+            late = next(
+                (item for item in profile.get("segments", []) if item.get("label") == "late"),
+                None,
+            )
+            late_rt60 = float(late.get("equivalent_rt60_s", 0.0)) if isinstance(late, Mapping) else 0.0
+            if late_rt60 > 0.0:
+                target = late_rt60
+                source = "fitted_late_slope"
+        elif target <= 0.0 and profile.get("model") == "single_slope":
+            fitted = float(profile.get("single_rt60_s", 0.0) or 0.0)
+            if fitted > 0.0:
+                target = fitted
+                source = "fitted_wide_range_single_slope"
+        targets[band] = target
+        profiles[band] = {
+            **profile,
+            "selected_target_rt60_s": round(target, 4),
+            "selected_target_source": source,
+        }
+    return targets, profiles
+
+
+def _apply_coupled_late_reverb_prior(
+    traced_targets: Mapping[str, float],
+    profiles: Mapping[str, Any],
+    prior: Mapping[str, float] | None,
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """Use room-system decay constants for the statistical late tail.
+
+    In a connected apartment, moving through a portal changes modal
+    amplitudes and early decay, but it does not replace the enclosure's decay
+    constants. Sparse receiver hits can make a per-frame traced late slope
+    visibly jump, so the FDN target uses the coupled-room energy model while
+    retaining the traced fit as a diagnostic.
+    """
+    targets = {band: float(traced_targets.get(band, 0.0) or 0.0) for band in FREQUENCY_BANDS}
+    updated_profiles = {band: dict(profiles.get(band, {})) for band in FREQUENCY_BANDS}
+    if not isinstance(prior, Mapping):
+        return targets, updated_profiles
+    for band in FREQUENCY_BANDS:
+        coupled = float(prior.get(band, 0.0) or 0.0)
+        if not math.isfinite(coupled) or coupled <= 0.0:
+            continue
+        profile = updated_profiles[band]
+        profile["traced_target_rt60_s"] = round(float(targets[band]), 4)
+        profile["selected_target_rt60_s"] = round(coupled, 4)
+        profile["selected_target_source"] = "coupled_room_energy_matrix"
+        targets[band] = coupled
+    return targets, updated_profiles
 
 
 def estimate_reconstructed_reverb_times(band_rirs: np.ndarray, config: SimConfig) -> dict[str, float]:
@@ -1518,6 +2468,161 @@ def estimate_signal_reverb_time(signal: np.ndarray, config: SimConfig) -> float:
         if hi > lo:
             energy[bin_index] = float(np.sum(squared[lo:hi]))
     return _schroeder_fit_rt60(energy, bin_samples / fs)
+
+
+def estimate_signal_decay_profile(signal: np.ndarray, config: SimConfig) -> dict[str, Any]:
+    """Describe statistically significant slope changes in a rendered RIR EDC.
+
+    The regular RT60 remains the -5 to -25 dB single-line estimate.  This
+    diagnostic uses the wider -5 to -35 dB range and reports a second segment
+    only when it materially improves the fit and the slopes differ enough to
+    represent coupled-space decay rather than harmless numerical curvature.
+    """
+    fs = max(1, int(config.fs))
+    values = np.asarray(signal, dtype=np.float64).reshape(-1)
+    if values.size == 0:
+        return _energy_decay_profile(np.zeros(0, dtype=np.float64), 0.0)
+    bin_samples = max(1, int(round(float(config.rt_bin_duration_s) * fs)))
+    num_bins = max(1, int(math.ceil(values.size / bin_samples)))
+    energy = np.zeros(num_bins, dtype=np.float64)
+    squared = values * values
+    for bin_index in range(num_bins):
+        lo = bin_index * bin_samples
+        hi = min(values.size, lo + bin_samples)
+        if hi > lo:
+            energy[bin_index] = float(np.sum(squared[lo:hi]))
+    return _energy_decay_profile(energy, bin_samples / fs)
+
+
+def _energy_decay_profile(
+    energy: np.ndarray,
+    bin_dur: float,
+    *,
+    fit_start_db: float = -5.0,
+    fit_end_db: float = -35.0,
+) -> dict[str, Any]:
+    values = np.asarray(energy, dtype=np.float64).reshape(-1)
+    total = float(np.sum(values))
+    unavailable = {
+        "model": "unavailable",
+        "segments": [],
+        "fit_range_db": [float(fit_start_db), float(fit_end_db)],
+    }
+    if values.size < 2 or total < 1e-12 or bin_dur <= 0.0:
+        return unavailable
+
+    edc = np.cumsum(values[::-1])[::-1]
+    db = 10.0 * np.log10(np.clip(edc / total, 1e-12, None))
+    times = float(bin_dur) * np.arange(values.size, dtype=np.float64)
+    fit_mask = (db <= float(fit_start_db)) & (db >= float(fit_end_db))
+    xs = times[fit_mask]
+    ys = db[fit_mask]
+    if xs.size < 10 or float(np.ptp(ys)) < 14.0:
+        return unavailable
+
+    single = _linear_decay_fit(xs, ys)
+    if single is None:
+        return unavailable
+    point_count = int(xs.size)
+    single_bic = point_count * math.log(max(single[2] / point_count, 1e-15)) + 2.0 * math.log(point_count)
+    best: tuple[float, int, tuple[float, float, float, float], tuple[float, float, float, float]] | None = None
+    min_points = 5
+    min_span_db = 7.0
+    for split in range(min_points, point_count - min_points + 1):
+        early_y = ys[:split]
+        late_y = ys[split:]
+        if float(np.ptp(early_y)) < min_span_db or float(np.ptp(late_y)) < min_span_db:
+            continue
+        early = _linear_decay_fit(xs[:split], early_y)
+        late = _linear_decay_fit(xs[split:], late_y)
+        if early is None or late is None:
+            continue
+        combined_sse = early[2] + late[2]
+        dual_bic = point_count * math.log(max(combined_sse / point_count, 1e-15)) + 5.0 * math.log(point_count)
+        candidate = (dual_bic, split, early, late)
+        if best is None or dual_bic < best[0]:
+            best = candidate
+
+    single_segment = _decay_segment("full", xs, ys, single)
+    result: dict[str, Any] = {
+        "model": "single_slope",
+        "segments": [single_segment],
+        "fit_range_db": [float(fit_start_db), float(fit_end_db)],
+        "single_rt60_s": single_segment["equivalent_rt60_s"],
+        "single_r2": single_segment["r2"],
+        "dynamic_range_db": round(float(np.ptp(ys)), 4),
+    }
+    if best is None:
+        return result
+
+    dual_bic, split, early, late = best
+    early_rt60 = -60.0 / early[0]
+    late_rt60 = -60.0 / late[0]
+    slope_ratio = max(early_rt60, late_rt60) / max(min(early_rt60, late_rt60), 1e-12)
+    bic_improvement = single_bic - dual_bic
+    significant = (
+        bic_improvement >= 10.0
+        and slope_ratio >= 1.35
+        and early[3] >= 0.95
+        and late[3] >= 0.95
+    )
+    result["candidate_bic_improvement"] = round(float(bic_improvement), 4)
+    result["candidate_slope_ratio"] = round(float(slope_ratio), 4)
+    if not significant:
+        return result
+
+    early_segment = _decay_segment("early", xs[:split], ys[:split], early)
+    late_segment = _decay_segment("late", xs[split:], ys[split:], late)
+    return {
+        **result,
+        "model": "double_slope",
+        "segments": [early_segment, late_segment],
+        "transition_time_s": round(float(xs[split]), 4),
+        "transition_level_db": round(float(ys[split]), 4),
+        "slope_ratio": round(float(slope_ratio), 4),
+        "bic_improvement": round(float(bic_improvement), 4),
+        "slope_order": "early_slower" if early_rt60 > late_rt60 else "late_slower",
+    }
+
+
+def _linear_decay_fit(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float, float] | None:
+    count = int(x.size)
+    if count < 2:
+        return None
+    sum_x = float(np.sum(x))
+    sum_y = float(np.sum(y))
+    denom = count * float(np.sum(x * x)) - sum_x * sum_x
+    if abs(denom) <= 1e-12:
+        return None
+    slope = (count * float(np.sum(x * y)) - sum_x * sum_y) / denom
+    if slope >= -1e-9:
+        return None
+    intercept = (sum_y - slope * sum_x) / count
+    residual = y - (slope * x + intercept)
+    sse = float(np.sum(residual * residual))
+    centered = y - float(np.mean(y))
+    total_variation = float(np.sum(centered * centered))
+    r2 = 1.0 - sse / max(total_variation, 1e-15)
+    return float(slope), float(intercept), sse, float(r2)
+
+
+def _decay_segment(
+    label: str,
+    x: np.ndarray,
+    y: np.ndarray,
+    fit: tuple[float, float, float, float],
+) -> dict[str, Any]:
+    slope, _, _, r2 = fit
+    return {
+        "label": str(label),
+        "equivalent_rt60_s": round(float(-60.0 / slope), 4),
+        "slope_db_per_s": round(float(slope), 4),
+        "r2": round(float(r2), 4),
+        "start_time_s": round(float(x[0]), 4),
+        "end_time_s": round(float(x[-1]), 4),
+        "start_level_db": round(float(y[0]), 4),
+        "end_level_db": round(float(y[-1]), 4),
+    }
 
 
 def estimate_steam_audio_default_reverb_times(signal: np.ndarray, config: SimConfig) -> dict[str, float]:
@@ -1686,14 +2791,22 @@ def _multi_room_portal_paths(
     points.append(np.asarray(rcv, dtype=float))
     points = _deduplicate_3d_points(points)
     distance = float(sum(np.linalg.norm(points[index + 1] - points[index]) for index in range(len(points) - 1)))
-    if distance <= _EPS:
+    if distance <= _EPS or not _portal_path_segments_clear(scene, points):
         return []
     deviation = _path_deviation_angle(points)
     pathing = steam_audio_pathing_deviation(deviation) if deviation > 1e-6 else {band: 1.0 for band in FREQUENCY_BANDS}
     propagation = propagation_band_gains(distance, min_distance_m=float(config.min_distance_m))
     directivity = source_directivity_gain(points[1] - points[0], emitter)
+    aperture_estimate, aperture_details = _portal_aperture_coupling(
+        route_portals,
+        portal_by_id,
+        src,
+        rcv,
+        aperture_z,
+    )
+    aperture_gain = aperture_estimate if config.portal_aperture_attenuation else 1.0
     band_gains = {
-        band: float(propagation[band] * pathing[band] * directivity)
+        band: float(propagation[band] * pathing[band] * directivity * aperture_gain)
         for band in FREQUENCY_BANDS
     }
     return [AcousticPath(
@@ -1704,17 +2817,71 @@ def _multi_room_portal_paths(
         band_gains,
         tuple(tuple(float(value) for value in point) for point in points),
         {
-            "model": "verified_portal_visibility_graph_pathing_v1",
+            "model": "verified_portal_visibility_graph_pathing_v2",
             "source_room_id": source_room_id,
             "receiver_room_id": receiver_room_id,
             "route_room_ids": route_rooms,
             "route_portal_ids": route_portals,
             "portal_count": len(route_portals),
+            "aperture_pressure_gain": round(aperture_gain, 8),
+            "aperture_pressure_gain_estimate": round(aperture_estimate, 8),
+            "aperture_attenuation_applied": bool(config.portal_aperture_attenuation),
+            "aperture_coupling": aperture_details,
+            "segment_visibility_verified": True,
             "total_deviation_deg": math.degrees(deviation),
             "source_directivity_gain": directivity,
             "contributes_to_rir": True,
         },
     )]
+
+
+def _portal_path_segments_clear(scene: RoomRayScene, points: Sequence[np.ndarray]) -> bool:
+    for start, end in zip(points[:-1], points[1:]):
+        segment = np.asarray(end, dtype=float) - np.asarray(start, dtype=float)
+        distance = float(np.linalg.norm(segment))
+        if distance <= 2.0e-3:
+            continue
+        direction = segment / distance
+        origin = np.asarray(start, dtype=float) + 1.0e-3 * direction
+        if scene.any_hit(origin, direction, distance - 2.0e-3):
+            return False
+    return True
+
+
+def _portal_aperture_coupling(
+    route_portals: Sequence[str],
+    portal_by_id: Mapping[str, Mapping[str, Any]],
+    source: np.ndarray,
+    receiver: np.ndarray,
+    aperture_z: float,
+) -> tuple[float, list[dict[str, float | str]]]:
+    centers = []
+    for portal_id in route_portals:
+        center = np.asarray(portal_by_id[portal_id].get("center", (0.0, 0.0)), dtype=float)
+        centers.append(np.asarray((center[0], center[1], aperture_z), dtype=float))
+    anchors = [np.asarray(source, dtype=float), *centers, np.asarray(receiver, dtype=float)]
+    total_pressure_gain = 1.0
+    details: list[dict[str, float | str]] = []
+    for index, portal_id in enumerate(route_portals):
+        portal = portal_by_id[portal_id]
+        area = max(
+            0.01,
+            float(portal.get("width_m", 0.8)) * float(portal.get("height_m", 2.0)),
+        )
+        incoming = max(0.25, float(np.linalg.norm(anchors[index + 1] - anchors[index])))
+        outgoing = max(0.25, float(np.linalg.norm(anchors[index + 2] - anchors[index + 1])))
+        energy_fraction = float(np.clip(area / (area + 2.0 * math.pi * incoming * outgoing), 0.0, 1.0))
+        pressure_gain = math.sqrt(energy_fraction)
+        total_pressure_gain *= pressure_gain
+        details.append({
+            "portal_id": str(portal_id),
+            "area_m2": round(area, 5),
+            "incoming_distance_m": round(incoming, 5),
+            "outgoing_distance_m": round(outgoing, 5),
+            "energy_fraction": round(energy_fraction, 8),
+            "pressure_gain": round(pressure_gain, 8),
+        })
+    return float(total_pressure_gain), details
 
 
 def _multi_room_id_for_point(point: Sequence[float], rooms: Sequence[Mapping[str, Any]]) -> str | None:
@@ -1939,6 +3106,38 @@ def _boundary_diffraction_paths(
                 paths.append(candidate)
     paths.sort(key=lambda path: (path.delay_s, -abs(path.gain)))
     return paths[: max(0, int(config.max_diffraction_paths))]
+
+
+def _same_room_diffraction_room(room: Room, scene: RoomRayScene) -> Room:
+    if not scene.is_multi_room or scene.is_cross_room:
+        return room
+    multi_room = room.metadata.get("multi_room") if isinstance(room.metadata, Mapping) else None
+    if not isinstance(multi_room, Mapping):
+        return room
+    source_room_id = str(multi_room.get("source_room_id", ""))
+    room_record = next(
+        (
+            item
+            for item in multi_room.get("rooms", [])
+            if isinstance(item, Mapping) and str(item.get("id", "")) == source_room_id
+        ),
+        None,
+    )
+    corners = room_record.get("corners") if isinstance(room_record, Mapping) else None
+    if not isinstance(corners, Sequence) or len(corners) < 3:
+        return room
+    try:
+        local_corners = tuple((float(point[0]), float(point[1])) for point in corners)
+    except (IndexError, TypeError, ValueError):
+        return room
+    return Room(
+        id=room.id,
+        name=room.name,
+        corners=local_corners,
+        height_m=room.height_m,
+        materials=room.materials,
+        metadata=room.metadata,
+    )
 
 
 def _diffraction_skip_reason(direct: dict[str, Any], config: SimConfig, paths: Sequence[AcousticPath] = ()) -> str | None:
@@ -2357,13 +3556,17 @@ def _segment_inside_room(start: np.ndarray, end: np.ndarray, room: Room) -> bool
     return True
 
 
+@lru_cache(maxsize=8)
 def _sphere_samples(n: int, seed: int) -> np.ndarray:
+    n = max(1, int(n))
     rng = np.random.default_rng(seed)
     i = np.arange(n) + 0.5
     z = 1.0 - 2.0 * i / n
     r = np.sqrt(np.clip(1.0 - z * z, 0.0, 1.0))
     theta = i * (math.pi * (3.0 - math.sqrt(5.0))) + rng.uniform(-0.02, 0.02, n)
-    return np.stack([np.cos(theta) * r, np.sin(theta) * r, z], axis=1)
+    samples = np.stack([np.cos(theta) * r, np.sin(theta) * r, z], axis=1)
+    samples.setflags(write=False)
+    return samples
 
 
 def _normalize_rows(v: np.ndarray) -> np.ndarray:
@@ -2385,6 +3588,7 @@ def _ray_hits_sphere_before(
     return (discriminant >= 0.0) & (root >= 0.0) & (root < max_distance)
 
 
+@lru_cache(maxsize=16)
 def _diffuse_sample_bank(count: int) -> np.ndarray:
     count = max(1, int(count))
     i = np.arange(count, dtype=np.uint64)
@@ -2398,7 +3602,9 @@ def _diffuse_sample_bank(count: int) -> np.ndarray:
     u = (np.arange(count, dtype=np.float64) + 0.5) / count
     r = np.sqrt(u)
     theta = 2.0 * math.pi * inverse
-    return np.stack([r * np.cos(theta), r * np.sin(theta), np.sqrt(np.clip(1.0 - u, 0.0, 1.0))], axis=1)
+    samples = np.stack([r * np.cos(theta), r * np.sin(theta), np.sqrt(np.clip(1.0 - u, 0.0, 1.0))], axis=1)
+    samples.setflags(write=False)
+    return samples
 
 
 def _diffuse_random_sequence(
@@ -2407,13 +3613,63 @@ def _diffuse_random_sequence(
     sample_count: int,
     seed: int,
 ) -> tuple[np.ndarray, np.ndarray]:
+    global _RANDOM_WORKSPACE_BYTES
+    key = (int(num_rays), int(num_bounces), int(sample_count), int(seed))
+    with _STATIC_CACHE_LOCK:
+        cached = _RANDOM_WORKSPACE_CACHE.get(key)
+        if cached is not None:
+            _RANDOM_WORKSPACE_CACHE.move_to_end(key)
+            _STATIC_CACHE_STATS["workspace_hits"] += 1
+            return cached
+        _STATIC_CACHE_STATS["workspace_misses"] += 1
     rng = np.random.default_rng(int(seed) + 1)
     random_values = np.empty((num_bounces, num_rays), dtype=np.float64)
     sample_indices = np.empty((num_bounces, num_rays), dtype=np.int32)
     for bounce in range(num_bounces):
         random_values[bounce] = rng.random(num_rays)
         sample_indices[bounce] = rng.integers(0, sample_count, size=num_rays, dtype=np.int32)
-    return random_values, sample_indices
+    random_values.setflags(write=False)
+    sample_indices.setflags(write=False)
+    workspace = (random_values, sample_indices)
+    workspace_bytes = int(random_values.nbytes + sample_indices.nbytes)
+    if workspace_bytes <= _WORKSPACE_CACHE_BYTES:
+        with _STATIC_CACHE_LOCK:
+            previous = _RANDOM_WORKSPACE_CACHE.pop(key, None)
+            if previous is not None:
+                _RANDOM_WORKSPACE_BYTES -= int(previous[0].nbytes + previous[1].nbytes)
+            while _RANDOM_WORKSPACE_CACHE and _RANDOM_WORKSPACE_BYTES + workspace_bytes > _WORKSPACE_CACHE_BYTES:
+                _, expired = _RANDOM_WORKSPACE_CACHE.popitem(last=False)
+                _RANDOM_WORKSPACE_BYTES -= int(expired[0].nbytes + expired[1].nbytes)
+            _RANDOM_WORKSPACE_CACHE[key] = workspace
+            _RANDOM_WORKSPACE_BYTES += workspace_bytes
+    return workspace
+
+
+def _clear_static_caches() -> None:
+    global _RANDOM_WORKSPACE_BYTES
+    with _STATIC_CACHE_LOCK:
+        _SCENE_SURFACE_CACHE.clear()
+        _SCENE_ARRAY_CACHE.clear()
+        _RANDOM_WORKSPACE_CACHE.clear()
+        _RANDOM_WORKSPACE_BYTES = 0
+        for key in _STATIC_CACHE_STATS:
+            _STATIC_CACHE_STATS[key] = 0
+    _sphere_samples.cache_clear()
+    _diffuse_sample_bank.cache_clear()
+
+
+def _static_cache_info() -> dict[str, int]:
+    with _STATIC_CACHE_LOCK:
+        return {
+            **{key: int(value) for key, value in _STATIC_CACHE_STATS.items()},
+            "scene_entries": len(_SCENE_SURFACE_CACHE),
+            "array_entries": len(_SCENE_ARRAY_CACHE),
+            "workspace_entries": len(_RANDOM_WORKSPACE_CACHE),
+            "workspace_bytes": int(_RANDOM_WORKSPACE_BYTES),
+            "workspace_byte_limit": int(_WORKSPACE_CACHE_BYTES),
+            "sphere_entries": int(_sphere_samples.cache_info().currsize),
+            "diffuse_bank_entries": int(_diffuse_sample_bank.cache_info().currsize),
+        }
 
 
 def _transform_hemisphere(samples: np.ndarray, normals: np.ndarray) -> np.ndarray:
@@ -2907,7 +4163,7 @@ if njit is not None:
 
 
     @njit(parallel=True)
-    def _trace_energy_kernel(source, listener, directions, diffuse_bank, diffuse_random, diffuse_indices, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, reflection, scattering, corners, height, num_bounces, num_bins, bin_dur, c, max_path_len, direct_delay, listener_radius, source_radius, irradiance_min_distance, specular_exponent, source_forward_vector, dipole_weight, dipole_power):
+    def _trace_energy_kernel(source, listener, directions, diffuse_bank, diffuse_random, diffuse_indices, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, reflection, scattering, corners, height, num_bounces, num_bins, bin_dur, c, max_path_len, direct_delay, listener_radius, source_radius, irradiance_min_distance, specular_exponent, source_forward_vector, dipole_weight, dipole_power, visual_candidate_limit, visual_stride):
         thread_count = get_num_threads()
         local_echogram = np.zeros((thread_count, _NUM_BANDS, num_bins), dtype=np.float64)
         local_ambisonic = np.zeros((thread_count, _NUM_BANDS, 4, num_bins), dtype=np.float64)
@@ -2916,8 +4172,20 @@ if njit is not None:
         local_surface_energy = np.zeros((thread_count, kinds.shape[0]), dtype=np.float64)
         local_active_count = np.zeros(thread_count, dtype=np.int64)
         local_actual_bounces = np.zeros(thread_count, dtype=np.int64)
+        visual_hit_points = np.zeros((visual_candidate_limit, num_bounces, 3), dtype=np.float64)
+        visual_surface_indices = -np.ones((visual_candidate_limit, num_bounces), dtype=np.int64)
+        visual_ray_indices = -np.ones(visual_candidate_limit, dtype=np.int64)
+        visual_orders = np.zeros(visual_candidate_limit, dtype=np.int64)
+        visual_distances = np.zeros(visual_candidate_limit, dtype=np.float64)
+        visual_gains = np.zeros(visual_candidate_limit, dtype=np.float64)
         for ri in prange(directions.shape[0]):
             tid = get_thread_id()
+            visual_slot = -1
+            if visual_candidate_limit > 0 and ri % visual_stride == 0:
+                candidate_slot = ri // visual_stride
+                if candidate_slot < visual_candidate_limit:
+                    visual_slot = candidate_slot
+                    visual_ray_indices[visual_slot] = ri
             origin = np.empty(3, dtype=np.float64)
             origin[0] = listener[0]
             origin[1] = listener[1]
@@ -2948,6 +4216,11 @@ if njit is not None:
                 hx = origin[0] + t * direction[0] + _HIT_OFFSET * nx
                 hy = origin[1] + t * direction[1] + _HIT_OFFSET * ny
                 hz = origin[2] + t * direction[2] + _HIT_OFFSET * nz
+                if visual_slot >= 0:
+                    visual_hit_points[visual_slot, bounce, 0] = hx
+                    visual_hit_points[visual_slot, bounce, 1] = hy
+                    visual_hit_points[visual_slot, bounce, 2] = hz
+                    visual_surface_indices[visual_slot, bounce] = surf
                 tsx = source[0] - hx
                 tsy = source[1] - hy
                 tsz = source[2] - hz
@@ -2994,6 +4267,10 @@ if njit is not None:
                                     local_ambisonic[tid, bi, 2, bin_index] += energy * coeff_y
                                     local_ambisonic[tid, bi, 3, bin_index] += energy * coeff_z
                                     energy_sum += energy
+                                if visual_slot >= 0 and energy_sum > visual_gains[visual_slot] * visual_gains[visual_slot]:
+                                    visual_orders[visual_slot] = bounce + 1
+                                    visual_distances[visual_slot] = accum_distance + t + dist_to_source
+                                    visual_gains[visual_slot] = math.sqrt(max(energy_sum, 0.0))
                                 local_contrib_counts[tid, surf] += 1
                                 local_surface_energy[tid, surf] += energy_sum
                 for bi in range(_NUM_BANDS):
@@ -3040,4 +4317,18 @@ if njit is not None:
                     echogram[bi, b] += local_echogram[ti, bi, b]
                     for ci in range(4):
                         ambisonic[bi, ci, b] += local_ambisonic[ti, bi, ci, b]
-        return echogram, ambisonic, hit_counts, contrib_counts, surface_energy, actual_bounces, active_count
+        return (
+            echogram,
+            ambisonic,
+            hit_counts,
+            contrib_counts,
+            surface_energy,
+            actual_bounces,
+            active_count,
+            visual_hit_points,
+            visual_surface_indices,
+            visual_ray_indices,
+            visual_orders,
+            visual_distances,
+            visual_gains,
+        )

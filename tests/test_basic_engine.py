@@ -1,4 +1,5 @@
 import base64
+from dataclasses import replace
 
 import numpy as np
 
@@ -23,10 +24,75 @@ def test_rectangle_mono_rir_has_direct_and_reflections():
     assert result.metadata["steam_audio"]["rt_visual"]["follows_simulation"] is True
     assert result.metadata["steam_audio"]["rt_visual"].get("accelerator") == "numba"
     assert result.metadata["steam_audio"]["rt_visual"]["retention_policy"] == "stratified_order_then_strongest_gain"
+    assert result.metadata["steam_audio"]["rt_visual"]["model"] == "listener_space_energy_trace_representatives"
+    assert result.metadata["steam_audio"]["rt_visual"]["shares_energy_trace"] is True
     assert any(path.kind == "direct" for path in result.paths)
     assert any(path.kind == "rt_reflection" for path in result.paths)
     assert not any(path.kind == "ism_reflection" for path in result.paths)
     assert result.metadata["solver_pipeline"] == ["direct", "diffraction", "rt_energy_field", "reverb_estimate", "hybrid_late_reverb", "receiver_reconstruction"]
+
+
+def test_visual_path_budget_does_not_launch_a_second_trace_or_change_rir(monkeypatch):
+    import acoustic_agent.steam_rt as steam_rt
+
+    def reject_duplicate_trace(*args, **kwargs):
+        raise AssertionError("standalone visual tracing must not run during RIR simulation")
+
+    monkeypatch.setattr(steam_rt, "scan_visual_rt_paths", reject_duplicate_trace)
+    room = make_room("rectangle", size=(5.0, 4.0, 2.8))
+    base = SimConfig(
+        duration_s=0.25,
+        late_tail=False,
+        rt_num_rays=512,
+        rt_num_bounces=4,
+        rt_duration_s=0.25,
+        rt_visual_num_rays=32,
+        rt_visual_num_bounces=2,
+    )
+    first = simulate_rir(room, (1.0, 1.0, 1.4), (3.0, 2.5, 1.3), config=base)
+    second = simulate_rir(
+        room,
+        (1.0, 1.0, 1.4),
+        (3.0, 2.5, 1.3),
+        config=replace(base, rt_visual_num_rays=512, rt_visual_num_bounces=4),
+    )
+    np.testing.assert_array_equal(first.rir, second.rir)
+    assert first.metadata["steam_audio"]["rt_visual"]["shares_energy_trace"] is True
+
+
+def test_static_scene_and_workspace_cache_preserve_exact_rir():
+    import acoustic_agent.steam_rt as steam_rt
+
+    steam_rt._clear_static_caches()
+    room = make_room("rectangle", size=(5.0, 4.0, 2.8))
+    config = SimConfig(
+        duration_s=0.25,
+        late_tail=False,
+        rt_num_rays=1024,
+        rt_num_bounces=6,
+        rt_duration_s=0.25,
+    )
+    first = simulate_rir(room, (1.0, 1.0, 1.4), (3.0, 2.5, 1.3), config=config)
+    cold_info = steam_rt._static_cache_info()
+    second = simulate_rir(room, (1.2, 1.0, 1.4), (3.0, 2.5, 1.3), config=config)
+    hot_info = steam_rt._static_cache_info()
+    cold_position_again = simulate_rir(room, (1.0, 1.0, 1.4), (3.0, 2.5, 1.3), config=config)
+    changed_room = make_room("rectangle", size=(5.1, 4.0, 2.8))
+    simulate_rir(changed_room, (1.0, 1.0, 1.4), (3.0, 2.5, 1.3), config=config)
+    changed_info = steam_rt._static_cache_info()
+
+    np.testing.assert_array_equal(first.rir, cold_position_again.rir)
+    assert cold_info["scene_misses"] >= 1
+    assert cold_info["array_misses"] >= 1
+    assert cold_info["workspace_misses"] >= 1
+    assert hot_info["scene_hits"] > cold_info["scene_hits"]
+    assert hot_info["array_hits"] > cold_info["array_hits"]
+    assert hot_info["workspace_hits"] > cold_info["workspace_hits"]
+    assert changed_info["scene_misses"] > cold_info["scene_misses"]
+    assert changed_info["array_misses"] > cold_info["array_misses"]
+    assert 0 < hot_info["workspace_bytes"] <= hot_info["workspace_byte_limit"]
+    assert not np.array_equal(first.rir, second.rir)
+    steam_rt._clear_static_caches()
 
 
 def test_concave_room_uses_transmitted_direct_and_utd_diffraction():
@@ -64,6 +130,9 @@ def test_web_payload_contains_true_rir_and_band_path_diagnostics():
     assert payload["rir"]["fs"] == 16000
     assert payload["rir"]["channel_count"] == 1
     assert payload["rir"]["shape"] == list(result.rir.shape)
+    assert payload["rir"]["metrics"]["dominant_path_kind"] == "direct"
+    assert payload["rir"]["metrics"]["dominant_path_gain_db"] is not None
+    assert payload["rir"]["metrics"]["dominant_path_time_ms"] > 0.0
     exact_rir = np.frombuffer(base64.b64decode(payload["rir"]["f32_base64"]), dtype="<f4").reshape(payload["rir"]["shape"])
     np.testing.assert_array_equal(exact_rir, np.asarray(result.rir, dtype=np.float32))
     assert set(payload["paths"][0]["band_gains"]) == {"125", "250", "500", "1000", "2000", "4000"}

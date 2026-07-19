@@ -1,0 +1,14 @@
+include LICENSE
+include NOTICE
+include README.md
+include THIRD_PARTY_NOTICES.md
+include CONTRIBUTING.md
+include CHANGELOG.md
+include SECURITY.md
+include requirements.txt
+recursive-include docs *.md
+recursive-include examples *.py
+recursive-include scripts *.py
+recursive-include tests *.py
+recursive-include acoustic_agent/web *.html *.css *.js
+recursive-include acoustic_agent/resources *.csv *.json *.jsonl *.md *.sofa *.sqlite3

@@ -141,3 +141,48 @@ def estimate_rt60(room_area_m2: float, perimeter_m: float, height_m: float, mate
         "surface_area_m2": round(2.0 * floor_area + wall_area, 4),
         "model": "sabine_extruded_polygon",
     }
+
+
+def estimate_surface_rt60(
+    floor_area_m2: float,
+    height_m: float,
+    materials: Mapping[str, Material],
+    vertical_areas_m2: Mapping[str, float],
+    *,
+    opening_area_m2: float = 0.0,
+) -> dict:
+    floor_area = max(float(floor_area_m2), 1e-6)
+    height = max(float(height_m), 1e-6)
+    volume = floor_area * height
+    floor = materials.get("floor") or next(iter(materials.values()))
+    ceiling = materials.get("ceiling") or floor
+    wall = materials.get("wall") or floor
+    opening_area = max(0.0, float(opening_area_m2))
+    vertical_areas = {
+        str(semantic): max(0.0, float(area))
+        for semantic, area in vertical_areas_m2.items()
+    }
+    rt60_bands: dict[str, float] = {}
+    for band in FREQUENCY_BANDS:
+        absorbed = (
+            floor_area * float(floor.absorption.get(band, 0.10))
+            + floor_area * float(ceiling.absorption.get(band, 0.08))
+            + opening_area
+        )
+        for semantic, area in vertical_areas.items():
+            material = materials.get(semantic) or wall
+            absorbed += area * float(material.absorption.get(band, 0.08))
+        rt60_bands[band] = float(0.161 * volume / max(absorbed, 1e-6))
+    vertical_area = sum(vertical_areas.values())
+    return {
+        "rt60_bands": {band: round(value, 4) for band, value in rt60_bands.items()},
+        "rt60_s": round(float(np.mean(list(rt60_bands.values()))), 4),
+        "volume_m3": round(volume, 4),
+        "surface_area_m2": round(2.0 * floor_area + vertical_area + opening_area, 4),
+        "vertical_area_m2": round(vertical_area, 4),
+        "opening_area_m2": round(opening_area, 4),
+        "surface_area_by_semantic_m2": {
+            semantic: round(area, 4) for semantic, area in vertical_areas.items()
+        },
+        "model": "sabine_explicit_surfaces_with_opening_loss",
+    }

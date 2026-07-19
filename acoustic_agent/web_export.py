@@ -26,7 +26,17 @@ def scene_payload(
             "name": room.name,
             "corners": [list(point) for point in room.corners],
             "height_m": float(room.height_m),
-            "materials": {key: {"id": value.id, "name": value.name, "absorption": dict(value.absorption)} for key, value in room.materials.items()},
+            "materials": {
+                key: {
+                    "id": value.id,
+                    "name": value.name,
+                    "semantic": value.semantic,
+                    "absorption": dict(value.absorption),
+                    "source": value.source,
+                    **dict(value.metadata),
+                }
+                for key, value in room.materials.items()
+            },
             "metadata": dict(room.metadata),
         },
         "sources": [list(point) for point in sources],
@@ -88,7 +98,7 @@ def _rir_payload(result: SimulationResult, *, include_exact: bool = True) -> Map
         "channel_samples": channel_samples,
         "channel_labels": channel_labels[:channel_limit],
         "decay_db": _energy_decay_preview(values, stride),
-        "metrics": _rir_metrics(values, fs, result.metadata),
+        "metrics": _rir_metrics(values, fs, result.metadata, result.paths),
         "representation": "channel_peak_preserving_preview",
     }
     if include_exact:
@@ -128,7 +138,12 @@ def _channel_labels(result: SimulationResult, channel_count: int) -> list[str]:
     return [f"Ch {index + 1}" for index in range(channel_count)]
 
 
-def _rir_metrics(values: np.ndarray, fs: int, metadata: Mapping[str, Any]) -> Mapping[str, float | None]:
+def _rir_metrics(
+    values: np.ndarray,
+    fs: int,
+    metadata: Mapping[str, Any],
+    paths: Sequence[Any] = (),
+) -> Mapping[str, float | str | None]:
     fs = max(int(fs), 1)
     samples = np.asarray(values, dtype=np.float64)
     if samples.ndim == 1:
@@ -142,7 +157,14 @@ def _rir_metrics(values: np.ndarray, fs: int, metadata: Mapping[str, Any]) -> Ma
     peak_index = int(np.argmax(np.max(np.abs(samples), axis=0)))
     rms = float(np.sqrt(np.mean(samples * samples)))
     direct_delay_s = float(((metadata.get("steam_audio") or {}).get("direct") or {}).get("delay_s", 0.0))
-    direct_index = int(np.clip(round(direct_delay_s * fs), 0, samples.shape[1] - 1))
+    audible_paths = [
+        path for path in paths
+        if str(getattr(path, "kind", "")) != "rt_reflection"
+        and getattr(path, "metadata", {}).get("contributes_to_rir", True) is not False
+    ]
+    dominant_path = max(audible_paths, key=lambda path: abs(float(path.gain)), default=None)
+    arrival_delay_s = float(dominant_path.delay_s) if dominant_path is not None else direct_delay_s
+    direct_index = int(np.clip(round(arrival_delay_s * fs), 0, samples.shape[1] - 1))
 
     def db_power(value: float) -> float | None:
         if value <= 1e-18:
@@ -174,6 +196,9 @@ def _rir_metrics(values: np.ndarray, fs: int, metadata: Mapping[str, Any]) -> Ma
     return {
         "peak_dbfs": db_amplitude(peak_abs),
         "peak_time_ms": round(float(peak_index / fs * 1000.0), 2),
+        "dominant_path_gain_db": db_amplitude(abs(float(dominant_path.gain))) if dominant_path is not None else None,
+        "dominant_path_time_ms": round(float(arrival_delay_s * 1000.0), 2),
+        "dominant_path_kind": str(dominant_path.kind) if dominant_path is not None else None,
         "rms_dbfs": db_amplitude(rms),
         "energy_db": db_power(total_energy),
         "direct_delay_ms": round(float(direct_delay_s * 1000.0), 2),

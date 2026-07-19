@@ -144,110 +144,16 @@ def scene_from_record(
     if not rooms:
         raise ValueError(f"ResPlan[{index}] contains no valid supported rooms")
     selected = _select_room(rooms, room_id)
-    if receiver_room_id is not None and receiver_room_id != selected["id"]:
-        return _multi_room_scene_from_record(
-            record,
-            index=index,
-            rooms=rooms,
-            selected=selected,
-            receiver_room_id=receiver_room_id,
-            height_m=float(height_m),
-            profile=profile,
-            scale=scale,
-        )
-    selected_raw = selected["geometry"]
-    room_min_x, room_min_y, room_max_x, room_max_y = selected_raw.bounds
-    selected_metric = _metric_geometry(selected_raw, scale, room_min_x, room_min_y)
-    selected_polygon = _largest_polygon(selected_metric)
-    if selected_polygon is None or selected_polygon.area <= 1e-6:
-        raise ValueError(f"ResPlan[{index}] room {selected['id']!r} has invalid geometry")
-
-    corners = _polygon_coordinates(selected_polygon)
-    width = max(room_max_x - room_min_x, 1e-6) * scale
-    depth = max(room_max_y - room_min_y, 1e-6) * scale
-    features = _boundary_features(
+    return _multi_room_scene_from_record(
         record,
-        selected_raw,
-        rooms=all_rooms,
+        index=index,
+        rooms=rooms,
+        selected=selected,
+        receiver_room_id=receiver_room_id or selected["id"],
+        height_m=float(height_m),
+        profile=profile,
         scale=scale,
-        origin=(room_min_x, room_min_y),
     )
-    surface_segments = _surface_segments(
-        selected_raw,
-        features,
-        scale=scale,
-        origin=(room_min_x, room_min_y),
-    )
-    source, receiver = _interior_pair(selected_polygon, float(height_m))
-    plan = _plan_overview(record, rooms, selected["id"], scale)
-    connections = _selected_connections(record, graph, all_rooms, selected)
-    exterior_exposures = [
-        {
-            "feature_index": feature_index,
-            "type": feature["type"],
-            "connection": feature["connection"],
-        }
-        for feature_index, feature in enumerate(features)
-        if str(feature.get("connection", "")).startswith("outdoor")
-    ]
-
-    return {
-        "dataset": {
-            "index": int(index),
-            "sample_id": record.get("id"),
-            "count": None,
-            "unit_type": str(record.get("unitType", "Unknown")),
-            "net_area_m2": _finite_float(record.get("net_area")),
-            "gross_area_m2": _finite_float(record.get("area")),
-            "meters_per_unit": float(scale),
-            "scale_source": profile["scale_source"],
-            "wall_depth_m": float(record.get("wall_depth", 0.0)) * scale,
-            "eligible": bool(profile["eligible"]),
-            "filter_reasons": list(profile["filter_reasons"]),
-            "dropped_duplicate_rooms": int(profile["dropped_duplicate_rooms"]),
-            "dropped_invalid_rooms": int(profile["dropped_invalid_rooms"]),
-        },
-        "rooms": [
-            {
-                "id": room["id"],
-                "type": room["type"],
-                "area_m2": float(room["geometry"].area * scale * scale),
-            }
-            for room in rooms
-        ],
-        "selected_room": {
-            "id": selected["id"],
-            "type": selected["type"],
-            "area_m2": float(selected_raw.area * scale * scale),
-            "connections": connections,
-            "exterior_exposures": exterior_exposures,
-        },
-        "room": {
-            "shape": "resplan",
-            "size": [float(width), float(depth), float(height_m)],
-            "corners": corners,
-            "metadata": {
-                "shape": "resplan",
-                "geometry_model": "resplan_room_extrusion",
-                "opening_model": "full_height_equivalent_boundary_material_v1",
-                "connectivity_model": "resplan_graph_plus_wall_boolean_v1",
-                "connections": connections,
-                "exterior_exposures": exterior_exposures,
-                "resplan": {
-                    "index": int(index),
-                    "sample_id": record.get("id"),
-                    "room_id": selected["id"],
-                    "room_type": selected["type"],
-                    "meters_per_unit": float(scale),
-                },
-                "boundary_features": [_public_feature(feature) for feature in features],
-                "surface_segments": surface_segments,
-            },
-        },
-        "source": source,
-        "receiver": receiver,
-        "plan": plan,
-    }
 
 
 def _multi_room_scene_from_record(
@@ -306,8 +212,10 @@ def _multi_room_scene_from_record(
         height_m=height_m,
     )
     public_portals = [_public_portal(portal, scale=scale, origin=origin) for portal in portals]
-    connections = _selected_connections(record, record["graph"], rooms, selected)
-    receiver_connections = _selected_connections(record, record["graph"], rooms, receiver_room)
+    connections = _verified_room_connections(rooms, selected, portals, boundary_features)
+    receiver_connections = _verified_room_connections(rooms, receiver_room, portals, boundary_features)
+    exterior_exposures = _room_exterior_exposures(boundary_features, selected["id"])
+    receiver_exterior_exposures = _room_exterior_exposures(boundary_features, receiver_room["id"])
     room_metadata = {
         "shape": "resplan",
         "geometry_model": "resplan_multi_room_extrusion",
@@ -316,6 +224,7 @@ def _multi_room_scene_from_record(
         "source_room_id": selected["id"],
         "receiver_room_id": receiver_room["id"],
         "connections": connections,
+        "exterior_exposures": exterior_exposures,
         "boundary_features": boundary_features,
         "surface_segments": surface_segments,
         "resplan": {
@@ -373,13 +282,14 @@ def _multi_room_scene_from_record(
             "type": selected["type"],
             "area_m2": float(selected["geometry"].area * scale * scale),
             "connections": connections,
-            "exterior_exposures": [],
+            "exterior_exposures": exterior_exposures,
         },
         "receiver_room": {
             "id": receiver_room["id"],
             "type": receiver_room["type"],
             "area_m2": float(receiver_room["geometry"].area * scale * scale),
             "connections": receiver_connections,
+            "exterior_exposures": receiver_exterior_exposures,
         },
         "room": {
             "shape": "resplan",
@@ -585,6 +495,8 @@ def _portal_route(
     source_room_id: str,
     receiver_room_id: str,
 ) -> tuple[list[str], list[str]]:
+    if source_room_id == receiver_room_id:
+        return [source_room_id], []
     graph = nx.Graph()
     for portal in portals:
         first, second = portal["room_ids"]
@@ -1069,60 +981,83 @@ def _rooms_overlap(rooms: Sequence[Mapping[str, Any]], scale: float) -> bool:
     return False
 
 
-def _selected_connections(
-    record: Mapping[str, Any],
-    graph: nx.Graph,
+def _verified_room_connections(
     rooms: Sequence[Mapping[str, Any]],
     selected: Mapping[str, Any],
+    portals: Sequence[Mapping[str, Any]],
+    features: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    alias_map = {alias: room for room in rooms for alias in room.get("aliases", [room["id"]])}
-    selected_aliases = set(selected.get("aliases", [selected["id"]]))
-    connections: dict[tuple[str, str], dict[str, Any]] = {}
-    connected_room_ids: set[str] = set()
-    for source, target, attributes in graph.edges(data=True):
-        source_id, target_id = str(source), str(target)
-        if source_id not in selected_aliases and target_id not in selected_aliases:
+    room_by_id = {str(room["id"]): room for room in rooms}
+    selected_id = str(selected["id"])
+    connections: list[dict[str, Any]] = []
+    for portal in portals:
+        room_ids = [str(room_id) for room_id in portal.get("room_ids", [])]
+        if selected_id not in room_ids or len(room_ids) != 2:
             continue
-        other_id = target_id if source_id in selected_aliases else source_id
-        other = alias_map.get(other_id)
-        other_attributes = graph.nodes[other_id]
-        target_room_id = other["id"] if other is not None else other_id
-        target_type = other["type"] if other is not None else str(other_attributes.get("type", "unknown"))
-        if target_room_id == selected["id"]:
+        target_id = room_ids[1] if room_ids[0] == selected_id else room_ids[0]
+        target = room_by_id.get(target_id)
+        if target is None:
             continue
-        edge_type = str(attributes.get("type", "adjacency"))
-        normalized = edge_type
-        verified = True
-        if edge_type == "adjacency" and other is not None:
-            verified = _is_open_passage(record, selected["geometry"], other["geometry"])
-            normalized = "via_opening" if verified else "blocked_adjacency"
-        outdoor = target_type in {"balcony", "front_door", "garden", "veranda"}
-        item = {
-            "type": normalized,
-            "legacy_type": edge_type,
-            "target_room_id": target_room_id,
-            "target_type": target_type,
-            "walkable": normalized in {"via_door", "via_opening", "direct"},
-            "outdoor": outdoor,
-            "verified": bool(verified),
+        portal_type = str(portal.get("type", "opening"))
+        connections.append({
+            "type": "via_door" if portal_type == "door" else "via_opening",
+            "legacy_type": None,
+            "target_room_id": target_id,
+            "target_type": str(target["type"]),
+            "walkable": bool(portal.get("open", False)),
+            "outdoor": str(target["type"]) == "balcony",
+            "verified": True,
+            "portal_id": str(portal.get("id", "")),
+        })
+
+    for feature in features:
+        room_ids = [str(room_id) for room_id in feature.get("room_ids", [])]
+        connection = str(feature.get("connection", ""))
+        feature_id = str(feature.get("id", ""))
+        if (
+            selected_id not in room_ids
+            or str(feature.get("type")) != "door"
+            or connection != "outdoor_entry"
+        ):
+            continue
+        connections.append({
+            "type": "outdoor_entry",
+            "legacy_type": "direct",
+            "target_room_id": feature_id or "front_door",
+            "target_type": "front_door",
+            "walkable": bool(feature.get("open", False)),
+            "outdoor": True,
+            "verified": True,
+            "portal_id": None,
+        })
+
+    return sorted(
+        connections,
+        key=lambda item: (
+            not item["outdoor"],
+            item["target_type"],
+            item["target_room_id"],
+            item["type"],
+        ),
+    )
+
+
+def _room_exterior_exposures(
+    features: Sequence[Mapping[str, Any]],
+    room_id: str,
+) -> list[dict[str, Any]]:
+    exterior_connections = {"outdoor_entry", "outdoor_facade", "outdoor_balcony"}
+    return [
+        {
+            "feature_id": feature.get("id"),
+            "feature_index": feature_index,
+            "type": feature["type"],
+            "connection": feature["connection"],
         }
-        connections[(target_room_id, normalized)] = item
-        if other is not None:
-            connected_room_ids.add(other["id"])
-    for other in rooms:
-        if other["id"] == selected["id"] or other["id"] in connected_room_ids:
-            continue
-        if _is_open_passage(record, selected["geometry"], other["geometry"]):
-            connections[(other["id"], "via_opening_detected")] = {
-                "type": "via_opening_detected",
-                "legacy_type": None,
-                "target_room_id": other["id"],
-                "target_type": other["type"],
-                "walkable": True,
-                "outdoor": other["type"] == "balcony",
-                "verified": True,
-            }
-    return sorted(connections.values(), key=lambda item: (not item["outdoor"], item["target_type"], item["target_room_id"], item["type"]))
+        for feature_index, feature in enumerate(features)
+        if room_id in feature.get("room_ids", [])
+        and str(feature.get("connection", "")) in exterior_connections
+    ]
 
 
 def _is_open_passage(record: Mapping[str, Any], first: Polygon, second: Polygon) -> bool:
@@ -1153,50 +1088,6 @@ def _is_open_passage(record: Mapping[str, Any], first: Polygon, second: Polygon)
         return False
 
 
-def _boundary_features(
-    record: Mapping[str, Any],
-    room: Polygon,
-    *,
-    rooms: Sequence[Mapping[str, Any]],
-    scale: float,
-    origin: tuple[float, float],
-) -> list[dict[str, Any]]:
-    wall_depth = max(float(record.get("wall_depth", 0.0)), 1.0)
-    proximity = max(wall_depth * 1.1, 1.25)
-    features: list[dict[str, Any]] = []
-    raw_layers = (
-        ("door", record.get("front_door"), "outdoor_entry"),
-        ("door", record.get("door"), None),
-        ("window", record.get("window"), None),
-    )
-    seen: list[Polygon] = []
-    for kind, layer, forced_connection in raw_layers:
-        for polygon in _iter_polygons(layer):
-            if any(_near_duplicate(polygon, previous) for previous in seen):
-                continue
-            if polygon.distance(room.boundary) > proximity:
-                continue
-            contact = room.boundary.intersection(polygon.buffer(max(wall_depth * 0.28, 0.4), cap_style=2, join_style=2))
-            raw_segments = _line_segments(contact)
-            if sum(LineString(segment).length for segment in raw_segments) <= 0.25:
-                continue
-            seen.append(polygon)
-            metric_polygon = _metric_geometry(polygon, scale, *origin)
-            metric_segments = [_metric_segment(segment, scale, origin) for segment in raw_segments]
-            connection = forced_connection or _connector_connection(kind, polygon, room, rooms, proximity)
-            features.append({
-                "type": kind,
-                "raw_geometry": polygon,
-                "raw_zone": polygon.buffer(max(wall_depth * 0.28, 0.4), cap_style=2, join_style=2),
-                "polygon": _polygon_coordinates(_largest_polygon(metric_polygon)),
-                "segments": metric_segments,
-                "sill_height_m": 0.0 if kind == "door" else 0.9,
-                "height_m": 2.1 if kind == "door" else 1.2,
-                "connection": connection,
-            })
-    return features
-
-
 def _connector_connection(
     kind: str,
     connector: Polygon,
@@ -1216,36 +1107,6 @@ def _connector_connection(
         target = max(candidates, key=lambda item: item[0])[1]
         return "outdoor_balcony" if target["type"] == "balcony" else "interior_room"
     return "outdoor_facade" if kind == "window" else "outdoor_or_unmatched"
-
-
-def _surface_segments(
-    room: Polygon,
-    features: Sequence[dict[str, Any]],
-    *,
-    scale: float,
-    origin: tuple[float, float],
-) -> list[dict[str, Any]]:
-    remaining: BaseGeometry = room.boundary
-    segments: list[dict[str, Any]] = []
-    for feature_index, feature in enumerate(features):
-        contact = remaining.intersection(feature["raw_zone"])
-        for segment in _line_segments(contact):
-            metric = _metric_segment(segment, scale, origin)
-            if _segment_length(metric) < 0.015:
-                continue
-            segments.append({
-                "a": metric[0],
-                "b": metric[1],
-                "type": feature["type"],
-                "feature_index": feature_index,
-            })
-        remaining = remaining.difference(feature["raw_zone"])
-    for segment in _line_segments(remaining):
-        metric = _metric_segment(segment, scale, origin)
-        if _segment_length(metric) < 0.015:
-            continue
-        segments.append({"a": metric[0], "b": metric[1], "type": "wall"})
-    return segments
 
 
 def _plan_overview(
@@ -1280,6 +1141,7 @@ def _plan_overview(
                 apertures.append({"type": kind, "polygon": _polygon_coordinates(metric)})
     return {
         "size": [float((max_x - min_x) * scale), float((max_y - min_y) * scale)],
+        "simulation_origin": [0.0, 0.0],
         "rooms": room_payload,
         "apertures": apertures,
     }
@@ -1364,17 +1226,6 @@ def _polygon_coordinates(polygon: Polygon | None) -> list[list[float]]:
         if not coordinates or _segment_length([coordinates[-1], point]) > 1e-7:
             coordinates.append(point)
     return coordinates
-
-
-def _public_feature(feature: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "type": feature["type"],
-        "polygon": feature["polygon"],
-        "segments": feature["segments"],
-        "sill_height_m": feature["sill_height_m"],
-        "height_m": feature["height_m"],
-        "connection": feature.get("connection", "unknown"),
-    }
 
 
 def _segment_length(segment: Sequence[Sequence[float]]) -> float:

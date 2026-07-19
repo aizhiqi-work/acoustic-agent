@@ -1,119 +1,361 @@
 # Acoustic Agent
 
-Acoustic Agent is a compact indoor acoustic simulation engine for generating room impulse responses (RIRs) from editable room geometry, material presets, source positions, and receiver models.
+Acoustic Agent is a Python indoor sound-field simulation engine and local
+WebGL workbench for generating room impulse responses (RIRs). It supports
+editable geometric rooms, indexed ResPlan apartments, semantic materials,
+directional sources, mono/array/HRTF receivers, and static or moving endpoints.
 
-## Current Solver
+The repository is self-contained for normal use. Both bundled SOFA HRTF files,
+the acoustic-material SQLite database, and the compiled ResPlan SQLite database
+are included in source and Python distributions.
 
-The single-room solver is intentionally unified around three acoustic components:
+> **Project status:** research alpha. The solver is designed for reproducible
+> experimentation and dataset generation. Validate results against measurements
+> before using them for safety-critical, architectural, or commercial decisions.
 
-- Direct sound: distance attenuation, air absorption, optional occlusion/transmission.
-- Diffraction: UTD-style edge paths for non-line-of-sight geometry.
-- RT field: path-traced reflection energy, RT60 estimation, and reconstructed reflection/reverb IR.
+## Highlights
 
-Low-order ISM diagnostics are no longer part of the public single-room pipeline. Reflections are represented by the RT energy field, including directional FOA data for HRTF rendering when available.
+- One Python API for Geometry and ResPlan scenes.
+- Unified WebGL workbench at `/geometry` and `/resplan`.
+- Direct sound with distance attenuation and air absorption.
+- Occlusion, transmission, UTD-style diffraction, and path-traced reflections.
+- Six-band energy tracing and a 16-line Hadamard FDN late-reverb model.
+- Coupled-room decay and portal routing for open-door cross-room scenes.
+- Numba JIT kernels with deterministic seeded simulation and workspace caches.
+- Mono, linear array, circular array, and SOFA HRTF receivers.
+- Omni, cardioid-family, dipole, and configurable source directivity.
+- Reproducible semantic material and furniture sampling.
+- Static, approach, and random travel trajectories with per-frame RIRs.
 
-## RT Path Display
+## Bundled Runtime Resources
 
-The Web UI does not draw every traced RT event. The solver still traces the full `rt_num_rays x rt_num_bounces` field, while the displayed `rt_reflection` paths are representative samples from that field.
+| Resource | Contents | Installed size |
+| --- | --- | ---: |
+| `cipic_124.sofa` | Default CIPIC subject 124 HRTF | 3.60 MB |
+| `sadie_h12.sofa` | SADIE II subject H12 HRTF | 8.75 MB |
+| `acoustic_materials_v3.sqlite3` | 3,741 six-band material records | 1.91 MB |
+| `resplan_v1.sqlite3` | 15,376 audited apartment scenes | 63.74 MB |
 
-The current display retention policy is `stratified_order_then_strongest_gain`:
+The SQLite databases use Git LFS; the SOFA files are versioned directly. Their
+sizes, SHA-256 values, roles, and license notes are recorded in
+`acoustic_agent/resources/manifest.json`. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) before redistribution.
 
-- Use the same rays and bounces as the simulation, not a separate preview setting.
-- Build a larger candidate pool of receiver-hit RT paths.
-- Bucket candidates by reflection order.
-- Keep more low-order paths for readability, but reserve slots for mid- and high-order RT paths.
-- Within each order bucket, keep the strongest-gain paths first.
+## Requirements
 
-This avoids two bad visualizations: early paths monopolizing the display, and high-order floor/ceiling bounces overwhelming the scene. The metadata reports this as `rt_visual.retention_policy`.
+- Python 3.10 or newer.
+- Git LFS when installing from a Git clone.
+- A modern browser with WebGL for the workbench.
 
-## Receiver Models
+The Python runtime dependencies are NumPy, Numba, h5py, Shapely, and NetworkX.
+A C/C++ compiler is not required for a normal wheel-based installation.
 
-- Mono pressure RIR.
-- SOFA HRTF binaural render. The bundled default is CIPIC subject 124, matching the source data for Steam Audio's built-in default HRTF; pass `sofa_path` to use another SOFA file.
-- Linear microphone array.
-- Circular microphone array.
-
-## Quick Start
+## Install From Source
 
 ```bash
+git lfs install
+git clone <repository-url>
+cd acoustic-agent
+git lfs pull
+
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
-python examples/basic_room.py
+```
+
+On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`.
+
+Verify that installation did not leave Git LFS pointer files in place:
+
+```bash
+acoustic-agent verify-resources --hashes
+```
+
+For a non-editable local installation:
+
+```bash
+python -m pip install .
+```
+
+Detailed platform, wheel, offline, and troubleshooting instructions are in
+[`docs/INSTALLATION.md`](docs/INSTALLATION.md).
+
+## Start The Workbench
+
+```bash
+acoustic-agent web
+```
+
+Open:
+
+- Geometry: http://127.0.0.1:8765/geometry
+- ResPlan: http://127.0.0.1:8765/resplan
+
+Configuration examples:
+
+```bash
+acoustic-agent web --host 127.0.0.1 --port 9000
+acoustic-agent web --resplan-resource /path/to/resplan_v1.sqlite3
+acoustic-agent web --resplan-dataset /path/to/ResPlan.pkl
+```
+
+Startup performs a small Numba warmup. Use `--no-warmup` only when faster server
+startup matters more than latency on the first simulation.
+
+The legacy commands remain supported:
+
+```bash
 python scripts/run_web.py
-python scripts/run_resplan_web.py
+python -m acoustic_agent.web_server --port 8765
 ```
 
-The geometry workbench runs at `http://127.0.0.1:8765`. The ResPlan workbench runs independently at `http://127.0.0.1:8766` and loads `../ResPlan.pkl` by default. Use its plan index, source-room selector, and microphone-room selector to switch between the established same-room solver and the multi-room portal model.
-
-Pass another dataset location when needed:
-
-```bash
-python scripts/run_resplan_web.py --dataset /path/to/ResPlan.pkl --port 8766
-```
-
-ResPlan coordinates are converted to meters with the audited scale policy below. Same-room scenes retain the original full-height equivalent door/window boundary model. When the source and microphone are in different rooms, the engine builds the whole apartment in global coordinates: verified interior and balcony doors become open `0-2.1 m` portals with reflective lintels, wall-free room connections become full-height portals, entry or unmatched doors remain closed door surfaces, and windows remain closed glass surfaces. Balconies are exposed as source and microphone room candidates. The cross-room solver combines direct visibility or weak wall transmission, deterministic routing through the verified portal graph, and Numba-parallel visual and energy-field tracing through the same openings. The JIT intersection kernel preserves each wall segment's vertical range, including door lintels and window spans. Its energy kernel consumes the same NumPy PCG64 scattering values and sample indices as the reference vectorized solver, preserving the traced echogram while accelerating the computation.
-
-### ResPlan filtering
-
-The ResPlan workbench keeps the source dataset index but navigates only audited single-floor scenes. The audit removes duplicate room polygons, rejects implausible room geometry, and filters plans with stairs, disconnected inner polygons, excessive room counts, or material room overlaps. Metric scale uses a plausible `net_area` first, a gross-area proxy second, and wall depth only as a final fallback.
-
-`GET /api/v1/resplan/stats` returns the current audit counts. `GET /api/v1/resplan/index?idx=2&direction=nearest` resolves a raw dataset index to an eligible index; `direction` also accepts `next`, `previous`, and `random`. Scene metadata includes normalized room connections such as `via_door`, `via_window`, `via_opening`, and outdoor entry or balcony targets. Cross-room propagation through these connections is intentionally not enabled in the same-room solver yet.
-
-## HTTP API
-
-Get an exact float32 RIR as a WAV file with one request. The JSON body accepts the same room, source, receiver, material, and quality fields as the workbench.
-
-```bash
-curl -X POST http://127.0.0.1:8765/api/rir.wav \
-  -H 'content-type: application/json' \
-  --data '{"shape":"rectangle","size":[6,4,2.8],"source":[1.2,1.1,1.5],"receiver":[4.7,2.8,1.4],"quality":"preview"}' \
-  --output rir.wav
-```
-
-Python users can request `/api/rir.npy` and load the exact `[channel, sample]` float32 array directly with `numpy.load`. `POST /api/v1/simulate` runs once and returns only a compact result summary with `files.wav` and `files.npy` download links. The original `POST /api/simulate` remains available for backward compatibility.
-
-## Python API
-
-The shortest object-oriented form is:
+## Geometry Python API
 
 ```python
 from acoustic_agent import AcousticAgent
 
-agent = AcousticAgent(room=[6, 4, 2.8], quality="simulation")
-rir = agent.run(source=[1.2, 1.1, 1.5], receiver=[4.7, 2.8, 1.4]).rir
+room = {
+    "shape": "u_shape",
+    "size": [6.0, 10.0, 2.8],
+    "material_profile": {
+        "wall": "auto",
+        "floor": "auto",
+        "ceiling": "auto",
+    },
+    "material_seed": 42,
+    "opening_width": 0.42,
+    "opening_depth": 0.82,
+    "opening_offset": 0.5,
+}
+
+agent = AcousticAgent(
+    room=room,
+    source_model={"type": "omni"},
+    receiver_model={"type": "mono"},
+    quality="simulation",
+    duration_s=2.0,
+    fs=16000,
+)
+
+result = agent.run(
+    source=[5.766, 2.587, 1.231],
+    receiver=[1.079, 6.252, 1.348],
+)
+
+rir = result.rir                 # float32 [channel, sample]
+rt60 = result.rt60               # per-band and broadband EDC/solver estimates
+paths = result.paths             # direct/diffraction/representative RT paths
+metadata = result.metadata       # solver, materials, decay, cache, diagnostics
 ```
 
-Use the lower-level functions when individual solver settings need to be controlled:
+## ResPlan Python API
+
+The shortest form reads the bundled database by `idx`, samples rooms and valid
+positions, and builds the complete apartment geometry:
 
 ```python
-from acoustic_agent import SimConfig, make_room, microphone_array, simulate_rir
+from acoustic_agent import AcousticAgent
 
-room = make_room(
-    "rectangle",
-    size=(6.0, 4.0, 2.8),
-    materials={"wall": "wall", "floor": "carpet", "ceiling": "ceiling"},
-)
-
-config = SimConfig(
+agent = AcousticAgent.from_resplan(
+    idx=0,
+    placement="same_room",       # random / same_room / cross_room
+    seed=42,
+    material_seed=1451557868,
+    material_profile={
+        "wall": "auto",
+        "floor": "auto",
+        "ceiling": "auto",
+        "door": "auto",
+        "window": "auto",
+    },
+    source_model={"type": "omni"},
+    receiver_model={"type": "mono"},
+    quality="simulation",
+    duration_s=2.0,
     fs=16000,
-    duration_s=1.2,
-    rt_num_rays=32768,
-    rt_num_bounces=24,
-    rt_duration_s=1.5,
 )
 
-result = simulate_rir(
-    room,
-    source=(1.2, 1.0, 1.5),
-    receiver=(4.8, 2.8, 1.4),
-    config=config,
-    receiver_model=microphone_array("hrtf"),
-)
-
-print(result.rir.shape)
-print(result.rt60)
-print(result.paths[0])
+print(agent.rooms)       # candidate room list
+print(agent.placement)   # sampled rooms and positions
+rir = agent.run().rir
 ```
 
-## Web Workbench
+Use `source_room`, `receiver_room`, `source`, or `receiver` only when an
+experiment needs explicit placement. The default indexed workflow does not
+require room names.
 
-The Web UI exposes the same core API: `make_room(...)`, `SimConfig(...)`, `microphone_array(...)`, and `simulate_rir(...)`. Editing the room, material, source, receiver, quality, or receiver model sends a local request to the Python engine and redraws direct, diffraction, and RT sample paths.
+Verified interior doors are represented as open portals with reflective
+lintels. Wall-free room connections are full-height portals. Unmatched entry
+doors remain closed surfaces, and windows remain glass surfaces. Same-room and
+cross-room runs use the same full-apartment model.
+
+## Semantic Furniture And Materials
+
+```python
+agent = AcousticAgent.from_resplan(
+    idx=12,
+    seed=42,
+    material_seed=2026,
+    acoustic_geometry=[
+        {
+            "id": "sofa_0",
+            "type": "sofa",
+            "semantic": "sofa_couch",
+            "absorption_class": "highly_absorptive",
+            "position": [2.5, 2.0],
+            "rotation": 0.0,
+            "size": [2.0, 0.9, 0.72],
+        }
+    ],
+)
+```
+
+Material classes are `reflective`, `semi_reflective`, `absorptive`, and
+`highly_absorptive`. `auto` samples a compatible family and measured six-band
+record. `material_seed` makes the full selection reproducible. Door and window
+segments receive their own sampled materials instead of inheriting the wall.
+
+## Motion
+
+```python
+motion = agent.sample_motion(
+    mode="approach",              # approach / random
+    moving="receiver",           # source / receiver
+    distance_m=2.0,
+    keyframe_spacing_m=0.25,
+    seed=42,
+)
+
+dynamic = agent.run_dynamic(motion)
+rir_frames = dynamic.rirs
+```
+
+ResPlan trajectories route through verified openings when they cross rooms.
+Each frame is solved against its updated source/receiver position and contains
+its own RIR and metrics.
+
+## Quality Presets
+
+| Quality | Rays | Bounces | Intended use |
+| --- | ---: | ---: | --- |
+| `preview` | 8,192 | 32 | Fast interaction and layout checks |
+| `simulation` | 32,768 | 64 | Default dataset and listening work |
+| `fine` | 65,536 | 96 | Higher-stability analysis |
+| `reference` | 131,072 | 96 | Slow convergence/reference runs |
+
+Cross-room runs can raise the bounce budget adaptively to at least 96 and at
+most 128. The exact resolved configuration is reported in result metadata.
+
+RIR length and quality are independent. `duration_s` controls the returned
+array length; the quality preset controls ray and bounce counts. Choose a
+duration long enough to contain the expected decay.
+
+## Receiver And Source Models
+
+Receiver examples:
+
+```python
+{"type": "mono"}
+{"type": "hrtf", "orientation_deg": -60}
+{"type": "linear", "count": 4, "spacing_m": 0.08, "orientation_deg": 0}
+{"type": "circular", "count": 8, "radius_m": 0.12, "orientation_deg": 0}
+```
+
+The default HRTF is `cipic_124.sofa`. Select SADIE or a custom SOFA file with
+`{"type": "hrtf", "sofa_path": "/path/to/file.sofa"}`.
+
+Source examples:
+
+```python
+{"type": "omni"}
+{"type": "cardioid", "orientation_deg": 30}
+{"type": "dipole", "orientation_deg": 30}
+{"type": "focused", "orientation_deg": 30}
+{"type": "weighted_dipole", "dipole_weight": 0.65, "dipole_power": 2.0}
+```
+
+## HTTP API
+
+Start the workbench, then request a directly usable WAV without base64:
+
+```bash
+curl -X POST http://127.0.0.1:8765/api/rir.wav \
+  -H 'content-type: application/json' \
+  --data '{
+    "shape": "rectangle",
+    "size": [6, 4, 2.8],
+    "source": [1.2, 1.1, 1.5],
+    "receiver": [4.7, 2.8, 1.4],
+    "quality": "preview"
+  }' \
+  --output rir.wav
+```
+
+Use `POST /api/rir.npy` for the exact float32 `[channel, sample]` array. The
+compact `POST /api/v1/simulate` response returns result metadata plus temporary
+WAV and NPY download links. Workbench-specific endpoints are documented in
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+The HTTP server is intended for local development. It has no authentication or
+TLS. Keep the default `127.0.0.1` binding unless you provide a secure proxy.
+
+## Solver Model
+
+The current pipeline combines:
+
+1. Direct sound, distance attenuation, air absorption, occlusion/transmission,
+   and source/receiver directivity.
+2. UTD-style diffraction for non-line-of-sight geometry.
+3. Path-traced six-band reflection energy with specular and diffuse scattering.
+4. Per-band decay estimation and a calibrated 16-line Hadamard FDN tail.
+5. Coupled-room energy statistics and deterministic portal paths for ResPlan.
+6. Receiver rendering to mono, arrays, FOA diagnostics, or binaural HRTF output.
+
+Displayed RT paths are a representative stratified subset of the same traced
+field, not a second visual-only trace. The complete energy field drives the RIR.
+
+## CLI Reference
+
+```bash
+acoustic-agent --version
+acoustic-agent info
+acoustic-agent info --json
+acoustic-agent verify-resources
+acoustic-agent verify-resources --hashes
+acoustic-agent web --help
+```
+
+## Development And Release
+
+```bash
+python -m pip install -e ".[dev]"
+pytest
+python -m build
+python -m twine check dist/*
+```
+
+CI checks out Git LFS resources, validates their schemas, runs the test suite,
+and builds both wheel and source distribution. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md), [`CHANGELOG.md`](CHANGELOG.md), and
+[`docs/RESOURCES.md`](docs/RESOURCES.md).
+
+## Repository Layout
+
+```text
+acoustic_agent/              Python package and solver
+  resources/                 SOFA, material SQL, ResPlan SQL, manifests
+  web/                       Shared Geometry/ResPlan WebGL frontend
+docs/                        Installation, configuration, resource documentation
+examples/                    Geometry, ResPlan, and motion examples
+scripts/                     Web launchers and reproducible resource builders
+tests/                       Solver, API, parity, resource, and Web tests
+```
+
+## License And Data Terms
+
+Acoustic Agent source code and project-authored documentation are licensed
+under Apache-2.0. Bundled datasets retain separate terms. Read
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), including the required
+provenance review for the material and ResPlan source collections, before a
+public release or redistribution.

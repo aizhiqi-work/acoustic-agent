@@ -1,21 +1,21 @@
 from __future__ import annotations
 
 import argparse
-from functools import lru_cache
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .resplan import DEFAULT_RESPLAN_PATH, ResPlanDataset
+from .resplan_resource import DEFAULT_RESPLAN_RESOURCE, ResPlanResource
 from .web_server import AcousticWorkbenchHandler, WEB_ROOT, _warm_simulation_kernels
 
 
-_SCENE_START = '      <section class="panelBlock editorBlock">'
-_SCENE_END = '      <section class="panelBlock positionBlock">'
-_RESPLAN_SCENE_SETUP = '''      <section class="panelBlock editorBlock resplanEditorBlock">
+_SCENE_START = '      <section id="sceneSection" class="panelBlock editorBlock setupSection">'
+_SCENE_END = '      <section id="materialsSection" class="panelBlock materialBlock setupSection">'
+_RESPLAN_SCENE_SETUP = '''      <section id="sceneSection" class="panelBlock editorBlock resplanEditorBlock setupSection">
         <div class="inspectorHeader">
           <h2>ResPlan scene</h2>
-          <span id="status">Loading</span>
         </div>
 
         <div class="resplanIndexControl">
@@ -38,30 +38,6 @@ _RESPLAN_SCENE_SETUP = '''      <section class="panelBlock editorBlock resplanEd
         <canvas id="resplanPlanCanvas" width="320" height="210" aria-label="Selected ResPlan floor plan"></canvas>
         <div id="resplanMeta" class="resplanMeta"></div>
 
-        <div class="propertyGrid materialGrid">
-          <label>Wall
-            <select id="wallMaterial">
-              <option value="wall">Brick</option>
-              <option value="wood">Wood</option>
-              <option value="curtain">Curtain</option>
-            </select>
-          </label>
-          <label>Floor
-            <select id="floorMaterial">
-              <option value="floor">Marble</option>
-              <option value="floor_carpet">Carpet</option>
-              <option value="wood">Wood</option>
-            </select>
-          </label>
-          <label>Ceiling
-            <select id="ceilingMaterial">
-              <option value="ceiling">Wood</option>
-              <option value="ceiling_tile">Tile</option>
-              <option value="fabric">Fabric</option>
-            </select>
-          </label>
-        </div>
-
         <div class="propertyGrid resplanHeightControl">
           <label>Height (m)<input id="height" type="number" min="2" max="6" step="0.1" value="2.8"></label>
         </div>
@@ -75,7 +51,7 @@ _RESPLAN_SCENE_SETUP = '''      <section class="panelBlock editorBlock resplanEd
 
 
 class ResPlanWorkbenchHandler(AcousticWorkbenchHandler):
-    dataset: ResPlanDataset
+    dataset: Any
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -128,13 +104,12 @@ class ResPlanWorkbenchHandler(AcousticWorkbenchHandler):
         self.wfile.write(data)
 
 
-@lru_cache(maxsize=1)
 def _resplan_viewer_html() -> str:
     html = (WEB_ROOT / "viewer.html").read_text(encoding="utf-8")
     start = html.index(_SCENE_START)
     end = html.index(_SCENE_END, start)
     html = html[:start] + _RESPLAN_SCENE_SETUP + html[end:]
-    html = html.replace('<main id="app">', '<main id="app" data-scene-source="resplan">', 1)
+    html = html.replace('data-scene-source="geometry"', 'data-scene-source="resplan"', 1)
     html = html.replace("AcousticAgent WebGL Workbench", "AcousticAgent ResPlan Workbench", 1)
     html = html.replace("Scene setup</p>", "ResPlan room</p>", 1)
     return html
@@ -144,16 +119,31 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Acoustic Agent ResPlan workbench.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8766, type=int)
-    parser.add_argument("--dataset", type=Path, default=DEFAULT_RESPLAN_PATH)
+    parser.add_argument(
+        "--resource",
+        type=Path,
+        default=DEFAULT_RESPLAN_RESOURCE,
+        help="Compiled ResPlan SQLite resource. Used by default.",
+    )
+    parser.add_argument(
+        "--dataset",
+        type=Path,
+        default=None,
+        help=f"Legacy raw ResPlan pickle path. Defaults to {DEFAULT_RESPLAN_PATH}.",
+    )
     args = parser.parse_args()
-    ResPlanWorkbenchHandler.dataset = ResPlanDataset(args.dataset)
+    if args.dataset is not None:
+        ResPlanWorkbenchHandler.dataset = ResPlanDataset(args.dataset)
+    else:
+        ResPlanWorkbenchHandler.dataset = ResPlanResource(args.resource)
     _warm_simulation_kernels()
     server = ThreadingHTTPServer((args.host, args.port), ResPlanWorkbenchHandler)
     print(f"Acoustic Agent ResPlan workbench: http://{args.host}:{args.port}")
     stats = ResPlanWorkbenchHandler.dataset.stats()
+    source_path = ResPlanWorkbenchHandler.dataset.path
     print(
         f"ResPlan scenes: {stats['eligible_records']} eligible / {stats['records']} total "
-        f"from {ResPlanWorkbenchHandler.dataset.path}"
+        f"from {source_path}"
     )
     try:
         server.serve_forever()

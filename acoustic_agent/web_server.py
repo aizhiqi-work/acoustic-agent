@@ -21,8 +21,10 @@ from .api import quality_preset
 from .directivity import source_directivity
 from .engine import SimulationResult, simulate_rir
 from .geometry import make_room
+from .materials import MaterialLibrary, material_summary
 from .mic import microphone_array
 from .models import Room, SimConfig
+from .motion import motion_room_metadata
 from .web_export import scene_payload
 
 
@@ -30,7 +32,7 @@ WEB_ROOT = Path(__file__).resolve().parent / "web"
 CALIBRATION_AUDIO_PATH = Path(__file__).resolve().parents[2] / "reading.wav"
 _SIMULATION_LOCK = Lock()
 _RESULT_LOCK = Lock()
-_RESULT_LIMIT = 8
+_RESULT_LIMIT = 64
 
 
 @dataclass(frozen=True)
@@ -56,13 +58,62 @@ _RESULTS: OrderedDict[str, StoredResult] = OrderedDict()
 
 
 class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
+    resplan_dataset: Any | None = None
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=str(WEB_ROOT), **kwargs)
 
+    def end_headers(self) -> None:
+        path = urlparse(self.path).path
+        if path in {"/", "/geometry", "/resplan"} or Path(path).suffix in {".js", ".css", ".html"}:
+            self.send_header("Cache-Control", "no-cache, max-age=0, must-revalidate")
+        super().end_headers()
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/v1/resplan/scene":
+            try:
+                dataset = self._require_resplan_dataset()
+                query = parse_qs(parsed.query)
+                index = int(query.get("idx", ["0"])[0])
+                room_id = query.get("room", [None])[0]
+                receiver_room_id = query.get("receiver_room", [None])[0]
+                height = float(query.get("height", ["2.8"])[0])
+                self._send_json(dataset.scene(
+                    index,
+                    room_id,
+                    receiver_room_id=receiver_room_id,
+                    height_m=height,
+                ))
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=400)
+            return
+        if parsed.path == "/api/v1/resplan/index":
+            try:
+                dataset = self._require_resplan_dataset()
+                query = parse_qs(parsed.query)
+                index = int(query.get("idx", ["0"])[0])
+                direction = query.get("direction", ["nearest"])[0]
+                self._send_json({"index": dataset.resolve_index(index, direction)})
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=400)
+            return
+        if parsed.path == "/api/v1/resplan/stats":
+            try:
+                self._send_json(self._require_resplan_dataset().stats())
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=400)
+            return
         if parsed.path.startswith("/api/v1/results/"):
             self._send_stored_result(parsed.path)
+            return
+        if parsed.path == "/api/v1/materials/semantics":
+            library = MaterialLibrary.load()
+            self._send_json({"stats": library.stats(), "semantics": library.catalog()})
             return
         if parsed.path == "/api/calibration-audio":
             try:
@@ -77,8 +128,25 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
                 self.send_error(400, str(exc))
             return
         if parsed.path == "/":
-            self.path = "/viewer.html"
+            self.send_response(302)
+            self.send_header("location", "/geometry")
+            self.send_header("content-length", "0")
+            self.end_headers()
+            return
+        if parsed.path == "/geometry":
+            self._send_html((WEB_ROOT / "viewer.html").read_text(encoding="utf-8"))
+            return
+        if parsed.path == "/resplan":
+            from .resplan_web_server import _resplan_viewer_html
+
+            self._send_html(_resplan_viewer_html())
+            return
         return super().do_GET()
+
+    def _require_resplan_dataset(self) -> Any:
+        if self.resplan_dataset is None:
+            raise RuntimeError("ResPlan resource is not configured")
+        return self.resplan_dataset
 
     def do_OPTIONS(self) -> None:
         if not urlparse(self.path).path.startswith("/api/"):
@@ -93,7 +161,7 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path not in {"/api/simulate", "/api/v1/simulate", "/api/v1/workbench", "/api/rir.wav", "/api/rir.npy"}:
+        if parsed.path not in {"/api/simulate", "/api/v1/simulate", "/api/v1/workbench", "/api/v1/dynamic-workbench", "/api/rir.wav", "/api/rir.npy"}:
             self.send_error(404, "unknown API endpoint")
             return
         try:
@@ -107,6 +175,9 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
                     self._send_json(response)
                 elif parsed.path == "/api/v1/workbench":
                     response = simulate_workbench_from_payload(payload)
+                    self._send_json(response)
+                elif parsed.path == "/api/v1/dynamic-workbench":
+                    response = simulate_dynamic_workbench_from_payload(payload)
                     self._send_json(response)
                 else:
                     simulation = _simulate_payload(payload)
@@ -140,6 +211,15 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(data)))
         self._send_cors_headers()
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _send_html(self, html: str) -> None:
+        data = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("content-type", "text/html; charset=utf-8")
+        self.send_header("content-length", str(len(data)))
+        self.send_header("cache-control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
@@ -276,12 +356,86 @@ def simulate_workbench_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def simulate_dynamic_workbench_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    motion = payload.get("motion") if isinstance(payload.get("motion"), dict) else {}
+    raw_frames = motion.get("frames") if isinstance(motion.get("frames"), list) else []
+    if len(raw_frames) < 2 or len(raw_frames) > 65:
+        raise ValueError("dynamic motion must contain between 2 and 65 frames")
+
+    base_payload = dict(payload)
+    base_payload.pop("motion", None)
+    simulations: list[PayloadSimulation] = []
+    frame_results: list[dict[str, Any]] = []
+    previous_phase = -1.0
+    for index, frame in enumerate(raw_frames):
+        if not isinstance(frame, dict):
+            raise ValueError("each dynamic motion frame must be an object")
+        phase = float(frame.get("phase", index / max(len(raw_frames) - 1, 1)))
+        if not 0.0 <= phase <= 1.0 or phase <= previous_phase:
+            raise ValueError("dynamic motion frame phases must increase from 0 to 1")
+        previous_phase = phase
+        frame_payload = dict(base_payload)
+        frame_payload["source"] = _float_list(frame.get("source"), 3)
+        frame_payload["receiver"] = _float_list(frame.get("receiver"), 3)
+        if isinstance(base_payload.get("room_metadata"), dict):
+            frame_payload["room_metadata"] = motion_room_metadata(
+                base_payload["room_metadata"],
+                frame_payload["source"],
+                frame_payload["receiver"],
+            )
+        simulation = _simulate_payload(frame_payload)
+        simulations.append(simulation)
+        result_id, result_metadata = _store_result(simulation.result)
+        frame_results.append({
+            "index": index,
+            "phase": round(phase, 6),
+            "source": [float(value) for value in simulation.source],
+            "receiver": [float(value) for value in simulation.receiver],
+            "result_id": result_id,
+            "rir": {
+                "fs": result_metadata["sample_rate"],
+                "shape": result_metadata["shape"],
+                "duration_s": result_metadata["duration_s"],
+                "wav_url": result_metadata["files"]["wav"],
+                "npy_url": result_metadata["files"]["npy"],
+            },
+            "rt60": dict(simulation.result.rt60),
+        })
+
+    reference = simulations[0]
+    reference_result = frame_results[0]
+    out = _scene_response(reference, include_exact_rir=False)
+    out["result_id"] = reference_result["result_id"]
+    out["result"] = _get_stored_result(reference_result["result_id"]).metadata
+    out["rir"].update({
+        "encoding": "float32-wav",
+        "wav_url": reference_result["rir"]["wav_url"],
+        "npy_url": reference_result["rir"]["npy_url"],
+    })
+    out["dynamic"] = {
+        "mode": str(motion.get("mode", "approach")),
+        "moving": str(motion.get("moving", "source")),
+        "distance_m": float(motion.get("distance_m", 0.0)),
+        "requested_distance_m": float(motion.get("requested_distance_m", motion.get("distance_m", 0.0))),
+        "keyframes": len(frame_results),
+        "path_model": str(motion.get("path_model", "local_smoothstep")),
+        "frames": frame_results,
+        "reference_frame": 0,
+        "renderer": "time_varying_rir_snapshot_interpolation",
+    }
+    return out
+
+
 def _simulate_payload(payload: dict[str, Any]) -> PayloadSimulation:
     shape = str(payload.get("shape", "rectangle"))
     size = _float_list(payload.get("size", (6.0, 4.0, 2.8)), 3)
     source = tuple(_float_list(payload.get("source", (1.2, 1.1, 1.5)), 3))
     receiver = tuple(_float_list(payload.get("receiver", (4.7, 2.8, 1.4)), 3))
     materials = payload.get("materials") if isinstance(payload.get("materials"), dict) else {}
+    material_profile = payload.get("material_profile")
+    if not isinstance(material_profile, (str, dict)):
+        material_profile = None
+    material_seed = int(payload.get("material_seed", 0))
     objects = _object_list(payload.get("objects"))
     geometry = payload.get("geometry") if isinstance(payload.get("geometry"), dict) else {}
     room_metadata = payload.get("room_metadata") if isinstance(payload.get("room_metadata"), dict) else {}
@@ -299,14 +453,17 @@ def _simulate_payload(payload: dict[str, Any]) -> PayloadSimulation:
     room = make_room(
         shape,
         size=size,
-        materials={
-            "wall": str(materials.get("wall", "wall")),
-            "floor": str(materials.get("floor", "floor")),
-            "ceiling": str(materials.get("ceiling", "ceiling")),
-        },
+        materials=materials,
+        material_profile=material_profile,
+        material_seed=material_seed,
         **room_kwargs,
     )
     if isinstance(room.metadata, dict):
+        library = MaterialLibrary.load()
+        for index, item in enumerate(objects):
+            if item.get("semantic") == "small_objects_ignore":
+                continue
+            item["material_selection"] = material_summary(library.sample_geometry(item, seed=material_seed + index + 1))
         room.metadata["objects"] = objects
         for key in (
             "resplan",
@@ -341,6 +498,12 @@ def _simulate_payload(payload: dict[str, Any]) -> PayloadSimulation:
         rt_duration_s=float(config_raw.get("rt_duration_s", quality_config["rt_duration_s"])),
         rt_visual_num_rays=int(config_raw["rt_visual_num_rays"]) if "rt_visual_num_rays" in config_raw else None,
         rt_visual_num_bounces=int(config_raw["rt_visual_num_bounces"]) if "rt_visual_num_bounces" in config_raw else None,
+        adaptive_geometry_bounces=bool(config_raw.get("adaptive_geometry_bounces", True)),
+        geometry_max_bounces=int(config_raw.get("geometry_max_bounces", 128)),
+        adaptive_cross_room_bounces=bool(config_raw.get("adaptive_cross_room_bounces", True)),
+        cross_room_min_bounces=int(config_raw.get("cross_room_min_bounces", 96)),
+        cross_room_max_bounces=int(config_raw.get("cross_room_max_bounces", 128)),
+        portal_aperture_attenuation=bool(config_raw.get("portal_aperture_attenuation", False)),
         late_tail=bool(config_raw.get("late_tail", True)),
         late_tail_cutoff_s=float(config_raw.get("late_tail_cutoff_s", 0.08)),
         hybrid_transition_s=float(config_raw.get("hybrid_transition_s", 1.0)),
@@ -475,16 +638,22 @@ def _object_list(raw: Any) -> list[dict[str, Any]]:
             position = [0.0, 0.0]
         else:
             position = [float(position_raw[0]), float(position_raw[1])]
-        objects.append({
+        output = {
             "id": str(item.get("id", f"object_{index}")),
             "type": str(item.get("type", "cabinet")),
             "title": str(item.get("title", item.get("type", "Object"))),
-            "material": str(item.get("material", "wood")),
+            "semantic": str(item.get("semantic", item.get("type", "structural_element"))),
+            "absorption_class": str(item.get("absorption_class", item.get("absorption_level", "auto"))),
             "position": position,
             "rotation": float(item.get("rotation", 0.0)),
             "size": size,
             "z": float(item.get("z", size[2] * 0.5)),
-        })
+        }
+        if item.get("material") or item.get("material_id"):
+            output["material"] = str(item.get("material") or item.get("material_id"))
+        if item.get("material_type"):
+            output["material_type"] = str(item["material_type"])
+        objects.append(output)
     return objects
 
 
@@ -539,20 +708,65 @@ def _corner_list(value: Any) -> list[tuple[float, float]]:
     return corners
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the Acoustic Agent WebGL workbench.")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", default=8765, type=int)
-    args = parser.parse_args()
-    _warm_simulation_kernels()
-    server = ThreadingHTTPServer((args.host, args.port), AcousticWorkbenchHandler)
-    print(f"Acoustic Agent workbench: http://{args.host}:{args.port}")
+def serve(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    resplan_resource: str | Path | None = None,
+    resplan_dataset: str | Path | None = None,
+    warmup: bool = True,
+) -> None:
+    if resplan_dataset is not None:
+        from .resplan import ResPlanDataset
+
+        AcousticWorkbenchHandler.resplan_dataset = ResPlanDataset(resplan_dataset)
+    else:
+        from .resplan_resource import DEFAULT_RESPLAN_RESOURCE, ResPlanResource
+
+        resource_path = resplan_resource or DEFAULT_RESPLAN_RESOURCE
+        AcousticWorkbenchHandler.resplan_dataset = ResPlanResource(resource_path)
+    if warmup:
+        _warm_simulation_kernels()
+    server = ThreadingHTTPServer((host, int(port)), AcousticWorkbenchHandler)
+    print(f"Acoustic Agent geometry: http://{host}:{port}/geometry")
+    print(f"Acoustic Agent ResPlan:  http://{host}:{port}/resplan")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the Acoustic Agent WebGL workbench.")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", default=8765, type=int)
+    parser.add_argument(
+        "--resplan-resource",
+        type=Path,
+        default=None,
+        help="Compiled ResPlan SQLite resource for the unified ResPlan route.",
+    )
+    parser.add_argument(
+        "--resplan-dataset",
+        type=Path,
+        default=None,
+        help="Optional legacy ResPlan pickle instead of the compiled resource.",
+    )
+    parser.add_argument(
+        "--no-warmup",
+        action="store_true",
+        help="Skip startup JIT warmup; the first simulation will compile kernels.",
+    )
+    args = parser.parse_args()
+    serve(
+        host=args.host,
+        port=args.port,
+        resplan_resource=args.resplan_resource,
+        resplan_dataset=args.resplan_dataset,
+        warmup=not args.no_warmup,
+    )
 
 
 if __name__ == "__main__":

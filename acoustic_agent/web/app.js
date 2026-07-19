@@ -9,6 +9,9 @@ const copyCodeButton = document.getElementById("copyCode");
 const dryAudioEl = document.getElementById("dryAudio");
 const wetAudioEl = document.getElementById("wetAudio");
 const calibrationAudioMetaEl = document.getElementById("calibrationAudioMeta");
+const runSimulationButton = document.getElementById("runSimulation");
+const motionPlayButton = document.getElementById("motionPlay");
+const motionTimelineEl = document.getElementById("motionTimeline");
 const appRoot = document.getElementById("app");
 const resplanMode = appRoot?.dataset.sceneSource === "resplan";
 
@@ -36,17 +39,72 @@ const sourceDirectivityOptions = [
   { id: "dipole", title: "Dipole", dipole_weight: 1.0, dipole_power: 1.0 },
   { id: "focused", title: "Focused", dipole_weight: 0.5, dipole_power: 4.0 }
 ];
+const absorptionOptions = [
+  ["auto", "Auto"],
+  ["reflective", "Reflective"],
+  ["semi_reflective", "Semi-reflective"],
+  ["absorptive", "Absorptive"],
+  ["highly_absorptive", "Highly absorptive"],
+];
+const boundaryMaterialControls = [
+  ["wall", "wall", "wallAbsorption"],
+  ["floor", "floor", "floorAbsorption"],
+  ["ceiling", "ceiling", "ceilingAbsorption"],
+  ["door", "door", "doorAbsorption"],
+  ["window", "window_glass", "windowAbsorption"],
+];
+const activeBoundaryMaterialControls = resplanMode
+  ? boundaryMaterialControls
+  : boundaryMaterialControls.slice(0, 3);
 const objectTypeOptions = [
-  { id: "cuboid", title: "Cuboid" },
-  { id: "panel", title: "Thin panel" },
-  { id: "low_block", title: "Low block" }
+  { id: "sofa", title: "Sofa" },
+  { id: "bed", title: "Bed" },
+  { id: "table", title: "Table" },
+  { id: "cabinet", title: "Cabinet" },
+  { id: "chair", title: "Chair" },
+  { id: "rug", title: "Rug" },
+  { id: "curtain", title: "Curtain" },
+  { id: "tv_mirror", title: "TV / Mirror" },
+  { id: "fridge", title: "Fridge" },
+  { id: "washing_machine", title: "Washing Machine" },
+  { id: "acoustic_panel", title: "Panel" },
+  { id: "tile_surface", title: "Tile Surface" },
+  { id: "sanitary_fixture", title: "Bath / Sink" },
+  { id: "structural_element", title: "Column / Beam" },
+  { id: "person", title: "Person" }
 ];
 const furnitureCatalog = {
-  cuboid: { title: "Cuboid", size: [1.2, 0.55, 1.05], color: 0x8d7463, kind: "block", material: "wood", description: "solid obstacle" },
-  panel: { title: "Thin panel", size: [1.45, 0.08, 1.35], color: 0x4f6672, kind: "panel", z: 0.675, material: "plaster", description: "reflective slab" },
-  low_block: { title: "Low block", size: [1.35, 0.72, 0.45], color: 0x7f8b6f, kind: "block", material: "fabric", description: "low reflector" }
+  sofa: { title: "Sofa", semantic: "sofa_couch", size: [2.05, 0.9, 0.72], color: 0x7c8f78, kind: "sofa", material: "chairs_heavy_upholstered", description: "large soft absorber" },
+  bed: { title: "Bed", semantic: "bed_mattress", size: [2.1, 1.55, 0.55], color: 0x8f9bb5, kind: "bed", material: "chairs_medium_upholstered", description: "large bedroom absorber" },
+  table: { title: "Table", semantic: "table_desk_counter", size: [1.35, 0.78, 0.74], color: 0x9a7656, kind: "table", material: "hard_object_wood_16mm", description: "hard reflecting surface" },
+  cabinet: { title: "Cabinet", semantic: "cabinet_shelf_wardrobe", size: [1.25, 0.42, 1.75], color: 0x8d7463, kind: "shelves", material: "hard_object_wood_16mm", description: "large vertical reflector" },
+  chair: { title: "Chair", semantic: "chair_seating", size: [0.55, 0.55, 0.86], color: 0x7d8b70, kind: "chair", material: "chairs_upholstered_moderate", description: "small seating absorber" },
+  rug: { title: "Rug", semantic: "carpet_rug", size: [1.85, 1.2, 0.04], color: 0xa67b6b, kind: "rug", z: 0.02, material: "carpet_soft_10mm", description: "local floor absorber" },
+  curtain: { title: "Curtain", semantic: "curtain_blind", size: [1.75, 0.06, 2.1], color: 0x7f8b9f, kind: "panel", z: 1.05, material: "curtains_fabric", description: "soft wall covering" },
+  tv_mirror: { title: "TV / Mirror", semantic: "screen_mirror", size: [1.1, 0.05, 0.65], color: 0x242a2f, kind: "panel", z: 1.15, material: "window_door_glass_3mm", description: "hard reflective screen" },
+  fridge: { title: "Fridge", semantic: "appliance", size: [0.75, 0.68, 1.75], color: 0xc6d0d6, kind: "appliance", material: "ptb_0583_iron_door", description: "large hard appliance" },
+  washing_machine: { title: "Washing Machine", semantic: "appliance", size: [0.65, 0.62, 0.86], color: 0xbfc9cf, kind: "appliance", material: "ptb_0583_iron_door", description: "hard appliance block" },
+  acoustic_panel: { title: "Panel", semantic: "acoustic_treatment", size: [1.2, 0.08, 1.2], color: 0x6f8f93, kind: "panel", z: 1.25, material: "mineral_wool_50mm_40kgm3", description: "absorptive acoustic panel" },
+  tile_surface: { title: "Tile Surface", semantic: "ceramic_tile_surface", size: [1.6, 1.2, 0.05], color: 0xb8c7c9, kind: "tile_surface", z: 0.025, description: "hard local tiled surface" },
+  sanitary_fixture: { title: "Bath / Sink", semantic: "sanitary_fixture", size: [1.55, 0.76, 0.62], color: 0xe1e6e4, kind: "sanitary_fixture", description: "hard ceramic sanitary fixture" },
+  structural_element: { title: "Column / Beam", semantic: "structural_element", size: [0.46, 0.46, 2.45], color: 0x92999a, kind: "structural_element", description: "structural concrete reflector" },
+  person: { title: "Person", semantic: "human_person", size: [0.42, 0.32, 1.7], color: 0xb79078, kind: "person", z: 0.85, material: "audience_1_m2", description: "human absorber" },
+  cuboid: { title: "Cuboid", semantic: "structural_element", size: [1.2, 0.55, 1.05], color: 0x8d7463, kind: "block", material: "hard_object_wood_16mm", description: "legacy solid obstacle" },
+  panel: { title: "Thin panel", semantic: "structural_element", size: [1.45, 0.08, 1.35], color: 0x4f6672, kind: "panel", z: 0.675, material: "wall_plasterboard", description: "legacy reflective slab" },
+  low_block: { title: "Low block", semantic: "structural_element", size: [1.35, 0.72, 0.45], color: 0x7f8b6f, kind: "block", material: "chairs_upholstered_moderate", description: "legacy low reflector" }
 };
 const objectMaterialColors = {
+  chairs_heavy_upholstered: 0x7c8f78,
+  chairs_medium_upholstered: 0x8f9bb5,
+  chairs_upholstered_moderate: 0x7d8b70,
+  hard_object_wood_16mm: 0x9a7656,
+  carpet_soft_10mm: 0xa67b6b,
+  curtains_fabric: 0x7f8b9f,
+  window_door_glass_3mm: 0x242a2f,
+  ptb_0583_iron_door: 0xc6d0d6,
+  mineral_wool_50mm_40kgm3: 0x6f8f93,
+  audience_1_m2: 0xb79078,
+  wall_plasterboard: 0xb7afa5,
   fabric: 0x7f8b6f,
   wood: 0x9a7656,
   glass: 0x7fb4c7,
@@ -54,6 +112,8 @@ const objectMaterialColors = {
   plaster: 0xb7afa5,
 };
 const MIN_WALL_DISTANCE_M = 0.15;
+const RIR_DECAY_MIN_DB = -60;
+const RIR_DECAY_DB_TICKS = ["0", "-20", "-40", "-60"];
 
 const defaultState = {
   shape: "rectangle",
@@ -79,9 +139,12 @@ const defaultState = {
     fanSegments: 24
   },
   materials: { wall: "wood", floor: "floor_carpet", ceiling: "ceiling" },
+  materialProfile: { wall: "auto", floor: "auto", ceiling: "auto", door: "auto", window: "auto" },
+  materialSeed: 42,
   objects: [],
   source: [1.2, 1.1, 1.5],
   receiver: [4.7, 2.8, 1.4],
+  motion: { mode: "static", moving: "source", distance_m: 0.8, keyframe_spacing_m: 0.25, random_seed: 42 },
   config: { fs: 16000, duration_s: 2.0, quality: "simulation", rt_num_rays: 32768, rt_num_bounces: 64, rt_duration_s: 2.0, diffraction_order: 3, max_diffraction_paths: 8 },
   mic: { type: "mono", count: 4, spacing_m: 0.08, radius_m: 0.12, orientation_deg: 0 },
   sourceDirectivity: { type: "omni", orientation_deg: 0, elevation_deg: 0, dipole_weight: 0.0, dipole_power: 1.0 },
@@ -95,12 +158,18 @@ let simulationRequestSeq = 0;
 let lastSimulationPayload = null;
 let calibrationAudioSeq = 0;
 let calibrationAudioUrls = [];
+let simulationRunning = false;
+let displayedMotionFrameIndex = -1;
+let motionDisplayPhase = 0;
+let motionPlayback = { active: false, startedAt: 0, startPhase: 0, duration_s: 4.0 };
 let selectedObjectId = null;
 let pendingObjectId = null;
 let dirtyObjectId = null;
 let objectMode = "move";
 let objectDrag = null;
 let suppressObjectSelectionUntil = 0;
+let materialSemanticCatalog = {};
+let randomMotionRouteCache = { signature: "", value: null };
 const layerState = { direct: true, portal: true, diffraction: true, rt: true };
 
 let renderer;
@@ -115,18 +184,25 @@ const shellGroup = new THREE.Group();
 const pathGroup = new THREE.Group();
 const furnitureGroup = new THREE.Group();
 const markerGroup = new THREE.Group();
-threeScene.add(floorGroup, shellGroup, furnitureGroup, pathGroup, markerGroup);
+const motionGroup = new THREE.Group();
+threeScene.add(floorGroup, shellGroup, furnitureGroup, pathGroup, motionGroup, markerGroup);
 
 void bootstrap();
 
 async function bootstrap() {
   setupThree();
+  setupViewControls();
   setupControls();
+  setupMotionControls();
+  setupMaterialControls();
   renderThumbnails();
   renderMicThumbnails();
   renderSourceDirectivityThumbnails();
   renderObjectThumbnails();
   bindEvents();
+  setupSectionNavigation();
+  setupResultNavigation();
+  await loadMaterialCatalog();
   if (resplanMode) {
     try {
       await loadResplanScene(0, null, "auto", { simulate: false });
@@ -135,8 +211,100 @@ async function bootstrap() {
     }
   }
   updateControls();
-  requestSimulation();
+  markSimulationPending("Scene ready · run simulation when needed.");
   animate();
+}
+
+function setupSectionNavigation() {
+  const panel = document.getElementById("setupScroll");
+  const links = [...document.querySelectorAll("[data-section-link]")];
+  if (!panel || links.length === 0) return;
+  const sections = links
+    .map((link) => document.getElementById(link.dataset.sectionLink))
+    .filter(Boolean);
+
+  const activate = (sectionId) => {
+    links.forEach((link) => link.classList.toggle("active", link.dataset.sectionLink === sectionId));
+  };
+  const scrollToSection = (sectionId, behavior = "smooth") => {
+    const section = document.getElementById(sectionId);
+    if (!section) return;
+    const panelTop = panel.getBoundingClientRect().top;
+    const targetTop = panel.scrollTop + section.getBoundingClientRect().top - panelTop - 2;
+    panel.scrollTo({ top: Math.max(0, targetTop), behavior });
+    activate(section.id);
+  };
+  links.forEach((link) => link.addEventListener("click", (event) => {
+    const section = document.getElementById(link.dataset.sectionLink);
+    if (!section) return;
+    event.preventDefault();
+    history.replaceState(null, "", `#${section.id}`);
+    scrollToSection(section.id);
+  }));
+
+  let navigationFrame = 0;
+  const updateActiveSection = () => {
+    navigationFrame = 0;
+    const boundary = panel.getBoundingClientRect().top + 24;
+    let activeSection = sections[0];
+    const atBottom = panel.scrollTop + panel.clientHeight >= panel.scrollHeight - 4;
+    if (atBottom) {
+      activeSection = sections[sections.length - 1];
+    } else {
+      sections.forEach((section) => {
+        if (section.getBoundingClientRect().top <= boundary) activeSection = section;
+      });
+    }
+    if (activeSection) activate(activeSection.id);
+  };
+  panel.addEventListener("scroll", () => {
+    if (navigationFrame) return;
+    navigationFrame = requestAnimationFrame(updateActiveSection);
+  });
+  updateActiveSection();
+  const initialSectionId = location.hash.slice(1);
+  if (initialSectionId) {
+    setTimeout(() => scrollToSection(initialSectionId, "auto"), 0);
+    setTimeout(() => scrollToSection(initialSectionId, "auto"), 900);
+  }
+}
+
+function setupResultNavigation() {
+  const panel = document.getElementById("resultsPanel");
+  const chrome = panel?.querySelector(".resultsChrome");
+  const links = [...document.querySelectorAll("[data-result-link]")];
+  if (!panel || !chrome || links.length === 0) return;
+  const sections = links
+    .map((link) => document.getElementById(link.dataset.resultLink))
+    .filter(Boolean);
+  const activate = (sectionId) => {
+    links.forEach((link) => link.classList.toggle("active", link.dataset.resultLink === sectionId));
+  };
+  links.forEach((link) => link.addEventListener("click", (event) => {
+    const section = document.getElementById(link.dataset.resultLink);
+    if (!section) return;
+    event.preventDefault();
+    const panelTop = panel.getBoundingClientRect().top;
+    const offset = chrome.getBoundingClientRect().height + 10;
+    const targetTop = panel.scrollTop + section.getBoundingClientRect().top - panelTop - offset;
+    panel.scrollTo({ top: Math.max(0, targetTop), behavior: "smooth" });
+    activate(section.id);
+  }));
+  let navigationFrame = 0;
+  const updateActiveSection = () => {
+    navigationFrame = 0;
+    const boundary = chrome.getBoundingClientRect().bottom + 16;
+    let activeSection = sections[0];
+    sections.forEach((section) => {
+      if (section.getBoundingClientRect().top <= boundary) activeSection = section;
+    });
+    if (activeSection) activate(activeSection.id);
+  };
+  panel.addEventListener("scroll", () => {
+    if (navigationFrame) return;
+    navigationFrame = requestAnimationFrame(updateActiveSection);
+  });
+  updateActiveSection();
 }
 
 function setupThree() {
@@ -154,6 +322,8 @@ function setupThree() {
   controls.enableDamping = true;
   controls.minPolarAngle = Math.PI * 0.16;
   controls.maxPolarAngle = Math.PI * 0.5;
+  controls.minZoom = 0.55;
+  controls.maxZoom = 4.0;
 
   threeScene.add(new THREE.HemisphereLight(0xffffff, 0xb9c3c7, 2.45));
   const key = new THREE.DirectionalLight(0xffffff, 2.7);
@@ -169,9 +339,109 @@ function setupThree() {
   resize();
 }
 
+function setupViewControls() {
+  document.getElementById("viewFit")?.addEventListener("click", () => fitCurrentView());
+  document.getElementById("viewIso")?.addEventListener("click", () => fitCamera());
+  document.getElementById("viewTop")?.addEventListener("click", () => setTopView());
+  controls?.addEventListener("start", () => {
+    camera.userData.viewMode = "custom";
+    setActiveViewControl(null);
+  });
+}
+
+function setActiveViewControl(id) {
+  ["viewFit", "viewIso", "viewTop"].forEach((buttonId) => {
+    document.getElementById(buttonId)?.classList.toggle("active", buttonId === id);
+  });
+}
+
+function fitCurrentView() {
+  const bounds = sceneDisplayBounds();
+  const height = Number(simData.room?.height_m || 2.8);
+  const center = new THREE.Vector3((bounds.x0 + bounds.x1) * 0.5, height * 0.35, (bounds.y0 + bounds.y1) * 0.5);
+  const span = Math.max(bounds.w, bounds.h, height, 1);
+  const direction = camera.position.clone().sub(controls.target);
+  if (direction.lengthSq() < 1e-8) direction.set(1, 1, 1);
+  direction.normalize();
+  camera.userData.viewSize = span * 0.86 + 2.3;
+  camera.zoom = 1;
+  controls.target.copy(center);
+  camera.position.copy(center).addScaledVector(direction, span * 2.25 + height);
+  camera.lookAt(center);
+  controls.update();
+  resize();
+  setActiveViewControl("viewFit");
+}
+
+function setTopView() {
+  const bounds = sceneDisplayBounds();
+  const height = Number(simData.room?.height_m || 2.8);
+  const center = new THREE.Vector3((bounds.x0 + bounds.x1) * 0.5, 0, (bounds.y0 + bounds.y1) * 0.5);
+  const span = Math.max(bounds.w, bounds.h, height, 1);
+  camera.userData.viewSize = span * 0.72 + 1.8;
+  camera.userData.viewMode = "top";
+  camera.zoom = 1;
+  camera.up.set(0, 0, -1);
+  controls.minPolarAngle = 0;
+  controls.target.copy(center);
+  camera.position.set(center.x, span * 2.5 + height, center.z + 1e-4);
+  camera.lookAt(center);
+  controls.update();
+  resize();
+  setActiveViewControl("viewTop");
+}
+
 function setupControls() {
   if (resplanMode) return;
   fillSelect("shape", presets.map((preset) => [preset.id, preset.title]));
+}
+
+function setupMotionControls() {
+  const select = document.getElementById("motionMode");
+  if (!select) return;
+  [...select.options].forEach((option) => {
+    if (!["static", "approach", "random"].includes(option.value)) option.remove();
+  });
+  const travelOption = select.querySelector('option[value="approach"]');
+  if (travelOption) travelOption.textContent = "Approach";
+  let randomOption = select.querySelector('option[value="random"]');
+  if (!randomOption) {
+    randomOption = document.createElement("option");
+    randomOption.value = "random";
+    select.append(randomOption);
+  }
+  randomOption.textContent = "Random";
+  if (!["static", "approach", "random"].includes(state.motion.mode)) state.motion.mode = "static";
+}
+
+function setupMaterialControls() {
+  activeBoundaryMaterialControls.forEach(([, , id]) => {
+    if (document.getElementById(id)) fillSelect(id, absorptionOptions);
+  });
+}
+
+async function loadMaterialCatalog() {
+  try {
+    const response = await fetch("/api/v1/materials/semantics", { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Unable to load acoustic materials");
+    materialSemanticCatalog = Object.fromEntries((payload.semantics || []).map((item) => [item.semantic, item]));
+    applyMaterialAvailability();
+  } catch (error) {
+    console.warn("Material catalog unavailable", error);
+  }
+}
+
+function applyMaterialAvailability() {
+  activeBoundaryMaterialControls.forEach(([, semantic, id]) => {
+    const select = document.getElementById(id);
+    const available = new Set(materialSemanticCatalog[semantic]?.available_absorption_classes || []);
+    if (!select || available.size === 0) return;
+    [...select.options].forEach((option) => {
+      option.disabled = option.value !== "auto" && !available.has(option.value);
+    });
+    if (select.selectedOptions[0]?.disabled) select.value = "auto";
+  });
 }
 
 async function loadResplanScene(index, roomId = null, receiverRoomId = "auto", options = {}) {
@@ -217,7 +487,7 @@ async function loadResplanScene(index, roomId = null, receiverRoomId = "auto", o
     ? state.resplan.roomType
     : `${state.resplan.roomType} → ${state.resplan.receiverRoomType}`;
   setStatus(`${roomLabel} · idx ${state.resplan.index}`);
-  if (options.simulate !== false) requestSimulation();
+  if (options.simulate === true) requestSimulation();
 }
 
 async function navigateResplan(index, direction = "nearest") {
@@ -300,6 +570,11 @@ function drawResplanOverview() {
   const planDepth = Math.max(Number(plan.size?.[1]), 1e-6);
   const scale = Math.min((width - pad * 2) / planWidth, (height - pad * 2) / planDepth);
   const toCanvas = ([x, y]) => [pad + Number(x) * scale, pad + Number(y) * scale];
+  const simulationOrigin = plan.simulation_origin || [0, 0];
+  const toSimulationCanvas = ([x, y]) => toCanvas([
+    Number(x) + Number(simulationOrigin[0] || 0),
+    Number(y) + Number(simulationOrigin[1] || 0),
+  ]);
   const colors = { living: "#c7e4df", bedroom: "#d7def4", kitchen: "#efd8ad", bathroom: "#cce5ee", storage: "#d9dddf", balcony: "#cee0c4" };
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#f8fafb";
@@ -314,7 +589,7 @@ function drawResplanOverview() {
   });
   const semanticFeatures = state.resplan.roomMetadata?.boundary_features || [];
   if (semanticFeatures.length) {
-    drawResplanOverviewFeatures(ctx, semanticFeatures, toCanvas);
+    drawResplanOverviewFeatures(ctx, semanticFeatures, toSimulationCanvas);
   } else {
     (plan.apertures || []).forEach((feature) => {
       drawCanvasPolygon(ctx, feature.polygon || [], toCanvas);
@@ -325,7 +600,7 @@ function drawResplanOverview() {
     });
   }
   [[state.source, "#ef476f", "S"], [state.receiver, "#0f7f9f", "M"]].forEach(([point, color, label]) => {
-    const [x, y] = toCanvas(point);
+    const [x, y] = toSimulationCanvas(point);
     ctx.beginPath();
     ctx.arc(x, y, 6, 0, Math.PI * 2);
     ctx.fillStyle = color;
@@ -473,9 +748,9 @@ function readGeometryParams() {
 
 function bindEvents() {
   const roomIds = resplanMode
-    ? ["height", "wallMaterial", "floorMaterial", "ceilingMaterial"]
-    : ["shape", "sizeX", "sizeY", "height", "wallMaterial", "floorMaterial", "ceilingMaterial"];
-  const ids = [...roomIds, "qualitySelect", "rirDuration", "sourceX", "sourceY", "sourceZ", "receiverX", "receiverY", "receiverZ", "micOrientation", "micCount", "micSpacing", "sourceOrientation", "sourceElevation", "sourcePower", "fs"];
+    ? ["height", "materialSeed", ...activeBoundaryMaterialControls.map(([, , id]) => id)]
+    : ["shape", "sizeX", "sizeY", "height", "materialSeed", ...activeBoundaryMaterialControls.map(([, , id]) => id)];
+  const ids = [...roomIds, "qualitySelect", "rirDuration", "sourceX", "sourceY", "sourceZ", "receiverX", "receiverY", "receiverZ", "motionMode", "motionMoving", "motionDistance", "motionFrameSpacing", "micOrientation", "micCount", "micSpacing", "sourceOrientation", "sourceElevation", "sourcePower", "fs"];
   ids.forEach((id) => document.getElementById(id)?.addEventListener("input", () => {
     if (resplanMode && id === "height") {
       state.size[2] = clamp(number("height"), 2.0, 6.0);
@@ -494,20 +769,34 @@ function bindEvents() {
     if (id === "qualitySelect") {
       applyQualityPreset(true);
     }
-    simData = makeClientScene(state);
-    rebuildThreeScene();
-    scheduleSimulation();
+    if (["motionDistance", "motionFrameSpacing"].includes(id)) {
+      clearTimeout(simulateTimer);
+      simulateTimer = setTimeout(() => markSimulationPending(), 100);
+      return;
+    }
+    markSimulationPending();
   }));
   document.getElementById("geometryParams")?.addEventListener("input", () => {
     readControls();
     clampScenePointsToRoom();
-    simData = makeClientScene(state);
-    rebuildThreeScene();
-    scheduleSimulation();
+    markSimulationPending();
   });
 
   copyCodeButton?.addEventListener("click", copyCodeSnippet);
+  runSimulationButton?.addEventListener("click", () => requestSimulation());
+  motionPlayButton?.addEventListener("click", toggleMotionPlayback);
+  motionTimelineEl?.addEventListener("input", () => {
+    pauseMotionPlayback();
+    setMotionDisplayPhase(Number(motionTimelineEl.value || 0) / 1000, true);
+  });
+  wetAudioEl?.addEventListener("play", () => {
+    motionPlayback.active = false;
+    updateMotionPlaybackControls();
+  });
+  wetAudioEl?.addEventListener("pause", updateMotionPlaybackControls);
+  wetAudioEl?.addEventListener("ended", () => setMotionDisplayPhase(1, true));
   document.getElementById("randomPositions").addEventListener("click", randomizePositions);
+  document.getElementById("resampleMotionPath")?.addEventListener("click", resampleRandomMotionPath);
   document.getElementById("reset").addEventListener("click", async () => {
     const resplanSelection = resplanMode ? {
       index: state.resplan.index,
@@ -522,9 +811,8 @@ function bindEvents() {
     if (resplanSelection) {
       await loadResplanScene(resplanSelection.index, resplanSelection.roomId, resplanSelection.receiverRoomId, { simulate: false });
     }
-    simData = makeClientScene(state);
     updateControls();
-    requestSimulation();
+    markSimulationPending();
   });
   if (resplanMode) {
     document.getElementById("resplanIdx")?.addEventListener("change", () => navigateResplan(controlNumber("resplanIdx", 0), "nearest"));
@@ -542,6 +830,12 @@ function bindEvents() {
       event.target.value,
     ));
   }
+  document.getElementById("randomMaterials")?.addEventListener("click", () => {
+    state.materialSeed = Math.floor(Math.random() * 2147483647);
+    setValue("materialSeed", state.materialSeed);
+    renderMaterialSelections();
+    markSimulationPending();
+  });
   document.getElementById("addAsset").addEventListener("click", handlePaletteSelection);
   const confirmButton = document.getElementById("confirmFurniture");
   confirmButton.addEventListener("pointerdown", (event) => {
@@ -553,7 +847,7 @@ function bindEvents() {
     confirmSelectedObject();
   });
   document.getElementById("deleteFurniture").addEventListener("click", deleteSelectedObject);
-  ["objectX", "objectY", "objectZ", "objectWidth", "objectDepth", "objectHeight", "objectRotation"].forEach((id) => {
+  ["objectX", "objectY", "objectZ", "objectWidth", "objectDepth", "objectHeight", "objectRotation", "objectAbsorption"].forEach((id) => {
     document.getElementById(id).addEventListener("input", handleObjectSettingsInput);
   });
   document.getElementById("pathLimit").addEventListener("input", () => {
@@ -724,15 +1018,21 @@ function readControls() {
     state.shape = value("shape");
     state.size = [number("sizeX"), number("sizeY"), number("height")];
   }
-  state.materials = {
-    wall: value("wallMaterial"),
-    floor: value("floorMaterial"),
-    ceiling: value("ceilingMaterial")
-  };
+  state.materialSeed = Math.max(0, Math.round(controlNumber("materialSeed", state.materialSeed)));
+  state.materialProfile = Object.fromEntries(
+    activeBoundaryMaterialControls.map(([surface, , id]) => [surface, value(id) || "auto"]),
+  );
   readGeometryParams();
   state.config.quality = value("qualitySelect");
   state.config.duration_s = clamp(number("rirDuration"), 0.3, 6.0);
   state.config.rt_duration_s = state.config.duration_s;
+  state.motion = {
+    mode: value("motionMode") || "static",
+    moving: value("motionMoving") || "source",
+    distance_m: clamp(controlNumber("motionDistance", 0.8), 0.2, 6.0),
+    keyframe_spacing_m: clamp(controlNumber("motionFrameSpacing", 0.25), 0.1, 1.0),
+    random_seed: Math.max(0, Math.round(Number(state.motion?.random_seed ?? 42))),
+  };
   applyQualityPreset(false);
   state.source = [number("sourceX"), number("sourceY"), number("sourceZ")];
   state.receiver = [number("receiverX"), number("receiverY"), number("receiverZ")];
@@ -770,9 +1070,9 @@ function updateControls() {
     setValue("sizeY", state.size[1]);
   }
   setValue("height", state.size[2]);
-  setValue("wallMaterial", state.materials.wall);
-  setValue("floorMaterial", state.materials.floor);
-  setValue("ceilingMaterial", state.materials.ceiling);
+  setValue("materialSeed", state.materialSeed);
+  activeBoundaryMaterialControls.forEach(([surface, , id]) => setValue(id, state.materialProfile?.[surface] || "auto"));
+  applyMaterialAvailability();
   setValue("qualitySelect", state.config.quality);
   setValue("rirDuration", Number(state.config.duration_s || 2.0).toFixed(1));
   setValue("sourceX", state.source[0]);
@@ -781,6 +1081,7 @@ function updateControls() {
   setValue("receiverX", state.receiver[0]);
   setValue("receiverY", state.receiver[1]);
   setValue("receiverZ", state.receiver[2]);
+  syncMotionControls();
   syncMicControls();
   syncSourceDirectivityControls();
   syncSelectedObjectControls(sceneObjectById(selectedObjectId));
@@ -796,6 +1097,80 @@ function syncPositionControls() {
   setValue("receiverX", state.receiver[0]);
   setValue("receiverY", state.receiver[1]);
   setValue("receiverZ", state.receiver[2]);
+}
+
+function syncMotionControls() {
+  const motion = state.motion || defaultState.motion;
+  setValue("motionMode", motion.mode);
+  setValue("motionMoving", motion.moving);
+  setValue("motionDistance", motion.distance_m);
+  setValue("motionFrameSpacing", motion.keyframe_spacing_m ?? 0.25);
+  const dynamic = motion.mode !== "static";
+  ["motionMoving", "motionFrameSpacing"].forEach((id) => {
+    const control = document.getElementById(id);
+    if (control) control.disabled = !dynamic;
+  });
+  const distanceControl = document.getElementById("motionDistance");
+  if (distanceControl) distanceControl.disabled = !dynamic;
+  const resamplePathButton = document.getElementById("resampleMotionPath");
+  const randomTravel = dynamic && motion.mode === "random";
+  if (resamplePathButton) {
+    resamplePathButton.hidden = !randomTravel;
+    resamplePathButton.disabled = !randomTravel;
+  }
+  document.querySelector(".motionTravelField")?.classList.toggle("hasRandomAction", randomTravel);
+  document.querySelector(".motionGrid")?.classList.toggle("disabled", !dynamic);
+  const sampled = sampleMotionState();
+  const distance = Number(sampled.distance_m || 0);
+  const distanceLabel = document.getElementById("motionDistanceValue");
+  if (distanceLabel) distanceLabel.textContent = `${Number(motion.distance_m).toFixed(1)} m`;
+  const summary = document.getElementById("motionSummary");
+  if (summary) {
+    const portalLabel = sampled.path_model === "portal_route_smoothstep" ? " · portal" : "";
+    const randomLabel = sampled.path_model === "random_room_route" ? " · random" : "";
+    summary.textContent = dynamic
+      ? `${motion.moving === "source" ? "Source" : "Microphone"} · ${sampled.keyframes} frames · ${distance.toFixed(2)} m${portalLabel}${randomLabel}`
+      : "Static";
+  }
+  updateRunControls();
+}
+
+function updateRunControls() {
+  const dynamic = state.motion?.mode !== "static";
+  const readyFrames = Array.isArray(simData.dynamic?.frames) ? simData.dynamic.frames.length : 0;
+  const expectedFrames = Number(simData.dynamic?.keyframes || 0);
+  const motionReady = dynamic && expectedFrames > 1 && readyFrames === expectedFrames;
+  if (runSimulationButton) {
+    const plannedFrames = dynamic ? sampleMotionState().keyframes : 1;
+    runSimulationButton.disabled = simulationRunning || hasUnconfirmedObjectChange();
+    runSimulationButton.textContent = simulationRunning
+      ? dynamic ? `Computing ${readyFrames}/${plannedFrames}` : "Computing..."
+      : dynamic ? "Compute motion RIRs" : "Run static simulation";
+  }
+  if (motionPlayButton) motionPlayButton.disabled = !motionReady || simulationRunning;
+  if (motionTimelineEl) motionTimelineEl.disabled = !motionReady || simulationRunning;
+  updateMotionPlaybackControls();
+  updateRirFrameMeta();
+}
+
+function updateMotionPlaybackControls() {
+  if (!motionPlayButton) return;
+  const playingAudio = Boolean(wetAudioEl && !wetAudioEl.paused && !wetAudioEl.ended);
+  const playing = motionPlayback.active || playingAudio;
+  motionPlayButton.textContent = playing ? "❚❚" : "▶";
+  motionPlayButton.title = playing ? "Pause motion" : "Play motion";
+  motionPlayButton.setAttribute("aria-label", motionPlayButton.title);
+}
+
+function updateRirFrameMeta() {
+  const label = document.getElementById("rirFrameMeta");
+  if (!label) return;
+  const frames = simData.dynamic?.frames || [];
+  if (frames.length > 0 && displayedMotionFrameIndex >= 0) {
+    label.textContent = `Frame ${displayedMotionFrameIndex + 1} / ${Number(simData.dynamic.keyframes || frames.length)}`;
+  } else {
+    label.textContent = simData.rir?.samples?.length ? "Static result" : "Not computed";
+  }
 }
 
 function updateMicControls() {
@@ -846,7 +1221,7 @@ function scheduleSimulation() {
     setStatus("Confirm the object edit to update simulation.");
     return;
   }
-  simulateTimer = setTimeout(requestSimulation, 220);
+  simulateTimer = setTimeout(() => markSimulationPending(), 80);
 }
 
 async function requestSimulation() {
@@ -857,33 +1232,178 @@ async function requestSimulation() {
   }
   const requestSeq = ++simulationRequestSeq;
   const payload = structuredClone(apiPayload());
+  const dynamic = payload.motion?.mode && payload.motion.mode !== "static";
   let simulationSucceeded = false;
-  setStatus("Computing indoor RIR paths...");
+  simulationRunning = true;
+  pauseMotionPlayback();
+  updateRunControls();
+  updateResultStatus();
+  setStatus(dynamic ? `Computing motion RIR 0/${payload.motion.frames.length}...` : "Computing indoor RIR paths...");
   clearCalibrationAudio("reading.wav · waiting for RIR");
   try {
-    const response = await fetch("/api/v1/workbench", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    if (!response.ok) throw new Error(await response.text());
-    const nextSimData = await response.json();
+    const nextSimData = dynamic
+      ? await requestMotionSimulation(payload, requestSeq)
+      : await requestWorkbenchFrame(payload);
     if (requestSeq !== simulationRequestSeq) return;
     simData = nextSimData;
     lastSimulationPayload = payload;
     simulationSucceeded = true;
-    setStatus("Simulation updated.");
+    setStatus(dynamic ? `Dynamic simulation updated · ${nextSimData.dynamic?.keyframes || payload.motion.frames.length} frames.` : "Simulation updated.");
   } catch (error) {
     if (requestSeq !== simulationRequestSeq) return;
     simData = makeClientScene(state);
     lastSimulationPayload = payload;
     simData.metadata = { ...(simData.metadata || {}), warning: String(error.message || error) };
-    setStatus("Local API unavailable; showing editable geometry only.", true);
+    setStatus(`Simulation failed · ${String(error.message || error).slice(0, 120)}`, true);
   }
   if (requestSeq !== simulationRequestSeq) return;
+  simulationRunning = false;
   rebuildThreeScene();
   updatePanels();
-  if (simulationSucceeded) void updateCalibrationAudio(simData, requestSeq);
+  if (simulationSucceeded) {
+    if (dynamic) startMotionPlayback();
+    void updateCalibrationAudio(simData, requestSeq);
+  }
+}
+
+async function requestWorkbenchFrame(payload) {
+  const response = await fetch("/api/v1/workbench", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return response.json();
+}
+
+async function requestMotionSimulation(payload, requestSeq) {
+  const motion = payload.motion;
+  const plannedFrames = motion.frames;
+  const basePayload = structuredClone(payload);
+  delete basePayload.motion;
+  const computedFrames = [];
+  let referenceScene = null;
+  for (let index = 0; index < plannedFrames.length; index += 1) {
+    if (requestSeq !== simulationRequestSeq) throw new Error("simulation superseded");
+    const planned = plannedFrames[index];
+    setStatus(`Computing motion RIR ${index + 1}/${plannedFrames.length}...`);
+    const frameMetadata = motionRoomMetadata(basePayload.room_metadata, planned.source, planned.receiver);
+    const frameScene = await requestWorkbenchFrame({
+      ...basePayload,
+      source: planned.source,
+      receiver: planned.receiver,
+      room_metadata: frameMetadata,
+    });
+    if (requestSeq !== simulationRequestSeq) throw new Error("simulation superseded");
+    referenceScene ||= frameScene;
+    computedFrames.push({
+      index,
+      phase: Number(planned.phase),
+      source: planned.source,
+      receiver: planned.receiver,
+      result_id: frameScene.result_id,
+      rir: frameScene.rir,
+      rt60: frameScene.rt60,
+      paths: frameScene.paths,
+    });
+    referenceScene.dynamic = {
+      mode: motion.mode,
+      moving: motion.moving,
+      distance_m: motion.distance_m,
+      requested_distance_m: motion.requested_distance_m,
+      keyframes: plannedFrames.length,
+      path_model: motion.path_model,
+      frames: computedFrames,
+      planned_frames: plannedFrames,
+      renderer: "time_varying_rir_snapshot_interpolation",
+    };
+    simData = referenceScene;
+    displayedMotionFrameIndex = index;
+    motionDisplayPhase = Number(planned.phase);
+    rebuildThreeScene();
+    updatePanels();
+  }
+  displayedMotionFrameIndex = 0;
+  motionDisplayPhase = 0;
+  return referenceScene;
+}
+
+function motionRoomMetadata(metadata, source, receiver) {
+  if (!metadata?.multi_room?.enabled) return metadata;
+  const updated = structuredClone(metadata);
+  const multiRoom = updated.multi_room;
+  const sourceRoom = roomIdForMotionPoint(source, multiRoom.rooms, multiRoom.source_room_id);
+  const receiverRoom = roomIdForMotionPoint(receiver, multiRoom.rooms, multiRoom.receiver_room_id);
+  const route = openPortalRoomRoute(sourceRoom, receiverRoom, multiRoom.portals || []);
+  if (!route.room_ids.length) return updated;
+  updated.source_room_id = sourceRoom;
+  updated.receiver_room_id = receiverRoom;
+  multiRoom.source_room_id = sourceRoom;
+  multiRoom.receiver_room_id = receiverRoom;
+  multiRoom.route_room_ids = route.room_ids;
+  multiRoom.route_portal_ids = route.portal_ids;
+  return updated;
+}
+
+function roomIdForMotionPoint(point, rooms, fallback) {
+  const candidates = (rooms || [])
+    .filter((room) => Array.isArray(room.corners) && pointInPolygon2D(point, room.corners))
+    .map((room) => ({ id: room.id, clearance: distanceToRoomBoundary(point, room.corners) }))
+    .sort((first, second) => second.clearance - first.clearance);
+  return candidates[0]?.id || fallback;
+}
+
+function openPortalRoomRoute(sourceRoom, receiverRoom, portals) {
+  if (!sourceRoom || !receiverRoom) return { room_ids: [], portal_ids: [] };
+  if (sourceRoom === receiverRoom) return { room_ids: [sourceRoom], portal_ids: [] };
+  const adjacency = new Map();
+  (portals || []).filter((portal) => portal.open).forEach((portal) => {
+    const roomIds = portal.room_ids || [];
+    if (roomIds.length !== 2) return;
+    if (!adjacency.has(roomIds[0])) adjacency.set(roomIds[0], []);
+    if (!adjacency.has(roomIds[1])) adjacency.set(roomIds[1], []);
+    adjacency.get(roomIds[0]).push([roomIds[1], portal.id]);
+    adjacency.get(roomIds[1]).push([roomIds[0], portal.id]);
+  });
+  const queue = [sourceRoom];
+  const visited = new Set([sourceRoom]);
+  const previous = new Map();
+  while (queue.length) {
+    const current = queue.shift();
+    if (current === receiverRoom) break;
+    (adjacency.get(current) || []).forEach(([neighbor, portalId]) => {
+      if (visited.has(neighbor)) return;
+      visited.add(neighbor);
+      previous.set(neighbor, [current, portalId]);
+      queue.push(neighbor);
+    });
+  }
+  if (!visited.has(receiverRoom)) return { room_ids: [], portal_ids: [] };
+  const roomIds = [receiverRoom];
+  const portalIds = [];
+  while (roomIds[roomIds.length - 1] !== sourceRoom) {
+    const [prior, portalId] = previous.get(roomIds[roomIds.length - 1]);
+    roomIds.push(prior);
+    portalIds.push(portalId);
+  }
+  roomIds.reverse();
+  portalIds.reverse();
+  return { room_ids: roomIds, portal_ids: portalIds };
+}
+
+function markSimulationPending(message = "Changes ready · run simulation to update RIR.") {
+  clearTimeout(simulateTimer);
+  simulationRequestSeq += 1;
+  simulationRunning = false;
+  pauseMotionPlayback();
+  displayedMotionFrameIndex = -1;
+  motionDisplayPhase = 0;
+  lastSimulationPayload = null;
+  simData = makeClientScene(state);
+  clearCalibrationAudio("reading.wav · waiting for simulation");
+  rebuildThreeScene();
+  updatePanels();
+  setStatus(message);
 }
 
 function apiPayload() {
@@ -892,13 +1412,19 @@ function apiPayload() {
     : state.mic.type === "linear"
       ? { type: "linear", count: state.mic.count, spacing_m: state.mic.spacing_m, orientation_deg: state.mic.orientation_deg }
       : { type: state.mic.type, orientation_deg: state.mic.orientation_deg };
+  const materialProfile = Object.fromEntries(
+    activeBoundaryMaterialControls.map(([surface]) => [surface, state.materialProfile?.[surface] || "auto"]),
+  );
+  const motion = sampleMotionState();
   return {
     shape: state.shape,
     size: state.size,
     corners: cornersFor(state.shape, state.size, state.geometry),
     geometry: state.geometry,
     room_metadata: resplanMode ? state.resplan.roomMetadata : undefined,
-    materials: state.materials,
+    materials: undefined,
+    material_profile: materialProfile,
+    material_seed: state.materialSeed,
     objects: state.objects,
     source: state.source,
     receiver: state.receiver,
@@ -910,7 +1436,8 @@ function apiPayload() {
       elevation_deg: state.sourceDirectivity.elevation_deg,
       dipole_weight: state.sourceDirectivity.dipole_weight,
       dipole_power: state.sourceDirectivity.dipole_power
-    }
+    },
+    motion,
   };
 }
 
@@ -932,11 +1459,13 @@ function rebuildThreeScene(options = {}) {
   clearGroup(shellGroup);
   clearGroup(furnitureGroup);
   clearGroup(pathGroup);
+  clearGroup(motionGroup);
   clearGroup(markerGroup);
   addPlan3D();
   addRoomShell3D();
   addFurniture3D();
   addPaths3D();
+  addMotionTrajectory3D();
   addMarkers3D();
   const signature = cameraSceneSignature();
   const shouldFitCamera = Boolean(options.forceFitCamera) || !camera.userData.fitted || camera.userData.sceneSignature !== signature;
@@ -964,7 +1493,7 @@ function addPlan3D() {
   edges.position.copy(floor.position);
   floorGroup.add(edges);
 
-  const bounds = getBounds(corners);
+  const bounds = sceneDisplayBounds();
   const ground = new THREE.Mesh(
     new THREE.PlaneGeometry(bounds.w + 8, bounds.h + 8),
     new THREE.ShadowMaterial({ color: 0x6f777c, opacity: 0.12 })
@@ -982,8 +1511,8 @@ function addPlan3D() {
 function addRoomShell3D() {
   const corners = simData.room.corners;
   const height = Number(simData.room.height_m || state.size[2] || 2.8);
-  if (simData.room?.metadata?.multi_room?.enabled) {
-    addMultiRoomShell3D(corners, height);
+  if (hasVerticalSurfaceSegments()) {
+    addSegmentedRoomShell3D(corners, height);
     return;
   }
   const wallMat = new THREE.MeshStandardMaterial({ color: 0xc4cbd0, transparent: true, opacity: 0.34, roughness: 0.88, side: THREE.DoubleSide, depthWrite: false });
@@ -1019,7 +1548,12 @@ function addRoomShell3D() {
   shellGroup.add(ceilingEdges);
 }
 
-function addMultiRoomShell3D(corners, roomHeight) {
+function hasVerticalSurfaceSegments() {
+  const segments = simData.room?.metadata?.surface_segments || [];
+  return segments.some((segment) => Number.isFinite(Number(segment.z_min)) && Number.isFinite(Number(segment.z_max)));
+}
+
+function addSegmentedRoomShell3D(corners, roomHeight) {
   const segments = simData.room?.metadata?.surface_segments || [];
   segments.forEach((segment) => {
     const a = segment.a;
@@ -1196,7 +1730,7 @@ function addBoundaryFeatures3D(roomHeight) {
 
 function addPaths3D() {
   const limit = Number(document.getElementById("pathLimit")?.value || 512);
-  const visible = displayPaths(simData.paths || []).slice(0, limit);
+  const visible = displayPaths(pathsForDisplay()).slice(0, limit);
   for (const path of visible) {
     const style = pathStyle(path);
     const points = (path.points || []).map(toVector3);
@@ -1291,24 +1825,381 @@ function pathHitMarker(point, color, radius) {
 }
 
 function addMarkers3D() {
-  addSphere(state.source, 0xef476f, 0.13);
+  markerGroup.add(sourcePoint3D());
   addSourceDirection3D();
-  addSphere(state.receiver, 0x0f7f9f, 0.13);
-  for (const point of microphonePoints()) addSphere(point, 0x7d8cff, 0.055);
+  markerGroup.add(receiverDevice3D());
+  updateMotionMarkerAtPhase(0);
 }
 
 function addSourceDirection3D() {
   if (state.sourceDirectivity.type === "omni") return;
+  const direction = sourceForwardVector3D();
+  const origin = toVector3(state.source).addScaledVector(direction, 0.18);
+  const arrow = new THREE.ArrowHelper(direction, origin, 0.72, 0xef476f, 0.18, 0.1);
+  arrow.userData.motionRole = "source";
+  arrow.userData.basePosition = origin.toArray();
+  markerGroup.add(arrow);
+}
+
+function motionFramesForDisplay() {
+  const plannedFrames = simData.dynamic?.planned_frames;
+  if (Array.isArray(plannedFrames) && plannedFrames.length > 1) return plannedFrames;
+  const remoteFrames = simData.dynamic?.frames;
+  return Array.isArray(remoteFrames) && remoteFrames.length === Number(simData.dynamic?.keyframes)
+    ? remoteFrames
+    : sampleMotionState().frames;
+}
+
+function addMotionTrajectory3D() {
+  if (state.motion?.mode === "static") return;
+  const frames = motionFramesForDisplay();
+  if (frames.length < 2) return;
+  const role = state.motion.moving === "receiver" ? "receiver" : "source";
+  const color = role === "source" ? 0xef476f : 0x0f7f9f;
+  const points = frames.map((frame) => toVector3(frame[role]));
+  motionGroup.add(new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(points),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.88 })
+  ));
+  points.forEach((point, index) => {
+    const endpoint = index === 0 || index === points.length - 1;
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(endpoint ? 0.055 : 0.032, 14, 10),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: endpoint ? 0.92 : 0.54, depthWrite: false })
+    );
+    marker.position.copy(point);
+    motionGroup.add(marker);
+  });
+  const end = points.at(-1);
+  const previous = points.at(-2);
+  const direction = end.clone().sub(previous);
+  if (direction.lengthSq() > 1e-8) {
+    motionGroup.add(new THREE.ArrowHelper(direction.normalize(), previous, Math.min(0.28, previous.distanceTo(end)), color, 0.11, 0.07));
+  }
+}
+
+function motionPositionAtPhase(role, phase) {
+  const frames = motionFramesForDisplay();
+  if (frames.length < 2) return role === "source" ? state.source : state.receiver;
+  const bounded = clamp(phase, 0, 1);
+  let upper = frames.findIndex((frame) => Number(frame.phase) >= bounded);
+  if (upper <= 0) return frames[0][role];
+  if (upper < 0) return frames.at(-1)[role];
+  const lower = upper - 1;
+  const startPhase = Number(frames[lower].phase);
+  const endPhase = Number(frames[upper].phase);
+  const mix = clamp((bounded - startPhase) / Math.max(endPhase - startPhase, 1e-9), 0, 1);
+  return frames[lower][role].map((value, axis) => Number(value) + (Number(frames[upper][role][axis]) - Number(value)) * mix);
+}
+
+function updateMotionMarkerAtPhase(phase) {
+  if (state.motion?.mode === "static") return;
+  const role = state.motion.moving === "receiver" ? "receiver" : "source";
+  const position = toVector3(motionPositionAtPhase(role, phase));
+  const device = markerGroup.children.find((child) => child.userData.role === role);
+  if (device) device.position.copy(position);
+  markerGroup.children.filter((child) => child.userData.motionRole === role).forEach((child) => {
+    const base = toVector3(role === "source" ? state.source : state.receiver);
+    const initial = new THREE.Vector3().fromArray(child.userData.basePosition || [0, 0, 0]);
+    child.position.copy(initial.add(position.clone().sub(base)));
+  });
+}
+
+function dynamicResultReady() {
+  const frames = simData.dynamic?.frames;
+  return Array.isArray(frames) && frames.length > 1 && frames.length === Number(simData.dynamic?.keyframes);
+}
+
+function currentDynamicFrame() {
+  const frames = simData.dynamic?.frames;
+  if (!Array.isArray(frames) || frames.length === 0) return null;
+  const index = clamp(displayedMotionFrameIndex, 0, frames.length - 1);
+  return frames[index] || null;
+}
+
+function pathsForDisplay() {
+  return currentDynamicFrame()?.paths || simData.paths || [];
+}
+
+function rirForDisplay() {
+  return currentDynamicFrame()?.rir || simData.rir || {};
+}
+
+function rt60ForDisplay() {
+  return currentDynamicFrame()?.rt60 || simData.rt60 || {};
+}
+
+function setMotionDisplayPhase(phase, force = false) {
+  motionDisplayPhase = clamp(Number(phase) || 0, 0, 1);
+  if (motionTimelineEl) motionTimelineEl.value = String(Math.round(motionDisplayPhase * 1000));
+  updateMotionMarkerAtPhase(motionDisplayPhase);
+  updateStageReadout();
+  const frames = simData.dynamic?.frames || [];
+  if (frames.length === 0) return;
+  let nearest = 0;
+  let nearestDelta = Number.POSITIVE_INFINITY;
+  frames.forEach((frame, index) => {
+    const delta = Math.abs(Number(frame.phase) - motionDisplayPhase);
+    if (delta < nearestDelta) {
+      nearest = index;
+      nearestDelta = delta;
+    }
+  });
+  if (!force && nearest === displayedMotionFrameIndex) {
+    updateMotionFrameValue();
+    return;
+  }
+  displayedMotionFrameIndex = nearest;
+  clearGroup(pathGroup);
+  addPaths3D();
+  statsEl.innerHTML = statsHtml(pathsForDisplay());
+  safeDrawRirPanel();
+  drawMiniMap();
+  updateMotionFrameValue();
+  updateRirFrameMeta();
+}
+
+function updateMotionFrameValue() {
+  const output = document.getElementById("motionFrameValue");
+  if (!output) return;
+  const total = Number(simData.dynamic?.keyframes || 0);
+  output.textContent = total > 1 && displayedMotionFrameIndex >= 0
+    ? `${displayedMotionFrameIndex + 1} / ${total}`
+    : "-- / --";
+}
+
+function startMotionPlayback() {
+  if (!dynamicResultReady()) return;
+  wetAudioEl?.pause();
+  motionPlayback = {
+    active: true,
+    startedAt: performance.now(),
+    startPhase: 0,
+    duration_s: clamp(Number(simData.dynamic?.distance_m || 1) / 0.8, 3.0, 10.0),
+  };
+  setMotionDisplayPhase(0, true);
+  updateMotionPlaybackControls();
+}
+
+function pauseMotionPlayback() {
+  motionPlayback.active = false;
+  if (wetAudioEl && !wetAudioEl.paused) wetAudioEl.pause();
+  updateMotionPlaybackControls();
+}
+
+function toggleMotionPlayback() {
+  if (!dynamicResultReady()) return;
+  const audioPlaying = wetAudioEl && !wetAudioEl.paused && !wetAudioEl.ended;
+  if (motionPlayback.active || audioPlaying) {
+    pauseMotionPlayback();
+    return;
+  }
+  if (wetAudioEl?.src) {
+    const dryDuration = Number(dryAudioEl?.duration || 0);
+    if (wetAudioEl.ended || (dryDuration > 0 && wetAudioEl.currentTime >= dryDuration)) wetAudioEl.currentTime = 0;
+    wetAudioEl.play().catch(() => startMotionPlayback());
+    updateMotionPlaybackControls();
+    return;
+  }
+  motionPlayback = {
+    active: true,
+    startedAt: performance.now(),
+    startPhase: motionDisplayPhase >= 1 ? 0 : motionDisplayPhase,
+    duration_s: clamp(Number(simData.dynamic?.distance_m || 1) / 0.8, 3.0, 10.0),
+  };
+  if (motionDisplayPhase >= 1) setMotionDisplayPhase(0, true);
+  updateMotionPlaybackControls();
+}
+
+function sourceForwardVector3D() {
   const yaw = THREE.MathUtils.degToRad(Number(state.sourceDirectivity.orientation_deg || 0));
   const pitch = THREE.MathUtils.degToRad(Number(state.sourceDirectivity.elevation_deg || 0));
   const cosPitch = Math.cos(pitch);
-  const direction = new THREE.Vector3(
+  return new THREE.Vector3(
     cosPitch * Math.cos(yaw),
     Math.sin(pitch),
     cosPitch * Math.sin(yaw)
   ).normalize();
-  const origin = toVector3(state.source).addScaledVector(direction, 0.12);
-  markerGroup.add(new THREE.ArrowHelper(direction, origin, 0.72, 0xef476f, 0.18, 0.1));
+}
+
+function receiverForwardVector3D() {
+  const yaw = THREE.MathUtils.degToRad(Number(state.mic.orientation_deg || 0));
+  return new THREE.Vector3(Math.cos(yaw), 0, Math.sin(yaw)).normalize();
+}
+
+function sourcePoint3D() {
+  const group = new THREE.Group();
+  group.name = "source-point";
+  group.position.copy(toVector3(state.source));
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(0.13, 24, 18),
+    new THREE.MeshStandardMaterial({ color: 0xef476f, roughness: 0.52, metalness: 0.04 })
+  );
+  group.add(core);
+  for (const radius of [0.17, 0.215]) {
+    const wave = new THREE.Mesh(
+      new THREE.TorusGeometry(radius, 0.008, 8, 40),
+      new THREE.MeshBasicMaterial({ color: 0xef476f, transparent: true, opacity: 0.5, depthWrite: false })
+    );
+    wave.rotation.x = Math.PI / 2;
+    group.add(wave);
+  }
+  group.add(markerHalo3D(0xef476f, 0.18, -0.155));
+  markDeviceGroup(group, "source");
+  return group;
+}
+
+function receiverDevice3D() {
+  if (state.mic.type === "hrtf") return binauralHead3D();
+  if (state.mic.type === "linear") return linearMicrophoneArray3D();
+  if (state.mic.type === "circular") return circularMicrophoneArray3D();
+  return monoReceiver3D();
+}
+
+function monoReceiver3D() {
+  const group = new THREE.Group();
+  group.name = "receiver-mono-point";
+  group.position.copy(toVector3(state.receiver));
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(0.105, 22, 16),
+    new THREE.MeshStandardMaterial({ color: 0x0f7f9f, roughness: 0.44, metalness: 0.12 })
+  );
+  group.add(core);
+  for (const rotation of [
+    [Math.PI / 2, 0, 0],
+    [0, Math.PI / 2, 0],
+  ]) {
+    const pickupRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.14, 0.008, 8, 36),
+      new THREE.MeshBasicMaterial({ color: 0x65b8cc, transparent: true, opacity: 0.64, depthWrite: false })
+    );
+    pickupRing.rotation.set(...rotation);
+    group.add(pickupRing);
+  }
+  group.add(markerHalo3D(0x0f7f9f, 0.16, -0.125));
+  markDeviceGroup(group, "receiver");
+  return group;
+}
+
+function binauralHead3D() {
+  const group = new THREE.Group();
+  group.name = "receiver-binaural-head";
+  group.position.copy(toVector3(state.receiver));
+  group.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), receiverForwardVector3D());
+  const skinMaterial = new THREE.MeshStandardMaterial({ color: 0xcaa894, roughness: 0.78, metalness: 0.0 });
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 28, 20), skinMaterial);
+  head.scale.set(0.88, 1.22, 0.8);
+  group.add(head);
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.09, 16), skinMaterial);
+  nose.rotation.z = -Math.PI / 2;
+  nose.position.set(0.145, 0.005, 0);
+  group.add(nose);
+  for (const side of [-1, 1]) {
+    const ear = new THREE.Mesh(
+      new THREE.TorusGeometry(0.038, 0.012, 9, 24),
+      new THREE.MeshStandardMaterial({ color: 0xb98f7c, roughness: 0.8 })
+    );
+    ear.scale.y = 1.25;
+    ear.position.set(0, 0, side * 0.125);
+    group.add(ear);
+    const capsule = new THREE.Mesh(
+      new THREE.SphereGeometry(0.018, 14, 10),
+      new THREE.MeshStandardMaterial({ color: 0x0f7f9f, roughness: 0.36, metalness: 0.5 })
+    );
+    capsule.position.set(0, 0, side * 0.132);
+    group.add(capsule);
+  }
+  group.add(markerHalo3D(0x0f7f9f, 0.19, -0.19));
+  markDeviceGroup(group, "receiver");
+  return group;
+}
+
+function linearMicrophoneArray3D() {
+  const group = new THREE.Group();
+  group.name = "receiver-linear-array";
+  const points = microphonePoints().map(toVector3);
+  const center = toVector3(state.receiver);
+  group.position.copy(center);
+  if (points.length >= 2) group.add(deviceTubeBetween3D(points[0].clone().sub(center), points.at(-1).clone().sub(center), 0.018, 0x40545d));
+  points.forEach((point) => {
+    const capsule = microphoneCapsule3D();
+    capsule.position.copy(point.sub(center));
+    group.add(capsule);
+  });
+  group.add(markerHalo3D(0x0f7f9f, Math.max(0.15, Number(state.mic.spacing_m || 0.08) * Number(state.mic.count || 4) * 0.58), -0.09));
+  markDeviceGroup(group, "receiver");
+  return group;
+}
+
+function circularMicrophoneArray3D() {
+  const group = new THREE.Group();
+  group.name = "receiver-circular-array";
+  const center = toVector3(state.receiver);
+  group.position.copy(center);
+  const radius = Math.max(0.04, Number(state.mic.radius_m || 0.12));
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(radius, 0.014, 9, 48),
+    new THREE.MeshStandardMaterial({ color: 0x40545d, roughness: 0.48, metalness: 0.48 })
+  );
+  ring.rotation.x = Math.PI / 2;
+  group.add(ring);
+  microphonePoints().map(toVector3).forEach((point) => {
+    const capsule = microphoneCapsule3D();
+    capsule.position.copy(point.sub(center));
+    group.add(capsule);
+  });
+  group.add(markerHalo3D(0x0f7f9f, radius + 0.07, -0.09));
+  markDeviceGroup(group, "receiver");
+  return group;
+}
+
+function microphoneCapsule3D() {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.023, 0.023, 0.075, 14),
+    new THREE.MeshStandardMaterial({ color: 0x176f87, roughness: 0.38, metalness: 0.52 })
+  );
+  group.add(body);
+  const grille = new THREE.Mesh(
+    new THREE.SphereGeometry(0.027, 14, 10),
+    new THREE.MeshStandardMaterial({ color: 0xa8bac1, roughness: 0.32, metalness: 0.7 })
+  );
+  grille.position.y = 0.038;
+  group.add(grille);
+  return group;
+}
+
+function deviceTubeBetween3D(start, end, radius, color) {
+  const delta = end.clone().sub(start);
+  const length = Math.max(delta.length(), 1e-6);
+  const mesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius, length, 14),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.45 })
+  );
+  mesh.position.copy(start).add(end).multiplyScalar(0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), delta.normalize());
+  return mesh;
+}
+
+function markerHalo3D(color, radius, yOffset) {
+  const halo = new THREE.Mesh(
+    new THREE.TorusGeometry(radius, 0.011, 8, 40),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.76, depthWrite: false })
+  );
+  halo.rotation.x = Math.PI / 2;
+  halo.position.y = yOffset;
+  return halo;
+}
+
+function markDeviceGroup(group, role) {
+  group.userData.role = role;
+  group.traverse((child) => {
+    child.userData.role = role;
+    if (child.isMesh) {
+      child.castShadow = true;
+      child.receiveShadow = true;
+    }
+  });
 }
 
 function addFurniture3D() {
@@ -1331,21 +2222,147 @@ function addFurniture3D() {
 function furnitureMesh(object, spec) {
   const [width, depth, height] = object.size || spec.size;
   const color = objectMaterialColors[object.material] || spec.color;
-  if (spec.kind === "table") return tableMesh(width, depth, height, color);
-  if (spec.kind === "shelves") return shelfMesh(width, depth, height, color);
+  let mesh = null;
+  if (spec.kind === "sofa") mesh = sofaMesh(width, depth, height, color);
+  else if (spec.kind === "bed") mesh = bedMesh(width, depth, height, color);
+  else if (spec.kind === "chair") mesh = chairMesh(width, depth, height, color);
+  else if (spec.kind === "rug") mesh = rugMesh(width, depth, height, color);
+  else if (spec.kind === "appliance") mesh = applianceMesh(width, depth, height, color, object.type);
+  else if (spec.kind === "person") mesh = personMesh(width, depth, height, color);
+  else if (spec.kind === "table") mesh = tableMesh(width, depth, height, color);
+  else if (spec.kind === "shelves") mesh = shelfMesh(width, depth, height, color);
+  else if (spec.kind === "tile_surface") mesh = tileSurfaceMesh(width, depth, height, color);
+  else if (spec.kind === "sanitary_fixture") mesh = sanitaryFixtureMesh(width, depth, height, color);
+  else if (spec.kind === "structural_element") mesh = structuralElementMesh(width, depth, height, color);
+  if (mesh) {
+    mesh.position.y += Number(object.z ?? spec.z ?? height * 0.5) - height * 0.5;
+    return mesh;
+  }
   const geometry = new THREE.BoxGeometry(width, height, depth);
   const material = new THREE.MeshStandardMaterial({
     color,
     roughness: spec.kind === "panel" ? 0.42 : 0.72,
-    metalness: spec.kind === "panel" && object.type === "tv" ? 0.12 : 0.0,
+    metalness: spec.kind === "panel" && object.type === "tv_mirror" ? 0.18 : 0.0,
     transparent: object.type === "window",
     opacity: object.type === "window" ? 0.62 : 1.0,
   });
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.position.y = Number(object.z ?? spec.z ?? height * 0.5);
-  mesh.castShadow = true;
+  const bodyMesh = new THREE.Mesh(geometry, material);
+  bodyMesh.position.y = Number(object.z ?? spec.z ?? height * 0.5);
+  bodyMesh.castShadow = true;
+  bodyMesh.receiveShadow = true;
+  return bodyMesh;
+}
+
+function sofaMesh(width, depth, height, color) {
+  const group = new THREE.Group();
+  const fabric = new THREE.MeshStandardMaterial({ color, roughness: 0.86 });
+  const base = new THREE.Mesh(new THREE.BoxGeometry(width, height * 0.42, depth), fabric);
+  base.position.y = height * 0.24;
+  group.add(base);
+  const back = new THREE.Mesh(new THREE.BoxGeometry(width, height * 0.7, depth * 0.18), fabric);
+  back.position.set(0, height * 0.48, -depth * 0.41);
+  group.add(back);
+  [-1, 1].forEach((side) => {
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(width * 0.11, height * 0.55, depth), fabric);
+    arm.position.set(side * width * 0.445, height * 0.36, 0);
+    group.add(arm);
+  });
+  return group;
+}
+
+function bedMesh(width, depth, height, color) {
+  const group = new THREE.Group();
+  const mattress = new THREE.Mesh(
+    new THREE.BoxGeometry(width, height * 0.62, depth),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.84 })
+  );
+  mattress.position.y = height * 0.34;
+  group.add(mattress);
+  const headboard = new THREE.Mesh(
+    new THREE.BoxGeometry(width, height * 0.82, depth * 0.08),
+    new THREE.MeshStandardMaterial({ color: 0x7a6a62, roughness: 0.76 })
+  );
+  headboard.position.set(0, height * 0.48, -depth * 0.48);
+  group.add(headboard);
+  return group;
+}
+
+function chairMesh(width, depth, height, color) {
+  const group = new THREE.Group();
+  const material = new THREE.MeshStandardMaterial({ color, roughness: 0.78 });
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(width, height * 0.18, depth), material);
+  seat.position.y = height * 0.45;
+  group.add(seat);
+  const back = new THREE.Mesh(new THREE.BoxGeometry(width, height * 0.52, depth * 0.12), material);
+  back.position.set(0, height * 0.72, -depth * 0.44);
+  group.add(back);
+  const legMaterial = new THREE.MeshStandardMaterial({ color: 0x5d5046, roughness: 0.8 });
+  [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.045, height * 0.42, 0.045), legMaterial);
+    leg.position.set(sx * width * 0.36, height * 0.21, sz * depth * 0.34);
+    group.add(leg);
+  });
+  return group;
+}
+
+function rugMesh(width, depth, height, color) {
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(width, Math.max(0.018, height), depth),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.92 })
+  );
+  mesh.position.y = Math.max(0.012, height * 0.5);
   mesh.receiveShadow = true;
   return mesh;
+}
+
+function applianceMesh(width, depth, height, color, type) {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(width, height, depth),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.48, metalness: 0.18 })
+  );
+  body.position.y = height * 0.5;
+  group.add(body);
+  const face = new THREE.Mesh(
+    new THREE.BoxGeometry(width * 0.82, height * (type === "fridge" ? 0.78 : 0.56), 0.018),
+    new THREE.MeshStandardMaterial({ color: 0xe8eef1, roughness: 0.42, metalness: 0.08 })
+  );
+  face.position.set(0, height * (type === "fridge" ? 0.52 : 0.5), depth * 0.51);
+  group.add(face);
+  if (type === "washing_machine") {
+    const drum = new THREE.Mesh(
+      new THREE.CylinderGeometry(Math.min(width, height) * 0.22, Math.min(width, height) * 0.22, 0.022, 32),
+      new THREE.MeshStandardMaterial({ color: 0x6f8794, roughness: 0.35, metalness: 0.22 })
+    );
+    drum.rotation.x = Math.PI / 2;
+    drum.position.set(0, height * 0.5, depth * 0.535);
+    group.add(drum);
+  } else {
+    const split = new THREE.Mesh(
+      new THREE.BoxGeometry(width * 0.84, 0.014, 0.024),
+      new THREE.MeshBasicMaterial({ color: 0x849198 })
+    );
+    split.position.set(0, height * 0.56, depth * 0.535);
+    group.add(split);
+  }
+  return group;
+}
+
+function personMesh(width, depth, height, color) {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.CapsuleGeometry(Math.max(width, depth) * 0.33, height * 0.52, 8, 16),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.82 })
+  );
+  body.position.y = height * 0.43;
+  group.add(body);
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(Math.max(width, depth) * 0.28, 20, 14),
+    new THREE.MeshStandardMaterial({ color: 0xcaa894, roughness: 0.8 })
+  );
+  head.position.y = height * 0.9;
+  group.add(head);
+  return group;
 }
 
 function tableMesh(width, depth, height, color) {
@@ -1380,6 +2397,66 @@ function shelfMesh(width, depth, height, color) {
   return group;
 }
 
+function tileSurfaceMesh(width, depth, height, color) {
+  const group = new THREE.Group();
+  const slabHeight = Math.max(0.018, height);
+  const slab = new THREE.Mesh(
+    new THREE.BoxGeometry(width, slabHeight, depth),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.32, metalness: 0.02 })
+  );
+  slab.position.y = slabHeight * 0.5;
+  group.add(slab);
+  const grout = new THREE.MeshBasicMaterial({ color: 0x6f7d80 });
+  [-0.25, 0.25].forEach((ratio) => {
+    const seamX = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.004, depth * 0.98), grout);
+    seamX.position.set(width * ratio, slabHeight + 0.002, 0);
+    group.add(seamX);
+    const seamZ = new THREE.Mesh(new THREE.BoxGeometry(width * 0.98, 0.004, 0.008), grout);
+    seamZ.position.set(0, slabHeight + 0.002, depth * ratio);
+    group.add(seamZ);
+  });
+  return group;
+}
+
+function sanitaryFixtureMesh(width, depth, height, color) {
+  const group = new THREE.Group();
+  const ceramic = new THREE.MeshStandardMaterial({ color, roughness: 0.3, metalness: 0.02 });
+  const basin = new THREE.MeshStandardMaterial({ color: 0xb9d3d6, roughness: 0.24 });
+  const wallHeight = height * 0.72;
+  const wallY = wallHeight * 0.5;
+  const addPart = (partWidth, partHeight, partDepth, x, y, z, material = ceramic) => {
+    const part = new THREE.Mesh(new THREE.BoxGeometry(partWidth, partHeight, partDepth), material);
+    part.position.set(x, y, z);
+    group.add(part);
+  };
+  addPart(width * 0.82, height * 0.16, depth * 0.72, 0, height * 0.08, 0);
+  addPart(width, wallHeight, depth * 0.12, 0, wallY, -depth * 0.44);
+  addPart(width, wallHeight, depth * 0.12, 0, wallY, depth * 0.44);
+  addPart(width * 0.11, wallHeight, depth * 0.76, -width * 0.445, wallY, 0);
+  addPart(width * 0.11, wallHeight, depth * 0.76, width * 0.445, wallY, 0);
+  addPart(width * 0.72, 0.012, depth * 0.58, 0, height * 0.18, 0, basin);
+  const chrome = new THREE.MeshStandardMaterial({ color: 0x8c999e, roughness: 0.2, metalness: 0.72 });
+  const faucet = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, height * 0.32, 12), chrome);
+  faucet.position.set(width * 0.28, height * 0.86, -depth * 0.38);
+  group.add(faucet);
+  return group;
+}
+
+function structuralElementMesh(width, depth, height, color) {
+  const group = new THREE.Group();
+  const concrete = new THREE.MeshStandardMaterial({ color, roughness: 0.88 });
+  const base = new THREE.Mesh(new THREE.BoxGeometry(width, height * 0.06, depth), concrete);
+  base.position.y = height * 0.03;
+  group.add(base);
+  const shaft = new THREE.Mesh(new THREE.BoxGeometry(width * 0.78, height * 0.88, depth * 0.78), concrete);
+  shaft.position.y = height * 0.5;
+  group.add(shaft);
+  const capital = new THREE.Mesh(new THREE.BoxGeometry(width, height * 0.06, depth), concrete);
+  capital.position.y = height * 0.97;
+  group.add(capital);
+  return group;
+}
+
 function selectionRing(object, spec) {
   const [width, depth] = object.size || spec.size;
   const ring = new THREE.Mesh(
@@ -1389,16 +2466,6 @@ function selectionRing(object, spec) {
   ring.rotation.x = -Math.PI / 2;
   ring.position.y = 0.015;
   return ring;
-}
-
-function addSphere(point, color, radius) {
-  const mesh = new THREE.Mesh(
-    new THREE.SphereGeometry(radius, 24, 16),
-    new THREE.MeshStandardMaterial({ color, roughness: 0.55 })
-  );
-  mesh.position.copy(toVector3(point));
-  mesh.castShadow = true;
-  markerGroup.add(mesh);
 }
 
 function microphonePoints() {
@@ -1433,6 +2500,21 @@ function microphonePoints() {
 function animate() {
   requestAnimationFrame(animate);
   controls?.update();
+  if (state.motion?.mode !== "static" && dynamicResultReady()) {
+    const dryDuration = Number(dryAudioEl?.duration || 0);
+    const audioPlaying = wetAudioEl && !wetAudioEl.paused && !wetAudioEl.ended && dryDuration > 0;
+    if (audioPlaying) {
+      setMotionDisplayPhase(Number(wetAudioEl.currentTime || 0) / dryDuration);
+    } else if (motionPlayback.active) {
+      const elapsed = (performance.now() - motionPlayback.startedAt) / 1000;
+      const phase = motionPlayback.startPhase + elapsed / Math.max(motionPlayback.duration_s, 0.1);
+      setMotionDisplayPhase(phase);
+      if (phase >= 1) {
+        motionPlayback.active = false;
+        updateMotionPlaybackControls();
+      }
+    }
+  }
   updateSelectionToolbarPosition();
   updateViewMeta();
   renderer.render(threeScene, camera);
@@ -1452,10 +2534,14 @@ function resize() {
 }
 
 function fitCamera(signature = cameraSceneSignature()) {
-  const bounds = getBounds(simData.room.corners);
+  const bounds = sceneDisplayBounds();
   const center = new THREE.Vector3((bounds.x0 + bounds.x1) * 0.5, 0, (bounds.y0 + bounds.y1) * 0.5);
   const span = Math.max(bounds.w, bounds.h, Number(simData.room.height_m || 2.8), 1);
   camera.userData.viewSize = span * 0.86 + 2.3;
+  camera.userData.viewMode = "iso";
+  camera.zoom = 1;
+  camera.up.set(0, 1, 0);
+  controls.minPolarAngle = Math.PI * 0.16;
   controls.target.set(center.x, Number(simData.room.height_m || 2.8) * 0.35, center.z);
   camera.position.set(center.x + span * 0.85, span * 0.95, center.z + span * 1.05);
   camera.lookAt(controls.target);
@@ -1463,12 +2549,18 @@ function fitCamera(signature = cameraSceneSignature()) {
   camera.userData.sceneSignature = signature;
   controls.update();
   resize();
+  setActiveViewControl("viewIso");
 }
 
 function cameraSceneSignature() {
-  const corners = simData.room?.corners || [];
-  const cornerKey = corners.map((point) => `${Number(point[0]).toFixed(3)},${Number(point[1]).toFixed(3)}`).join(";");
-  return `${cornerKey}|h=${Number(simData.room?.height_m || 0).toFixed(3)}`;
+  const bounds = sceneDisplayBounds();
+  const roomIds = (simData.room?.metadata?.multi_room?.rooms || []).map((room) => room.id).join(",");
+  return [
+    resplanMode ? `idx=${state.resplan.index}` : `shape=${state.shape}`,
+    `rooms=${roomIds}`,
+    `bounds=${bounds.x0.toFixed(3)},${bounds.y0.toFixed(3)},${bounds.x1.toFixed(3)},${bounds.y1.toFixed(3)}`,
+    `h=${Number(simData.room?.height_m || 0).toFixed(3)}`,
+  ].join("|");
 }
 
 function updateViewMeta() {
@@ -1505,8 +2597,11 @@ function roomRotationToThreeY(rotationDeg) {
 function clearGroup(group) {
   while (group.children.length) {
     const child = group.children.pop();
-    child.geometry?.dispose?.();
-    child.material?.dispose?.();
+    child.traverse?.((node) => {
+      node.geometry?.dispose?.();
+      const materials = Array.isArray(node.material) ? node.material : [node.material];
+      materials.filter(Boolean).forEach((material) => material.dispose?.());
+    });
     group.remove(child);
   }
 }
@@ -1519,11 +2614,7 @@ function makeClientScene(current) {
       name: presetTitle(current.shape),
       corners,
       height_m: current.size[2],
-      materials: {
-        wall: { id: current.materials.wall, name: current.materials.wall },
-        floor: { id: current.materials.floor, name: current.materials.floor },
-        ceiling: { id: current.materials.ceiling, name: current.materials.ceiling }
-      },
+      materials: {},
       metadata: {
         shape: current.shape,
         geometry_model: current.shape === "rectangle" ? "rectangular room" : current.shape === "resplan" ? "resplan room extrusion" : "extruded polygon",
@@ -1643,9 +2734,8 @@ function renderThumbnails() {
     button.addEventListener("click", () => {
       state.shape = preset.id;
       applyPresetPoints();
-      simData = makeClientScene(state);
       updateControls();
-      requestSimulation();
+      markSimulationPending();
     });
     container.appendChild(button);
     drawThumb(button.querySelector("canvas"), staticThumbnailCorners(preset.id));
@@ -1665,9 +2755,7 @@ function renderMicThumbnails() {
       state.mic.type = option.id;
       syncMicControls();
       refreshMicThumbnails();
-      simData = makeClientScene(state);
-      rebuildThreeScene();
-      requestSimulation();
+      markSimulationPending();
     });
     container.appendChild(button);
     drawMicThumb(button.querySelector("canvas"), option.id);
@@ -1691,9 +2779,7 @@ function renderSourceDirectivityThumbnails() {
         dipole_power: option.dipole_power
       };
       syncSourceDirectivityControls();
-      simData = makeClientScene(state);
-      rebuildThreeScene();
-      requestSimulation();
+      markSimulationPending();
     });
     container.appendChild(button);
     drawSourceDirectivityThumb(button.querySelector("canvas"), option);
@@ -1764,7 +2850,7 @@ function renderObjectThumbnails() {
       else {
         setActiveObjectType(option.id);
         setObjectControlDraft(option.id);
-        setStatus(`${spec.title} selected. Set dimensions, then Add geometry.`);
+        setStatus(`${spec.title} selected. Set dimensions, then Add object.`);
       }
     });
     container.appendChild(button);
@@ -1802,16 +2888,81 @@ function drawObjectThumb(thumbCanvas, type) {
   ctx.fillStyle = color;
   ctx.strokeStyle = "#20282e";
   ctx.lineWidth = 1.5;
-  if (type === "panel") {
+  if (type === "rug") {
+    ctx.fillRect(w * 0.18, h * 0.62, w * 0.64, h * 0.12);
+    ctx.strokeRect(w * 0.18, h * 0.62, w * 0.64, h * 0.12);
+  } else if (type === "curtain" || type === "tv_mirror" || type === "acoustic_panel" || type === "panel") {
     ctx.save();
     ctx.translate(w * 0.5, h * 0.55);
     ctx.rotate(-0.28);
     ctx.fillRect(-42, -7, 84, 14);
     ctx.strokeRect(-42, -7, 84, 14);
     ctx.restore();
-  } else if (type === "low_block") {
+  } else if (type === "fridge") {
+    ctx.fillRect(w * 0.38, h * 0.22, w * 0.24, h * 0.52);
+    ctx.strokeRect(w * 0.38, h * 0.22, w * 0.24, h * 0.52);
+    ctx.beginPath();
+    ctx.moveTo(w * 0.38, h * 0.49);
+    ctx.lineTo(w * 0.62, h * 0.49);
+    ctx.stroke();
+  } else if (type === "washing_machine") {
+    ctx.fillRect(w * 0.34, h * 0.34, w * 0.32, h * 0.34);
+    ctx.strokeRect(w * 0.34, h * 0.34, w * 0.32, h * 0.34);
+    ctx.beginPath();
+    ctx.arc(w * 0.5, h * 0.52, h * 0.095, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (type === "tile_surface") {
+    ctx.fillRect(w * 0.2, h * 0.48, w * 0.6, h * 0.24);
+    ctx.strokeRect(w * 0.2, h * 0.48, w * 0.6, h * 0.24);
+    ctx.beginPath();
+    [0.4, 0.6].forEach((ratio) => {
+      ctx.moveTo(w * ratio, h * 0.48);
+      ctx.lineTo(w * ratio, h * 0.72);
+    });
+    ctx.moveTo(w * 0.2, h * 0.6);
+    ctx.lineTo(w * 0.8, h * 0.6);
+    ctx.stroke();
+  } else if (type === "sanitary_fixture") {
+    ctx.fillRect(w * 0.22, h * 0.4, w * 0.56, h * 0.3);
+    ctx.strokeRect(w * 0.22, h * 0.4, w * 0.56, h * 0.3);
+    ctx.fillStyle = "#b9d3d6";
+    ctx.fillRect(w * 0.3, h * 0.46, w * 0.4, h * 0.14);
+    ctx.strokeRect(w * 0.3, h * 0.46, w * 0.4, h * 0.14);
+  } else if (type === "structural_element") {
+    ctx.fillRect(w * 0.38, h * 0.22, w * 0.24, h * 0.54);
+    ctx.strokeRect(w * 0.38, h * 0.22, w * 0.24, h * 0.54);
+    ctx.fillRect(w * 0.33, h * 0.19, w * 0.34, h * 0.08);
+    ctx.strokeRect(w * 0.33, h * 0.19, w * 0.34, h * 0.08);
+    ctx.fillRect(w * 0.33, h * 0.71, w * 0.34, h * 0.08);
+    ctx.strokeRect(w * 0.33, h * 0.71, w * 0.34, h * 0.08);
+  } else if (type === "person") {
+    ctx.beginPath();
+    ctx.arc(w * 0.5, h * 0.3, h * 0.08, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillRect(w * 0.43, h * 0.4, w * 0.14, h * 0.28);
+    ctx.strokeRect(w * 0.43, h * 0.4, w * 0.14, h * 0.28);
+  } else if (type === "bed" || type === "low_block") {
     ctx.fillRect(w * 0.23, h * 0.58, w * 0.54, h * 0.16);
     ctx.strokeRect(w * 0.23, h * 0.58, w * 0.54, h * 0.16);
+  } else if (type === "chair") {
+    ctx.fillRect(w * 0.38, h * 0.46, w * 0.24, h * 0.22);
+    ctx.strokeRect(w * 0.38, h * 0.46, w * 0.24, h * 0.22);
+    ctx.fillRect(w * 0.42, h * 0.27, w * 0.16, h * 0.22);
+    ctx.strokeRect(w * 0.42, h * 0.27, w * 0.16, h * 0.22);
+  } else if (type === "table") {
+    ctx.fillRect(w * 0.24, h * 0.42, w * 0.52, h * 0.12);
+    ctx.strokeRect(w * 0.24, h * 0.42, w * 0.52, h * 0.12);
+    [[0.29, 0.55], [0.69, 0.55]].forEach(([rx, ry]) => ctx.fillRect(w * rx, h * ry, 5, 18));
+  } else if (type === "cabinet") {
+    ctx.fillRect(w * 0.33, h * 0.24, w * 0.34, h * 0.48);
+    ctx.strokeRect(w * 0.33, h * 0.24, w * 0.34, h * 0.48);
+    ctx.beginPath();
+    ctx.moveTo(w * 0.33, h * 0.4);
+    ctx.lineTo(w * 0.67, h * 0.4);
+    ctx.moveTo(w * 0.33, h * 0.56);
+    ctx.lineTo(w * 0.67, h * 0.56);
+    ctx.stroke();
   } else {
     ctx.fillRect(w * 0.28, h * 0.35, w * 0.44, h * 0.34);
     ctx.strokeRect(w * 0.28, h * 0.35, w * 0.44, h * 0.34);
@@ -1884,11 +3035,18 @@ function drawThumb(thumbCanvas, corners) {
 }
 
 function updatePanels() {
-  const paths = simData.paths || [];
+  const paths = pathsForDisplay();
+  syncMotionControls();
   updatePathLimitLabel();
-  document.getElementById("hudMeta").textContent = `${presetTitle(state.shape)} | ${paths.length} paths | ${state.config.fs} Hz`;
+  const sampledMotion = sampleMotionState();
+  const motionLabel = state.motion?.mode === "static"
+    ? "Static"
+    : `${resplanMode ? state.motion.mode.replaceAll("_", "-") : state.motion.mode === "random" ? "random travel" : "approach travel"} · ${sampledMotion.keyframes} frames`;
+  document.getElementById("hudMeta").textContent = `${presetTitle(state.shape)} | ${motionLabel} | ${paths.length} paths | ${state.config.fs} Hz`;
   document.getElementById("receiverType").textContent = state.mic.type;
   document.getElementById("sourceDirectivityType").textContent = state.sourceDirectivity.type;
+  updateStageReadout();
+  updateResultStatus();
   statsEl.innerHTML = statsHtml(paths);
   codeEl.textContent = acousticAgentCode();
   drawMiniMap();
@@ -1897,12 +3055,84 @@ function updatePanels() {
   refreshSourceDirectivityThumbnails();
   refreshThumbnails();
   if (resplanMode) syncResplanRoomOptions();
+  renderMaterialSelections();
+  renderObjectMaterialSelection();
   const countLabel = document.getElementById("sceneObjectCount");
   if (countLabel) {
     const count = (state.objects || []).length;
     countLabel.textContent = `${count} object${count === 1 ? "" : "s"}`;
   }
   refreshObjectThumbnails(sceneObjectById(selectedObjectId)?.type || activeObjectType());
+  updateMotionFrameValue();
+  updateRunControls();
+}
+
+function updateStageReadout() {
+  const element = document.getElementById("stageDistance");
+  if (!element) return;
+  const source = (state.motion?.mode === "static"
+    ? state.source
+    : motionPositionAtPhase("source", motionDisplayPhase)) || state.source;
+  const receiver = (state.motion?.mode === "static"
+    ? state.receiver
+    : motionPositionAtPhase("receiver", motionDisplayPhase)) || state.receiver;
+  const distance = Math.hypot(
+    Number(source?.[0] || 0) - Number(receiver?.[0] || 0),
+    Number(source?.[1] || 0) - Number(receiver?.[1] || 0),
+    Number(source?.[2] || 0) - Number(receiver?.[2] || 0),
+  );
+  element.textContent = `${distance.toFixed(2)} m`;
+}
+
+function updateResultStatus() {
+  const element = document.getElementById("resultStatus");
+  if (!element) return;
+  const rir = rirForDisplay();
+  const warning = simData.metadata?.warning;
+  const ready = Number(rir.duration_s || 0) > 0;
+  const stateName = warning ? "error" : simulationRunning ? "running" : ready ? "ready" : "pending";
+  element.dataset.state = stateName;
+  element.textContent = warning ? "Error" : simulationRunning ? "Running" : ready ? "Ready" : "Pending";
+}
+
+function renderMaterialSelections() {
+  const materials = simData.room?.materials || {};
+  activeBoundaryMaterialControls.forEach(([surface, semantic]) => {
+    const label = document.getElementById(`sampled-${surface}`);
+    if (!label) return;
+    const material = materials[surface];
+    if (!material) {
+      label.textContent = `VLM semantic · ${semantic.replaceAll("_", " ")}`;
+      label.title = "";
+      return;
+    }
+    const level = String(material.resolved_absorption_class || material.absorption_class || "auto").replaceAll("_", " ");
+    const family = String(material.material_type || semantic).replaceAll("_", " ");
+    label.textContent = `${level} · ${family}`;
+    const bands = Object.entries(material.absorption || {}).map(([band, alpha]) => `${band} Hz ${Number(alpha).toFixed(2)}`).join(" · ");
+    label.title = `${material.name || material.id}${bands ? `\n${bands}` : ""}`;
+  });
+}
+
+function renderObjectMaterialSelection() {
+  const label = document.getElementById("objectMaterialResult");
+  if (!label) return;
+  const selected = sceneObjectById(selectedObjectId);
+  if (!selected) {
+    label.textContent = "Semantic material sampled after simulation.";
+    label.title = "";
+    return;
+  }
+  const simulated = (simData.objects || []).find((item) => item.id === selected.id);
+  const material = simulated?.material_selection;
+  if (!material) {
+    label.textContent = `${String(selected.semantic || selected.type).replaceAll("_", " ")} · pending simulation`;
+    label.title = "";
+    return;
+  }
+  const level = String(material.resolved_absorption_class || material.absorption_class || "auto").replaceAll("_", " ");
+  label.textContent = `${level} · ${String(material.material_type || material.semantic).replaceAll("_", " ")}`;
+  label.title = material.material_name || material.material_id || "";
 }
 
 function updatePathLimitLabel() {
@@ -1934,21 +3164,23 @@ function drawRirFallback(message) {
 }
 
 function statsHtml(paths) {
-  const rt60 = simData.rt60 || {};
-  const rir = simData.rir || {};
+  const rt60 = rt60ForDisplay();
+  const rir = rirForDisplay();
   const metrics = rir.metrics || {};
   const rirRt60 = rt60.rir_rt60_s ?? rt60.rt60_s;
-  const materialRt60 = rt60.material_rt60_s;
   const rows = [
-    ["RIR RT60", formatSeconds(rirRt60)],
-    ["Material RT60", formatSeconds(materialRt60)],
+    ["Broadband EDC RT60", formatSeconds(rirRt60)],
     ["DRR", formatDb(metrics.drr_db)],
     ["C50 / C80", `${formatDb(metrics.c50_db)} / ${formatDb(metrics.c80_db)}`],
-    ["RIR peak", `${formatDb(metrics.peak_dbfs)} @ ${formatMs(metrics.peak_time_ms)}`],
+    ["Dominant path", `${formatDb(metrics.dominant_path_gain_db)} @ ${formatMs(metrics.dominant_path_time_ms)}`],
+    ["RIR max sample", `${formatDb(metrics.peak_dbfs)} @ ${formatMs(metrics.peak_time_ms)}`],
     ["RMS level", formatDb(metrics.rms_dbfs)],
     ["Length", `${formatSeconds(rir.duration_s)} | ${Number(rir.channel_count || 1)} ch`]
   ];
-  return rows.map(([k, v]) => `<div class="stat"><span>${k}</span><strong>${v}</strong></div>`).join("");
+  return [
+    `<div class="stat"><span>${rows[0][0]}</span><strong>${rows[0][1]}</strong></div>`,
+    ...rows.slice(1).map(([k, v]) => `<div class="stat"><span>${k}</span><strong>${v}</strong></div>`)
+  ].join("");
 }
 
 function drawMiniMap() {
@@ -1960,11 +3192,13 @@ function drawMiniMap() {
 
 function drawAcousticMiniMap(ctx, width, height) {
   const corners = simData.room.corners;
-  const bounds = getBounds(corners);
+  const bounds = sceneDisplayBounds();
   const pad = 17;
   const scale = Math.min((width - pad * 2) / Math.max(bounds.w, 1e-6), (height - pad * 2) / Math.max(bounds.h, 1e-6));
-  const toCanvas = ([x, y]) => [pad + (x - bounds.x0) * scale, pad + (y - bounds.y0) * scale];
-  const selection = miniMapPathSelection(simData.paths || []);
+  const offsetX = (width - bounds.w * scale) * 0.5;
+  const offsetY = (height - bounds.h * scale) * 0.5;
+  const toCanvas = ([x, y]) => [offsetX + (x - bounds.x0) * scale, offsetY + (y - bounds.y0) * scale];
+  const selection = miniMapPathSelection(pathsForDisplay());
 
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#f7fafb";
@@ -1980,8 +3214,8 @@ function drawAcousticMiniMap(ctx, width, height) {
   });
   ctx.closePath();
   ctx.fillStyle = "#e8eef0";
-  ctx.strokeStyle = "#344149";
-  ctx.lineWidth = 1.8;
+  ctx.strokeStyle = hasVerticalSurfaceSegments() ? "rgba(52,65,73,.24)" : "#344149";
+  ctx.lineWidth = hasVerticalSurfaceSegments() ? 0.8 : 1.8;
   ctx.fill();
   ctx.stroke();
 
@@ -1998,9 +3232,29 @@ function drawAcousticMiniMap(ctx, width, height) {
     drawMiniAcousticPath(ctx, path, toCanvas, index === 0 ? "rgba(125,140,255,.96)" : "rgba(125,140,255,.62)", index === 0 ? 2.15 : 1.35, true, false);
   });
 
-  drawMiniSourceDirectivity(ctx, toCanvas(state.source));
-  drawMiniMarker(ctx, toCanvas(state.source), "#ef476f", "SRC", 1);
-  drawMiniMarker(ctx, toCanvas(state.receiver), "#0f7f9f", "MIC", -1);
+  const motionFrames = motionFramesForDisplay();
+  if (state.motion?.mode !== "static" && motionFrames.length > 1) {
+    const role = state.motion.moving === "receiver" ? "receiver" : "source";
+    ctx.beginPath();
+    motionFrames.forEach((frame, index) => {
+      const [x, y] = toCanvas(frame[role]);
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = role === "source" ? "rgba(239,71,111,.86)" : "rgba(15,127,159,.86)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([4, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  const displayedFrame = {
+    source: state.motion?.mode === "static" ? state.source : motionPositionAtPhase("source", motionDisplayPhase),
+    receiver: state.motion?.mode === "static" ? state.receiver : motionPositionAtPhase("receiver", motionDisplayPhase),
+  };
+  drawMiniSourceDirectivity(ctx, toCanvas(displayedFrame.source));
+  drawMiniMarker(ctx, toCanvas(displayedFrame.source), "#ef476f", "SRC", 1);
+  drawMiniMarker(ctx, toCanvas(displayedFrame.receiver), "#0f7f9f", "MIC", -1);
 
   const routeIsPortal = selection.routeType === "portal";
   const stateLabel = routeIsPortal ? "PORTAL" : selection.nlos ? "NLOS / UTD" : "LOS";
@@ -2011,15 +3265,11 @@ function drawAcousticMiniMap(ctx, width, height) {
   ctx.fillStyle = routeIsPortal ? "#a75c10" : selection.nlos ? "#5968d8" : "#c93658";
   ctx.fillText(stateLabel, width - badgeWidth, 18);
 
-  ctx.fillStyle = "#69767d";
-  ctx.font = "600 9px system-ui";
-  ctx.fillText(`RT ${selection.rtCount}`, 7, height - 7);
 }
 
 function drawMiniRoomPlan(ctx, toCanvas) {
   const metadata = simData.room?.metadata || {};
   const multiRoom = metadata.multi_room;
-  if (!multiRoom?.enabled) return;
   const roomColors = {
     living: "#eef6f4",
     bedroom: "#f0f2f9",
@@ -2029,13 +3279,15 @@ function drawMiniRoomPlan(ctx, toCanvas) {
     balcony: "#f1f6ed",
   };
   ctx.save();
-  (multiRoom.rooms || []).forEach((room) => {
-    if (!Array.isArray(room.corners) || room.corners.length < 3) return;
-    drawCanvasPolygon(ctx, room.corners, toCanvas);
-    ctx.fillStyle = roomColors[room.type] || "#f1f4f5";
-    ctx.globalAlpha = 0.92;
-    ctx.fill();
-  });
+  if (multiRoom?.enabled) {
+    (multiRoom.rooms || []).forEach((room) => {
+      if (!Array.isArray(room.corners) || room.corners.length < 3) return;
+      drawCanvasPolygon(ctx, room.corners, toCanvas);
+      ctx.fillStyle = roomColors[room.type] || "#f1f4f5";
+      ctx.globalAlpha = 0.92;
+      ctx.fill();
+    });
+  }
   ctx.globalAlpha = 1;
   ctx.strokeStyle = "rgba(52,65,73,.9)";
   ctx.lineWidth = 2.1;
@@ -2196,12 +3448,12 @@ function drawRirPanel() {
   const ctx = canvasEl.getContext("2d");
   const w = canvasEl.width;
   const h = canvasEl.height;
-  const rir = simData.rir || {};
+  const rir = rirForDisplay();
   const channels = rirWaveChannels(rir);
   const stride = Math.max(1, Number(rir.sample_stride || 1));
   const fs = Math.max(1, Number(rir.fs || state.config.fs));
-  const paths = (simData.paths || []).filter(pathLayerVisible);
-  const rt60 = simData.rt60 || {};
+  const paths = pathsForDisplay().filter(pathLayerVisible);
+  const rt60 = rt60ForDisplay();
   const duration = Number(rir.duration_s || state.config.duration_s);
   const maxDelay = Math.max(0.05, duration);
   const maxChannelLength = Math.max(0, ...channels.map((channel) => channel.samples.length));
@@ -2223,16 +3475,16 @@ function drawRirPanel() {
   ctx.fillRect(0, 0, w, h);
   drawRirLegend(ctx, padL, 9, channels);
   drawRirPlotFrame(ctx, padL, waveTop, plotW, waveH, rirWaveAxisLabel());
-  drawRirPlotFrame(ctx, padL, decayTop, plotW, decayH, "Energy decay", ["0", "-20", "-40", "-60", "-80"]);
+  drawRirPlotFrame(ctx, padL, decayTop, plotW, decayH, "Energy decay", RIR_DECAY_DB_TICKS);
   drawLateTailRegion(ctx, padL, waveTop, plotW, waveH + gap + decayH, maxDelay);
 
   if (visibleSamples > 0) {
     drawRirWaveforms(ctx, channels, visibleSamples, padL, waveMid, plotW, waveH, maxDelay, stride, fs);
-    drawRirEnergyDecayCurve(ctx, channels, visibleSamples, maxChannelLength, padL, decayTop, plotW, decayH, maxDelay, stride, fs);
+    drawRirEnergyDecayCurve(ctx, channels, visibleSamples, maxChannelLength, padL, decayTop, plotW, decayH, maxDelay, stride, fs, rir, rt60);
   }
   drawRirRt60Badge(ctx, padL + plotW, 9, rt60);
   drawRirEventTicks(ctx, paths, padL, waveTop, plotW, waveH, maxDelay);
-  drawRirPeakMarker(ctx, padL, waveTop, plotW, waveH, maxDelay);
+  drawRirPeakMarker(ctx, padL, waveTop, plotW, waveH, maxDelay, rir);
   ctx.fillStyle = "#69767d";
   ctx.font = "10px system-ui";
   ctx.fillText("0 ms", padL, h - 7);
@@ -2331,10 +3583,11 @@ function drawRirPlotFrame(ctx, x, y, width, height, axisLabel, dbTicks = null) {
   ctx.lineWidth = 1;
   ctx.strokeRect(x, y, width, height);
   drawYAxisLabel(ctx, axisLabel, x - 28, y + height * 0.5);
+  const gridDivisions = dbTicks ? Math.max(1, dbTicks.length - 1) : 4;
   ctx.strokeStyle = "rgba(76, 90, 99, 0.12)";
   ctx.beginPath();
-  for (let i = 1; i < 4; i += 1) {
-    const gy = y + height * i / 4;
+  for (let i = 1; i < gridDivisions; i += 1) {
+    const gy = y + height * i / gridDivisions;
     ctx.moveTo(x, gy);
     ctx.lineTo(x + width, gy);
   }
@@ -2362,10 +3615,10 @@ function drawYAxisLabel(ctx, label, x, y) {
   ctx.textAlign = "left";
 }
 
-function drawRirEnergyDecayCurve(ctx, channels, visibleSamples, fullSamples, padL, top, plotW, plotH, maxDelay, stride, fs) {
-  const minDb = -80;
-  const decayDb = rirEnergyDecayDbSamples(channels, visibleSamples, fullSamples);
-  drawMaterialDecayReference(ctx, padL, top, plotW, plotH, maxDelay, minDb);
+function drawRirEnergyDecayCurve(ctx, channels, visibleSamples, fullSamples, padL, top, plotW, plotH, maxDelay, stride, fs, rir, rt60) {
+  const minDb = RIR_DECAY_MIN_DB;
+  const decayDb = rirEnergyDecayDbSamples(channels, visibleSamples, fullSamples, rir);
+  drawMaterialDecayReference(ctx, padL, top, plotW, plotH, maxDelay, minDb, rt60);
   ctx.strokeStyle = "rgba(18,111,93,0.92)";
   ctx.lineWidth = 1.5;
   ctx.beginPath();
@@ -2399,9 +3652,9 @@ function drawRirEnergyDecayCurve(ctx, channels, visibleSamples, fullSamples, pad
   ctx.textAlign = "left";
 }
 
-function rirEnergyDecayDbSamples(channels, visibleSamples, fullSamples) {
-  const backendDecay = Array.isArray(simData.rir?.decay_db)
-    ? simData.rir.decay_db.map((value) => Number(value)).filter((value) => Number.isFinite(value))
+function rirEnergyDecayDbSamples(channels, visibleSamples, fullSamples, rir) {
+  const backendDecay = Array.isArray(rir?.decay_db)
+    ? rir.decay_db.map((value) => Number(value)).filter((value) => Number.isFinite(value))
     : [];
   if (backendDecay.length > 0) return backendDecay;
   const totalSamples = Math.max(visibleSamples, fullSamples);
@@ -2442,8 +3695,8 @@ function drawDecayReachStatus(ctx, finalDb, padL, top, plotW, plotH, minDb) {
   ctx.textAlign = "left";
 }
 
-function drawMaterialDecayReference(ctx, padL, top, plotW, plotH, maxDelay, minDb) {
-  const materialRt60 = Number(simData.rt60?.material_rt60_s);
+function drawMaterialDecayReference(ctx, padL, top, plotW, plotH, maxDelay, minDb, rt60) {
+  const materialRt60 = Number(rt60?.material_rt60_s);
   if (!Number.isFinite(materialRt60) || materialRt60 <= 0) return;
   ctx.save();
   ctx.strokeStyle = "rgba(105,118,125,0.58)";
@@ -2495,8 +3748,8 @@ function drawRirEventTicks(ctx, paths, padL, top, plotW, plotH, maxDelay) {
   ctx.globalAlpha = 1;
 }
 
-function drawRirPeakMarker(ctx, padL, top, plotW, plotH, maxDelay) {
-  const metrics = simData.rir?.metrics || {};
+function drawRirPeakMarker(ctx, padL, top, plotW, plotH, maxDelay, rir) {
+  const metrics = rir?.metrics || {};
   const delayMs = Number(metrics.peak_time_ms ?? metrics.direct_delay_ms);
   if (!Number.isFinite(delayMs)) return;
   const delay = delayMs / 1000;
@@ -2591,34 +3844,50 @@ async function updateCalibrationAudio(scene, requestSeq) {
   const token = ++calibrationAudioSeq;
   const rirInfo = scene?.rir || {};
   const fs = Number(rirInfo.fs || state.config.fs);
+  const dynamicFrames = Array.isArray(scene?.dynamic?.frames) ? scene.dynamic.frames : [];
   try {
     if (!rirInfo.wav_url || !Array.isArray(rirInfo.shape)) throw new Error("exact RIR is unavailable");
-    setCalibrationAudioMeta(`reading.wav · 44.1 → ${formatSampleRate(fs)}`);
-    const [dryResponse, rirResponse] = await Promise.all([
+    const rirUrls = dynamicFrames.length > 1
+      ? dynamicFrames.map((frame) => frame.rir?.wav_url).filter(Boolean)
+      : [rirInfo.wav_url];
+    if (dynamicFrames.length > 1 && rirUrls.length !== dynamicFrames.length) throw new Error("dynamic RIR frames are incomplete");
+    setCalibrationAudioMeta(dynamicFrames.length > 1
+      ? `reading.wav · rendering ${dynamicFrames.length} motion frames`
+      : `reading.wav · 44.1 → ${formatSampleRate(fs)}`);
+    const [dryResponse, ...rirResponses] = await Promise.all([
       fetch(`/api/calibration-audio?fs=${encodeURIComponent(fs)}`, { cache: "no-store" }),
-      fetch(rirInfo.wav_url, { cache: "no-store" }),
+      ...rirUrls.map((url) => fetch(url, { cache: "no-store" })),
     ]);
     if (!dryResponse.ok) throw new Error(await dryResponse.text());
-    if (!rirResponse.ok) throw new Error(await rirResponse.text());
+    const failedRir = rirResponses.find((response) => !response.ok);
+    if (failedRir) throw new Error(await failedRir.text());
     const dry = decodePcm16Wav(await dryResponse.arrayBuffer());
     if (dry.fs !== fs) throw new Error(`dry sample rate is ${dry.fs} Hz`);
     if (token !== calibrationAudioSeq || requestSeq !== simulationRequestSeq) return;
-    const rir = decodeFloat32WavFirstChannel(await rirResponse.arrayBuffer());
-    if (rir.fs !== fs) throw new Error(`RIR sample rate is ${rir.fs} Hz`);
-    const wet = await convolveMono(dry.samples, rir.samples, fs);
+    const rirs = [];
+    for (const response of rirResponses) {
+      const rir = decodeFloat32WavChannels(await response.arrayBuffer());
+      if (rir.fs !== fs) throw new Error(`RIR sample rate is ${rir.fs} Hz`);
+      rirs.push(monitorRirChannels(rir.channels));
+    }
+    const wetChannels = rirs.length > 1
+      ? await convolveDynamicChannels(dry.samples, rirs, dynamicFrames.map((frame) => Number(frame.phase)), fs)
+      : await convolveChannels(dry.samples, rirs[0], fs);
     if (token !== calibrationAudioSeq || requestSeq !== simulationRequestSeq) return;
 
-    const sharedGain = 0.98 / Math.max(1.0, maxAbs(dry.samples), maxAbs(wet));
+    const sharedGain = 0.98 / Math.max(1.0, maxAbs(dry.samples), maxAbsChannels(wetChannels));
     const nextUrls = [
-      URL.createObjectURL(encodePcm16Wav(scaledSamples(dry.samples, sharedGain), fs)),
-      URL.createObjectURL(encodePcm16Wav(scaledSamples(wet, sharedGain), fs)),
+      URL.createObjectURL(encodePcm16WavChannels([scaledSamples(dry.samples, sharedGain)], fs)),
+      URL.createObjectURL(encodePcm16WavChannels(scaledChannels(wetChannels, sharedGain), fs)),
     ];
     replaceCalibrationAudioUrls(nextUrls);
     dryAudioEl.src = nextUrls[0];
     wetAudioEl.src = nextUrls[1];
     dryAudioEl.load();
     wetAudioEl.load();
-    setCalibrationAudioMeta(`reading.wav · 44.1 → ${formatSampleRate(fs)} · ready`);
+    setCalibrationAudioMeta(dynamicFrames.length > 1
+      ? `reading.wav · ${dynamicFrames.length} moving RIR frames · ready`
+      : `reading.wav · 44.1 → ${formatSampleRate(fs)} · ready`);
   } catch (error) {
     if (token !== calibrationAudioSeq || requestSeq !== simulationRequestSeq) return;
     clearCalibrationAudio(`Audio unavailable · ${String(error?.message || error).slice(0, 42)}`);
@@ -2688,7 +3957,7 @@ function decodePcm16Wav(buffer) {
   return { samples, fs: format.fs };
 }
 
-function decodeFloat32WavFirstChannel(buffer) {
+function decodeFloat32WavChannels(buffer) {
   const view = new DataView(buffer);
   if (readAscii(view, 0, 4) !== "RIFF" || readAscii(view, 8, 4) !== "WAVE") throw new Error("invalid RIR WAV");
   let offset = 12;
@@ -2716,11 +3985,23 @@ function decodeFloat32WavFirstChannel(buffer) {
     throw new Error("RIR WAV must be IEEE float32");
   }
   const frames = Math.floor(dataLength / (4 * format.channels));
-  const samples = new Float32Array(frames);
+  const channels = Array.from({ length: format.channels }, () => new Float32Array(frames));
   for (let frame = 0; frame < frames; frame += 1) {
-    samples[frame] = view.getFloat32(dataOffset + frame * format.channels * 4, true);
+    for (let channel = 0; channel < format.channels; channel += 1) {
+      channels[channel][frame] = view.getFloat32(dataOffset + (frame * format.channels + channel) * 4, true);
+    }
   }
-  return { samples, fs: format.fs };
+  return { channels, fs: format.fs };
+}
+
+function monitorRirChannels(channels) {
+  if (channels.length <= 2) return channels;
+  const length = Math.max(...channels.map((samples) => samples.length));
+  const downmix = new Float32Array(length);
+  for (const samples of channels) {
+    for (let index = 0; index < samples.length; index += 1) downmix[index] += samples[index] / channels.length;
+  }
+  return [downmix];
 }
 
 async function convolveMono(dry, rir, fs) {
@@ -2743,10 +4024,40 @@ async function convolveMono(dry, rir, fs) {
   return new Float32Array(rendered.getChannelData(0));
 }
 
+async function convolveChannels(dry, rirChannels, fs) {
+  return Promise.all(rirChannels.map((rir) => convolveMono(dry, rir, fs)));
+}
+
+async function convolveDynamicChannels(dry, rirs, phases, fs) {
+  const renderedFrames = [];
+  for (const rir of rirs) renderedFrames.push(await convolveChannels(dry, rir, fs));
+  const channelCount = renderedFrames[0]?.length || 1;
+  const outputLength = Math.max(...renderedFrames.flat().map((samples) => samples.length));
+  const output = Array.from({ length: channelCount }, () => new Float32Array(outputLength));
+  let upper = 1;
+  for (let sample = 0; sample < outputLength; sample += 1) {
+    const phase = clamp(sample / Math.max(dry.length - 1, 1), 0, 1);
+    while (upper < phases.length - 1 && phase > phases[upper]) upper += 1;
+    const lower = Math.max(0, upper - 1);
+    const start = Number(phases[lower] ?? 0);
+    const end = Number(phases[upper] ?? 1);
+    const mix = lower === upper ? 0 : clamp((phase - start) / Math.max(end - start, 1e-9), 0, 1);
+    for (let channel = 0; channel < channelCount; channel += 1) {
+      output[channel][sample] = (renderedFrames[lower]?.[channel]?.[sample] || 0) * (1 - mix)
+        + (renderedFrames[upper]?.[channel]?.[sample] || 0) * mix;
+    }
+  }
+  return output;
+}
+
 function maxAbs(samples) {
   let peak = 0;
   for (let index = 0; index < samples.length; index += 1) peak = Math.max(peak, Math.abs(samples[index]));
   return peak;
+}
+
+function maxAbsChannels(channels) {
+  return Math.max(0, ...channels.map((samples) => maxAbs(samples)));
 }
 
 function scaledSamples(samples, gain) {
@@ -2755,25 +4066,35 @@ function scaledSamples(samples, gain) {
   return output;
 }
 
-function encodePcm16Wav(samples, fs) {
-  const buffer = new ArrayBuffer(44 + samples.length * 2);
+function scaledChannels(channels, gain) {
+  return channels.map((samples) => scaledSamples(samples, gain));
+}
+
+function encodePcm16WavChannels(channels, fs) {
+  const channelCount = Math.max(1, channels.length);
+  const frameCount = Math.max(...channels.map((samples) => samples.length));
+  const dataLength = frameCount * channelCount * 2;
+  const buffer = new ArrayBuffer(44 + dataLength);
   const view = new DataView(buffer);
   writeAscii(view, 0, "RIFF");
-  view.setUint32(4, 36 + samples.length * 2, true);
+  view.setUint32(4, 36 + dataLength, true);
   writeAscii(view, 8, "WAVE");
   writeAscii(view, 12, "fmt ");
   view.setUint32(16, 16, true);
   view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
+  view.setUint16(22, channelCount, true);
   view.setUint32(24, fs, true);
-  view.setUint32(28, fs * 2, true);
-  view.setUint16(32, 2, true);
+  view.setUint32(28, fs * channelCount * 2, true);
+  view.setUint16(32, channelCount * 2, true);
   view.setUint16(34, 16, true);
   writeAscii(view, 36, "data");
-  view.setUint32(40, samples.length * 2, true);
-  for (let index = 0; index < samples.length; index += 1) {
-    const value = Math.max(-1, Math.min(1, samples[index]));
-    view.setInt16(44 + index * 2, Math.round(value < 0 ? value * 32768 : value * 32767), true);
+  view.setUint32(40, dataLength, true);
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    for (let channel = 0; channel < channelCount; channel += 1) {
+      const value = Math.max(-1, Math.min(1, channels[channel]?.[frame] || 0));
+      const offset = 44 + (frame * channelCount + channel) * 2;
+      view.setInt16(offset, Math.round(value < 0 ? value * 32768 : value * 32767), true);
+    }
   }
   return new Blob([buffer], { type: "audio/wav" });
 }
@@ -2790,16 +4111,108 @@ function writeAscii(view, offset, value) {
 
 function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
   const shape = String(payload.shape || "rectangle");
+  const micModel = payload.receiver_model || { type: "mono" };
+  const micType = String(micModel.type || "mono");
+  const micParams = micType === "linear" || micType === "linear_array"
+    ? {
+        count: Number(micModel.count ?? 4),
+        spacing_m: Number(micModel.spacing_m ?? 0.08),
+        orientation_deg: Number(micModel.orientation_deg ?? 0),
+      }
+    : micType === "circular" || micType === "circular_array"
+      ? {
+          count: Number(micModel.count ?? 8),
+          radius_m: Number(micModel.radius_m ?? 0.12),
+          orientation_deg: Number(micModel.orientation_deg ?? 0),
+        }
+      : micType === "hrtf"
+        ? { orientation_deg: Number(micModel.orientation_deg ?? 0) }
+        : {};
+  const emitterModel = payload.source_model || { type: "omni" };
+  const sourceType = String(emitterModel.pattern || emitterModel.type || "omni");
+  const sourceModel = sourceType === "omni"
+    ? { type: "omni" }
+    : {
+        type: sourceType,
+        orientation_deg: Number(emitterModel.orientation_deg ?? 0),
+        elevation_deg: Number(emitterModel.elevation_deg ?? 0),
+        dipole_weight: Number(emitterModel.dipole_weight ?? 0.5),
+        dipole_power: Number(emitterModel.dipole_power ?? 1),
+      };
+  const quality = String(payload.config?.quality || payload.quality || "simulation");
+  const rirLength = Number(payload.config?.duration_s || 2.0);
+  const sampleRate = Number(payload.config?.fs || 16000);
+  const motion = payload.motion || { mode: "static" };
+  const dynamicMotion = motion.mode && motion.mode !== "static";
+  const dynamicRunLines = dynamicMotion ? [
+    "",
+    "motion = agent.sample_motion(",
+    `    mode="${motion.mode}", moving="${motion.moving || "source"}",`,
+    `    distance_m=${Number(motion.requested_distance_m || motion.distance_m || 0.8)},`,
+    `    keyframe_spacing_m=${Number(state.motion?.keyframe_spacing_m || 0.25)},`,
+    ...(motion.mode === "random" ? [`    seed=${Number(motion.random_seed ?? state.motion?.random_seed ?? 42)},`] : []),
+    ")",
+    "result = agent.run_dynamic(motion)",
+    "rir_frames = result.rirs",
+  ] : ["rir = agent.run().rir"];
+  const acousticGeometry = (payload.objects || []).map((object) => ({
+    type: String(object.type || "sofa"),
+    semantic: String(object.semantic || furnitureCatalog[object.type]?.semantic || object.type || "furniture"),
+    absorption_class: String(object.absorption_class || "auto"),
+    ...(object.material ? { material: String(object.material) } : {}),
+    position: (object.position || [0, 0]).slice(0, 2).map(Number),
+    z: Number(object.z ?? Number(object.size?.[2] || 1) * 0.5),
+    size: (object.size || [1, 1, 1]).slice(0, 3).map(Number),
+    rotation_deg: Number(object.rotation ?? object.rotation_deg ?? 0),
+  }));
+
+  if (shape === "resplan") {
+    const resplan = payload.room_metadata?.resplan || state.resplan?.dataset || {};
+    const idx = Number(resplan.index ?? state.resplan?.index ?? 0);
+    const materialProfile = payload.material_profile || state.materialProfile || {};
+    const materialSeed = Number(payload.material_seed ?? state.materialSeed ?? 42);
+    const sourcePosition = JSON.stringify((payload.source || state.source || [1.2, 1.1, 1.5]).map(Number));
+    const receiverPosition = JSON.stringify((payload.receiver || state.receiver || [4.7, 2.8, 1.4]).map(Number));
+    return [
+      "from acoustic_agent import AcousticAgent",
+      "",
+      `idx = ${idx}`,
+      `source = ${sourcePosition}  # [x, y, z] m`,
+      `mic = ${receiverPosition}     # [x, y, z] m`,
+      `material_seed = ${materialSeed}`,
+      `material_profile = ${JSON.stringify(materialProfile, null, 4)}`,
+      `mic_type = "${micType}"   # mono / hrtf / linear / circular`,
+      `mic_params = ${JSON.stringify(micParams, null, 4)}`,
+      `source_directivity = ${JSON.stringify(sourceModel, null, 4)}`,
+      `acoustic_geometry = ${JSON.stringify(acousticGeometry, null, 4)}`,
+      `quality = "${quality}"    # preview / simulation / fine / reference`,
+      `rir_length = ${rirLength}  # seconds`,
+      `sample_rate = ${sampleRate} # Hz`,
+      "",
+      "agent = AcousticAgent.from_resplan(",
+      "    idx=idx,",
+      "    source=source, receiver=mic,",
+      "    material_seed=material_seed,",
+      "    material_profile=material_profile,",
+      '    receiver_model={"type": mic_type, **mic_params},',
+      "    source_model=source_directivity,",
+      "    acoustic_geometry=acoustic_geometry,",
+      "    quality=quality, duration_s=rir_length, fs=sample_rate,",
+      ")",
+      "",
+      "print(agent.rooms)      # available room list",
+      "print(agent.placement)  # sampled rooms and [x, y, z] positions",
+      ...dynamicRunLines,
+    ].join("\n");
+  }
+
   const geometry = payload.geometry || {};
   const room = {
     shape,
     size: (payload.size || [6, 4, 2.8]).map(Number),
-    materials: payload.materials || { wall: "wall", floor: "floor", ceiling: "ceiling" },
+    material_profile: payload.material_profile || { wall: "auto", floor: "auto", ceiling: "auto" },
+    material_seed: Number(payload.material_seed ?? 42),
   };
-  if (shape === "resplan") {
-    room.corners = (payload.corners || []).map((point) => point.slice(0, 2).map(Number));
-    room.metadata = payload.room_metadata || {};
-  }
   const geometryParams = {
     triangle: { apex: Number(geometry.triangleApex ?? 0.5) },
     circle: { segments: Number(geometry.circleSegments ?? 36) },
@@ -2834,48 +4247,19 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
   };
   Object.assign(room, geometryParams[shape] || {});
 
-  const acousticGeometry = (payload.objects || []).map((object) => ({
-    type: String(object.type || "cuboid"),
-    material: String(object.material || "wood"),
-    position: (object.position || [0, 0]).slice(0, 2).map(Number),
-    z: Number(object.z ?? Number(object.size?.[2] || 1) * 0.5),
-    size: (object.size || [1, 1, 1]).slice(0, 3).map(Number),
-    rotation_deg: Number(object.rotation ?? object.rotation_deg ?? 0),
-  }));
-
   const source = JSON.stringify((payload.source || [1.2, 1.1, 1.5]).map(Number));
   const mic = JSON.stringify((payload.receiver || [4.7, 2.8, 1.4]).map(Number));
-  const micModel = payload.receiver_model || { type: "mono" };
-  const micType = String(micModel.type || "mono");
-  const micParams = micType === "linear" || micType === "linear_array"
-    ? {
-        count: Number(micModel.count ?? 4),
-        spacing_m: Number(micModel.spacing_m ?? 0.08),
-        orientation_deg: Number(micModel.orientation_deg ?? 0),
-      }
-    : micType === "circular" || micType === "circular_array"
-      ? {
-          count: Number(micModel.count ?? 8),
-          radius_m: Number(micModel.radius_m ?? 0.12),
-          orientation_deg: Number(micModel.orientation_deg ?? 0),
-        }
-      : micType === "hrtf"
-        ? { orientation_deg: Number(micModel.orientation_deg ?? 0) }
-        : {};
-  const emitterModel = payload.source_model || { type: "omni" };
-  const sourceType = String(emitterModel.pattern || emitterModel.type || "omni");
-  const sourceModel = sourceType === "omni"
-    ? { type: "omni" }
-    : {
-        type: sourceType,
-        orientation_deg: Number(emitterModel.orientation_deg ?? 0),
-        elevation_deg: Number(emitterModel.elevation_deg ?? 0),
-        dipole_weight: Number(emitterModel.dipole_weight ?? 0.5),
-        dipole_power: Number(emitterModel.dipole_power ?? 1),
-      };
-  const quality = String(payload.config?.quality || payload.quality || "simulation");
-  const rirLength = Number(payload.config?.duration_s || 2.0);
-  const sampleRate = Number(payload.config?.fs || 16000);
+  const geometryRunLines = dynamicMotion ? [
+    "motion = agent.sample_motion(",
+    "    source=source, receiver=mic,",
+    `    mode="${motion.mode}", moving="${motion.moving || "source"}",`,
+    `    distance_m=${Number(motion.requested_distance_m || motion.distance_m || 0.8)},`,
+    `    keyframe_spacing_m=${Number(state.motion?.keyframe_spacing_m || 0.25)},`,
+    ...(motion.mode === "random" ? [`    seed=${Number(motion.random_seed ?? state.motion?.random_seed ?? 42)},`] : []),
+    ")",
+    "result = agent.run_dynamic(motion)",
+    "rir_frames = result.rirs",
+  ] : ["rir = agent.run(source=source, receiver=mic).rir"];
   return [
     "from acoustic_agent import AcousticAgent",
     "",
@@ -2897,7 +4281,7 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
     '    receiver_model={"type": mic_type, **mic_params},',
     "    quality=quality, duration_s=rir_length, fs=sample_rate,",
     ")",
-    "rir = agent.run(source=source, receiver=mic).rir",
+    ...geometryRunLines,
   ].join("\n");
 }
 
@@ -2964,9 +4348,437 @@ function randomizePositions() {
   }
   state.source = source;
   state.receiver = receiver;
-  simData = makeClientScene(state);
   updateControls();
-  requestSimulation();
+  markSimulationPending();
+}
+
+function resampleRandomMotionPath() {
+  readControls();
+  state.motion.mode = "random";
+  state.motion.random_seed = Math.floor(Math.random() * 2147483647);
+  setValue("motionMode", "random");
+  markSimulationPending(`Random travel resampled · ${state.motion.distance_m.toFixed(1)} m.`);
+}
+
+function sampleMotionState() {
+  const motion = state.motion || defaultState.motion;
+  const source = state.source.map(Number);
+  const receiver = state.receiver.map(Number);
+  if (motion.mode === "static") {
+    return {
+      mode: "static",
+      moving: motion.moving,
+      requested_distance_m: 0,
+      distance_m: 0,
+      keyframes: 1,
+      keyframe_spacing_m: 0,
+      frames: [{ phase: 0, source, receiver }],
+    };
+  }
+
+  const movingSource = motion.moving !== "receiver";
+  const movingStart = movingSource ? source : receiver;
+  const target = movingSource ? receiver : source;
+  const roomId = movingSource ? state.resplan.roomId : state.resplan.receiverRoomId;
+  const corners = resplanRoomCorners(roomId) || cornersFor(state.shape, state.size, state.geometry);
+  const dx = target[0] - movingStart[0];
+  const dy = target[1] - movingStart[1];
+  const separation = Math.max(Math.hypot(dx, dy), 1e-9);
+  const portalRoute = acousticMotionRoute(movingSource);
+  const routePortalIds = state.resplan.roomMetadata?.multi_room?.route_portal_ids || [];
+  const followsPortalRoute = resplanMode && routePortalIds.length > 0 && portalRoute.length >= 2;
+  let requested = clamp(motion.distance_m, 0.2, 6.0);
+  if (motion.mode === "random") {
+    const sampledRoute = randomGeometryRoute(
+      movingStart,
+      corners,
+      requested,
+      motion.random_seed ?? 42,
+    );
+    const actual = sampledRoute.actual;
+    const keyframes = motionKeyframeCount(actual, motion);
+    const positions = samplePolyline3D(sampledRoute.route, actual, keyframes, false).reverse();
+    const frames = positions.map((position, index) => ({
+      phase: Number((index / Math.max(keyframes - 1, 1)).toFixed(6)),
+      source: (movingSource ? position : source).map((value) => Number(value.toFixed(6))),
+      receiver: (movingSource ? receiver : position).map((value) => Number(value.toFixed(6))),
+    }));
+    return {
+      mode: "random",
+      moving: movingSource ? "source" : "receiver",
+      requested_distance_m: Number(requested.toFixed(4)),
+      distance_m: Number(actual.toFixed(4)),
+      keyframes,
+      keyframe_spacing_m: Number((actual / Math.max(keyframes - 1, 1)).toFixed(4)),
+      random_seed: Math.max(0, Math.round(Number(motion.random_seed ?? 42))),
+      path_model: "random_room_route",
+      frames,
+    };
+  }
+  if (motion.mode === "approach" && !followsPortalRoute) {
+    const route = geometryApproachRoute(movingStart, target, corners);
+    const routeLength = polylineLength3D(route);
+    const actual = Math.min(requested, Math.max(0.05, routeLength - 0.3));
+    const keyframes = motionKeyframeCount(actual, motion);
+    const positions = samplePolyline3D(route, actual, keyframes, false);
+    const frames = positions.map((position, index) => ({
+      phase: Number((index / Math.max(keyframes - 1, 1)).toFixed(6)),
+      source: (movingSource ? position : source).map((value) => Number(value.toFixed(6))),
+      receiver: (movingSource ? receiver : position).map((value) => Number(value.toFixed(6))),
+    }));
+    return {
+      mode: "approach",
+      moving: movingSource ? "source" : "receiver",
+      requested_distance_m: Number(requested.toFixed(4)),
+      distance_m: Number(actual.toFixed(4)),
+      keyframes,
+      keyframe_spacing_m: Number((actual / Math.max(keyframes - 1, 1)).toFixed(4)),
+      path_model: "room_shortest_path",
+      frames,
+    };
+  }
+  let keyframes = motionKeyframeCount(requested, motion);
+  if (motion.mode === "approach" && followsPortalRoute) {
+    const routeLength = polylineLength3D(portalRoute);
+    const actual = Math.min(requested, Math.max(0.05, routeLength - 0.3));
+    keyframes = motionKeyframeCount(actual, motion);
+    const positions = snapMotionPositionsToRooms(samplePolyline3D(portalRoute, actual, keyframes));
+    const frames = positions.map((position, index) => ({
+      phase: Number((index / Math.max(keyframes - 1, 1)).toFixed(6)),
+      source: (movingSource ? position : source).map((value) => Number(value.toFixed(6))),
+      receiver: (movingSource ? receiver : position).map((value) => Number(value.toFixed(6))),
+    }));
+    return {
+      mode: motion.mode,
+      moving: movingSource ? "source" : "receiver",
+      requested_distance_m: Number(requested.toFixed(4)),
+      distance_m: Number(actual.toFixed(4)),
+      keyframes,
+      keyframe_spacing_m: Number((actual / Math.max(keyframes - 1, 1)).toFixed(4)),
+      path_model: "portal_route_smoothstep",
+      frames,
+    };
+  }
+
+  const directionTarget = portalRoute[1] || target;
+  const routeDx = directionTarget[0] - movingStart[0];
+  const routeDy = directionTarget[1] - movingStart[1];
+  const routeLength = Math.max(Math.hypot(routeDx, routeDy), 1e-9);
+  let direction = [routeDx / routeLength, routeDy / routeLength];
+  if (motion.mode === "recede") direction = [-direction[0], -direction[1]];
+  if (motion.mode === "pass_by") direction = [-direction[1], direction[0]];
+  if (motion.mode === "approach") requested = Math.min(requested, Math.max(0.05, separation - 0.35));
+
+  const positionsFor = (distance) => Array.from({ length: keyframes }, (_, index) => {
+    const phase = index / Math.max(keyframes - 1, 1);
+    const eased = smootherstep(phase);
+    const offset = motion.mode === "pass_by" ? (eased - 0.5) * distance : eased * distance;
+    return [
+      movingStart[0] + direction[0] * offset,
+      movingStart[1] + direction[1] * offset,
+      movingStart[2],
+    ];
+  });
+  const isSafe = (distance) => positionsFor(distance).every((position) => {
+    if (!pointIsSafelyInsideRoom(position, corners)) return false;
+    const dynamicSource = movingSource ? position : source;
+    const dynamicReceiver = movingSource ? receiver : position;
+    return distance2D(dynamicSource, dynamicReceiver) >= 0.3;
+  });
+  let actual = requested;
+  if (!isSafe(actual)) {
+    let low = 0;
+    let high = requested;
+    for (let iteration = 0; iteration < 20; iteration += 1) {
+      const middle = (low + high) * 0.5;
+      if (isSafe(middle)) low = middle;
+      else high = middle;
+    }
+    actual = low;
+  }
+  keyframes = motionKeyframeCount(actual, motion);
+  const frames = positionsFor(actual).map((position, index) => ({
+    phase: Number((index / Math.max(keyframes - 1, 1)).toFixed(6)),
+    source: (movingSource ? position : source).map((value) => Number(value.toFixed(6))),
+    receiver: (movingSource ? receiver : position).map((value) => Number(value.toFixed(6))),
+  }));
+  return {
+    mode: motion.mode,
+    moving: movingSource ? "source" : "receiver",
+    requested_distance_m: Number(requested.toFixed(4)),
+    distance_m: Number(actual.toFixed(4)),
+    keyframes,
+    keyframe_spacing_m: Number((actual / Math.max(keyframes - 1, 1)).toFixed(4)),
+    path_model: "local_smoothstep",
+    frames,
+  };
+}
+
+function motionKeyframeCount(distance, motion = state.motion) {
+  const spacing = clamp(Number(motion.keyframe_spacing_m || 0.25), 0.1, 1.0);
+  return clamp(Math.ceil(Math.max(0, Number(distance)) / spacing) + 1, 3, 65);
+}
+
+function geometryApproachRoute(start, end, corners) {
+  const inset = insetPolygon2D(corners, MIN_WALL_DISTANCE_M);
+  return visibilityPath2D(start, end, inset).map((point) => [
+    Number(point[0]),
+    Number(point[1]),
+    Number(start[2]),
+  ]);
+}
+
+function randomGeometryRoute(anchor, corners, requestedDistance, seed) {
+  const signature = JSON.stringify({
+    anchor: anchor.map((value) => Number(value).toFixed(4)),
+    corners: corners.map((point) => point.slice(0, 2).map((value) => Number(value).toFixed(4))),
+    requestedDistance: Number(requestedDistance).toFixed(4),
+    seed: Math.max(0, Math.round(Number(seed) || 0)),
+  });
+  if (randomMotionRouteCache.signature === signature && randomMotionRouteCache.value) {
+    return randomMotionRouteCache.value;
+  }
+  const domain = insetPolygon2D(corners, MIN_WALL_DISTANCE_M);
+  const bounds = getBounds(domain);
+  const random = seededRandom(seed);
+  const qualified = new Map();
+  let bestRoute = null;
+  let bestLength = 0;
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const candidate = [
+      bounds.x0 + random() * bounds.w,
+      bounds.y0 + random() * bounds.h,
+      Number(anchor[2]),
+    ];
+    if (!pointInPolygon2D(candidate, domain)) continue;
+    const route = visibilityPath2D(anchor, candidate, domain).map((point) => [
+      Number(point[0]),
+      Number(point[1]),
+      Number(anchor[2]),
+    ]);
+    const routeLength = polylineLength3D(route);
+    if (routeLength > bestLength) {
+      bestRoute = route;
+      bestLength = routeLength;
+    }
+    if (routeLength + 1e-9 < requestedDistance) continue;
+    const sampledStart = samplePolyline3D(route, requestedDistance, 2, false).at(-1);
+    const key = `${sampledStart[0].toFixed(3)},${sampledStart[1].toFixed(3)}`;
+    if (!qualified.has(key)) qualified.set(key, route);
+  }
+  if (qualified.size > 0) {
+    const routes = [...qualified.values()];
+    const value = {
+      route: routes[Math.min(routes.length - 1, Math.floor(random() * routes.length))],
+      actual: requestedDistance,
+    };
+    randomMotionRouteCache = { signature, value };
+    return value;
+  }
+  const value = {
+    route: bestRoute || [anchor, anchor],
+    actual: Math.min(requestedDistance, bestLength),
+  };
+  randomMotionRouteCache = { signature, value };
+  return value;
+}
+
+function seededRandom(seed) {
+  let value = Math.max(0, Math.round(Number(seed) || 0)) >>> 0;
+  return () => {
+    value = (Math.imul(1664525, value) + 1013904223) >>> 0;
+    return value / 4294967296;
+  };
+}
+
+function insetPolygon2D(corners, margin) {
+  if (!Array.isArray(corners) || corners.length < 3 || margin <= 0) return corners;
+  const signedArea = corners.reduce((sum, point, index) => {
+    const next = corners[(index + 1) % corners.length];
+    return sum + Number(point[0]) * Number(next[1]) - Number(next[0]) * Number(point[1]);
+  }, 0) * 0.5;
+  const orientation = signedArea >= 0 ? 1 : -1;
+  const edges = corners.map((point, index) => {
+    const next = corners[(index + 1) % corners.length];
+    const dx = Number(next[0]) - Number(point[0]);
+    const dy = Number(next[1]) - Number(point[1]);
+    const length = Math.max(Math.hypot(dx, dy), 1e-9);
+    const direction = [dx / length, dy / length];
+    const normal = orientation > 0
+      ? [-direction[1], direction[0]]
+      : [direction[1], -direction[0]];
+    return {
+      point: [Number(point[0]) + normal[0] * margin, Number(point[1]) + normal[1] * margin],
+      direction,
+    };
+  });
+  const inset = corners.map((_, index) => lineIntersection2D(
+    edges[(index - 1 + edges.length) % edges.length],
+    edges[index],
+  ));
+  const valid = inset.every((point) => (
+    Array.isArray(point)
+    && point.every(Number.isFinite)
+    && pointInPolygon2D(point, corners)
+    && distanceToRoomBoundary(point, corners) >= margin * 0.8
+  ));
+  return valid ? inset : corners;
+}
+
+function lineIntersection2D(first, second) {
+  const cross = first.direction[0] * second.direction[1] - first.direction[1] * second.direction[0];
+  if (Math.abs(cross) < 1e-9) {
+    return [
+      (first.point[0] + second.point[0]) * 0.5,
+      (first.point[1] + second.point[1]) * 0.5,
+    ];
+  }
+  const dx = second.point[0] - first.point[0];
+  const dy = second.point[1] - first.point[1];
+  const along = (dx * second.direction[1] - dy * second.direction[0]) / cross;
+  return [
+    first.point[0] + first.direction[0] * along,
+    first.point[1] + first.direction[1] * along,
+  ];
+}
+
+function acousticMotionRoute(movingSource) {
+  const metadataRoute = metadataPortalMotionRoute();
+  if (metadataRoute.length >= 2) {
+    return movingSource
+      ? metadataRoute.map((point) => [point[0], point[1], Number(state.source[2])])
+      : metadataRoute.slice().reverse().map((point) => [point[0], point[1], Number(state.receiver[2])]);
+  }
+  const paths = simData.paths || [];
+  const portal = paths.find((path) => path.kind === "portal_path" && Array.isArray(path.points) && path.points.length >= 2);
+  const direct = paths.find((path) => path.kind === "direct" && Array.isArray(path.points) && path.points.length >= 2);
+  const path = portal || direct;
+  const points = path ? path.points.map((point) => point.slice(0, 3).map(Number)) : [];
+  if (points.length < 2) return [];
+  return movingSource
+    ? points.map((point) => [point[0], point[1], Number(state.source[2])])
+    : points.reverse().map((point) => [point[0], point[1], Number(state.receiver[2])]);
+}
+
+function metadataPortalMotionRoute() {
+  const multiRoom = state.resplan.roomMetadata?.multi_room || {};
+  const roomIds = Array.isArray(multiRoom.route_room_ids) ? multiRoom.route_room_ids : [];
+  const portalIds = Array.isArray(multiRoom.route_portal_ids) ? multiRoom.route_portal_ids : [];
+  if (!portalIds.length || roomIds.length !== portalIds.length + 1) return [];
+  const roomById = new Map((multiRoom.rooms || []).map((room) => [room.id, room]));
+  const portalById = new Map((multiRoom.portals || []).map((portal) => [portal.id, portal]));
+  const height = Number(state.source[2]);
+  const route = [state.source.map(Number)];
+  let current = state.source.slice(0, 2).map(Number);
+  for (let index = 0; index < portalIds.length; index += 1) {
+    const currentRoom = roomIds[index];
+    const nextRoom = roomIds[index + 1];
+    const portal = portalById.get(portalIds[index]);
+    const currentSide = portal?.room_points?.[currentRoom] || portal?.center;
+    const nextSide = portal?.room_points?.[nextRoom] || portal?.center;
+    const corners = roomById.get(currentRoom)?.corners || [];
+    if (!Array.isArray(currentSide) || !Array.isArray(nextSide)) return [];
+    const segment = visibilityPath2D(current, currentSide, corners);
+    segment.slice(1).forEach((point) => route.push([Number(point[0]), Number(point[1]), height]));
+    route.push([Number(nextSide[0]), Number(nextSide[1]), height]);
+    current = nextSide.slice(0, 2).map(Number);
+  }
+  const finalCorners = roomById.get(roomIds[roomIds.length - 1])?.corners || [];
+  visibilityPath2D(current, state.receiver, finalCorners).slice(1).forEach((point) => {
+    route.push([Number(point[0]), Number(point[1]), height]);
+  });
+  return route.filter((point, index) => index === 0 || Math.hypot(
+    point[0] - route[index - 1][0],
+    point[1] - route[index - 1][1],
+  ) > 1e-6);
+}
+
+function visibilityPath2D(start, end, corners) {
+  const first = start.slice(0, 2).map(Number);
+  const last = end.slice(0, 2).map(Number);
+  if (!Array.isArray(corners) || corners.length < 3 || segmentInsidePolygon2D(first, last, corners)) return [first, last];
+  const nodes = [first, last, ...corners.map((point) => point.slice(0, 2).map(Number))];
+  const distance = Array(nodes.length).fill(Number.POSITIVE_INFINITY);
+  const previous = Array(nodes.length).fill(-1);
+  const visited = Array(nodes.length).fill(false);
+  distance[0] = 0;
+  for (let iteration = 0; iteration < nodes.length; iteration += 1) {
+    let current = -1;
+    for (let index = 0; index < nodes.length; index += 1) {
+      if (!visited[index] && (current < 0 || distance[index] < distance[current])) current = index;
+    }
+    if (current < 0 || !Number.isFinite(distance[current]) || current === 1) break;
+    visited[current] = true;
+    for (let neighbor = 0; neighbor < nodes.length; neighbor += 1) {
+      if (neighbor === current || visited[neighbor] || !segmentInsidePolygon2D(nodes[current], nodes[neighbor], corners)) continue;
+      const candidate = distance[current] + Math.hypot(
+        nodes[neighbor][0] - nodes[current][0],
+        nodes[neighbor][1] - nodes[current][1],
+      );
+      if (candidate < distance[neighbor]) {
+        distance[neighbor] = candidate;
+        previous[neighbor] = current;
+      }
+    }
+  }
+  if (!Number.isFinite(distance[1])) return [first, last];
+  const indices = [1];
+  while (indices[indices.length - 1] !== 0) indices.push(previous[indices[indices.length - 1]]);
+  return indices.reverse().map((index) => nodes[index]);
+}
+
+function polylineLength3D(points) {
+  let total = 0;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    total += Math.hypot(
+      points[index + 1][0] - points[index][0],
+      points[index + 1][1] - points[index][1],
+      points[index + 1][2] - points[index][2],
+    );
+  }
+  return total;
+}
+
+function samplePolyline3D(points, distance, count, eased = true) {
+  const segmentLengths = points.slice(0, -1).map((point, index) => Math.hypot(
+    points[index + 1][0] - point[0],
+    points[index + 1][1] - point[1],
+    points[index + 1][2] - point[2],
+  ));
+  return Array.from({ length: count }, (_, index) => {
+    const phase = index / Math.max(count - 1, 1);
+    let travel = (eased ? smootherstep(phase) : phase) * distance;
+    let segment = 0;
+    while (segment < segmentLengths.length - 1 && travel > segmentLengths[segment]) {
+      travel -= segmentLengths[segment];
+      segment += 1;
+    }
+    const mix = clamp(travel / Math.max(segmentLengths[segment], 1e-9), 0, 1);
+    return points[segment].map((value, axis) => Number(value) + (Number(points[segment + 1][axis]) - Number(value)) * mix);
+  });
+}
+
+function snapMotionPositionsToRooms(positions) {
+  const multiRoom = state.resplan.roomMetadata?.multi_room || {};
+  const rooms = multiRoom.rooms || [];
+  const portalPoints = (multiRoom.portals || [])
+    .filter((portal) => portal.open)
+    .flatMap((portal) => Object.values(portal.room_points || {}))
+    .filter((point) => Array.isArray(point) && point.length >= 2);
+  if (!rooms.length || !portalPoints.length) return positions;
+  return positions.map((position) => {
+    if (rooms.some((room) => Array.isArray(room.corners) && pointInPolygon2D(position, room.corners))) return position;
+    const nearest = portalPoints.reduce((best, point) => {
+      const distance = Math.hypot(position[0] - Number(point[0]), position[1] - Number(point[1]));
+      return !best || distance < best.distance ? { point, distance } : best;
+    }, null)?.point;
+    return nearest ? [Number(nearest[0]), Number(nearest[1]), Number(position[2])] : position;
+  });
+}
+
+function smootherstep(value) {
+  const bounded = clamp(value, 0, 1);
+  return bounded ** 3 * (bounded * (bounded * 6 - 15) + 10);
 }
 
 function resplanRoomCorners(roomId) {
@@ -3038,11 +4850,12 @@ function addSceneObject(type) {
     id: `obj_${Date.now().toString(36)}_${state.objects.length}`,
     type,
     title: spec.title,
+    semantic: spec.semantic || type,
     position: draft.position,
     rotation: draft.rotation,
     size: draft.size,
     z: draft.z,
-    material: spec.material,
+    absorption_class: draft.absorption_class,
     pending: true,
   };
   normalizeObjectVerticalPlacement(object);
@@ -3071,7 +4884,7 @@ function objectDraftFromControls(type = activeObjectType()) {
     z,
     size,
     rotation: clamp(controlNumber("objectRotation", defaultObjectRotation(type)), -180, 180),
-    material: spec.material,
+    absorption_class: value("objectAbsorption") || "auto",
   };
 }
 
@@ -3097,6 +4910,7 @@ function setObjectControlDraft(type = activeObjectType()) {
   setValue("objectDepth", roundControl(draft.size[1]));
   setValue("objectHeight", roundControl(draft.size[2]));
   setValue("objectRotation", Number(draft.rotation || 0).toFixed(1));
+  setValue("objectAbsorption", "auto");
 }
 
 function nextObjectPosition(spec) {
@@ -3118,7 +4932,7 @@ function nextObjectPosition(spec) {
 }
 
 function defaultObjectRotation(type) {
-  return type === "panel" ? 0 : 12;
+  return ["panel", "rug", "curtain", "tv_mirror", "fridge", "washing_machine", "acoustic_panel", "tile_surface", "sanitary_fixture", "structural_element", "person"].includes(type) ? 0 : 12;
 }
 
 function normalizeObjectVerticalPlacement(object) {
@@ -3171,9 +4985,9 @@ function syncSelectedObjectControls(object = sceneObjectById(selectedObjectId)) 
   if (!object) {
     if (confirmButton) confirmButton.hidden = true;
     if (commandRow) commandRow.classList.remove("hasConfirm");
-    if (addButton) addButton.textContent = "Add geometry";
+    if (addButton) addButton.textContent = "Add object";
     if (addButton) addButton.disabled = false;
-    if (editHint) editHint.textContent = "Choose a geometry card, add it, then place it in the scene.";
+    if (editHint) editHint.textContent = "Choose a furniture card, add it, then place it in the scene.";
     refreshObjectThumbnails();
     if (!document.activeElement || !settings.contains(document.activeElement)) setObjectControlDraft(activeObjectType());
     return;
@@ -3188,15 +5002,16 @@ function syncSelectedObjectControls(object = sceneObjectById(selectedObjectId)) 
   setValue("objectDepth", roundControl(depth));
   setValue("objectHeight", roundControl(height));
   setValue("objectRotation", Number(object.rotation || 0).toFixed(1));
+  setValue("objectAbsorption", object.absorption_class || "auto");
   const needsConfirm = object.id === pendingObjectId || object.id === dirtyObjectId;
   if (confirmButton) confirmButton.hidden = !needsConfirm;
   if (commandRow) commandRow.classList.toggle("hasConfirm", needsConfirm);
-  if (addButton) addButton.textContent = needsConfirm ? "Add later" : "Add geometry";
+  if (addButton) addButton.textContent = needsConfirm ? "Add later" : "Add object";
   if (addButton) addButton.disabled = needsConfirm;
   if (editHint) {
     editHint.textContent = needsConfirm
       ? "Preview is live. Press Update simulation to commit acoustics."
-      : "Selected geometry. Drag in WebGL to move; edit dimensions here.";
+      : "Selected object. Drag in WebGL to move; edit dimensions here.";
   }
 }
 
@@ -3211,9 +5026,11 @@ function handleObjectTypeChange(nextType = activeObjectType()) {
   }
   object.type = nextType;
   object.title = spec.title;
+  object.semantic = spec.semantic || nextType;
   object.size = [...spec.size];
   object.z = spec.z;
-  object.material = spec.material;
+  object.absorption_class = "auto";
+  delete object.material;
   normalizeObjectVerticalPlacement(object);
   setSelection(object.title);
   syncSelectedObjectControls(object);
@@ -3228,6 +5045,7 @@ function handleObjectSettingsInput() {
   object.z = draft.z;
   object.size = draft.size;
   object.rotation = draft.rotation;
+  object.absorption_class = draft.absorption_class;
   normalizeObjectVerticalPlacement(object);
   applyObjectEdit();
 }
@@ -3277,12 +5095,10 @@ function confirmSelectedObject() {
   delete object.dirty;
   pendingObjectId = null;
   dirtyObjectId = null;
-  simData = makeClientScene(state);
   clearObjectSelection();
   setTimeout(clearObjectSelection, 0);
   setTimeout(clearObjectSelection, 120);
-  setStatus(`${title} confirmed. Updating simulation...`);
-  requestSimulation();
+  markSimulationPending(`${title} confirmed · run simulation to update RIR.`);
 }
 
 function duplicateSelectedObject() {
@@ -3329,10 +5145,7 @@ function deleteSelectedObject() {
   selectedObjectId = null;
   setSelection("Scene");
   syncSelectedObjectControls(null);
-  simData = makeClientScene(state);
-  rebuildThreeScene();
-  updatePanels();
-  scheduleSimulation();
+  markSimulationPending();
 }
 
 function setObjectMode(mode) {
@@ -3483,6 +5296,36 @@ function getBounds(corners) {
   const xs = corners.map((p) => p[0]);
   const ys = corners.map((p) => p[1]);
   return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+}
+
+function sceneDisplayBounds() {
+  return getBounds(sceneDisplayPoints());
+}
+
+function sceneDisplayPoints() {
+  const points = [];
+  const append = (point) => {
+    if (!Array.isArray(point) || point.length < 2) return;
+    const x = Number(point[0]);
+    const y = Number(point[1]);
+    if (Number.isFinite(x) && Number.isFinite(y)) points.push([x, y]);
+  };
+  (simData.room?.corners || []).forEach(append);
+  const metadata = simData.room?.metadata || {};
+  (metadata.multi_room?.rooms || []).forEach((room) => (room.corners || []).forEach(append));
+  (metadata.surface_segments || []).forEach((segment) => {
+    append(segment.a);
+    append(segment.b);
+  });
+  append(state.source);
+  append(state.receiver);
+  if (state.motion?.mode !== "static") {
+    motionFramesForDisplay().forEach((frame) => {
+      append(frame.source);
+      append(frame.receiver);
+    });
+  }
+  return points.length >= 2 ? points : [[0, 0], [1, 1]];
 }
 
 function estimateSize(corners) {

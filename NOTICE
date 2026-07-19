@@ -1,0 +1,7 @@
+Acoustic Agent
+Copyright 2026 Acoustic Agent Contributors
+
+This product bundles HRTF data from the CIPIC HRTF Database and the SADIE II
+Database. It also bundles project-compiled acoustic-material and ResPlan scene
+databases. Attribution, source references, and data-license notes are recorded
+in THIRD_PARTY_NOTICES.md and in the metadata embedded in each SOFA file.

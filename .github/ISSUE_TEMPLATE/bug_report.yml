@@ -1,0 +1,65 @@
+name: Bug report
+description: Report incorrect solver, API, packaging, or Web behavior.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Please provide a minimal reproducible scene and avoid attaching private datasets.
+  - type: input
+    id: version
+    attributes:
+      label: Acoustic Agent version or commit
+      placeholder: 0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: macOS 15, Python 3.12, arm64
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Geometry solver
+        - ResPlan solver
+        - Materials
+        - HRTF or microphone
+        - Motion
+        - Web workbench
+        - Installation or packaging
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Include the smallest Python or JSON example that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and diagnostics
+      description: Include errors, relevant metadata, and seeded results.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I ran `acoustic-agent verify-resources` successfully.
+        - label: I searched existing issues for the same problem.
+          required: true

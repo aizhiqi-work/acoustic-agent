@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from .directivity import source_directivity
 from .engine import SimulationResult, simulate_rir
 from .geometry import make_room
+from .materials import MaterialLibrary, material_summary
 from .mic import microphone_array
 from .models import Material, Room, SimConfig
+from .motion import room_for_motion_frame, sample_motion
+from .resplan_resource import DEFAULT_RESPLAN_RESOURCE, ResPlanResource
 
 
 QUALITY_PRESETS: dict[str, dict[str, int | float]] = {
@@ -16,6 +21,16 @@ QUALITY_PRESETS: dict[str, dict[str, int | float]] = {
     "fine": {"rt_num_rays": 65536, "rt_num_bounces": 96, "rt_duration_s": 2.0},
     "reference": {"rt_num_rays": 131072, "rt_num_bounces": 96, "rt_duration_s": 2.0},
 }
+
+
+@dataclass(frozen=True)
+class DynamicSimulationResult:
+    motion: Mapping[str, Any]
+    frames: tuple[SimulationResult, ...]
+
+    @property
+    def rirs(self) -> tuple[Any, ...]:
+        return tuple(frame.rir for frame in self.frames)
 
 
 def quality_preset(quality: str) -> dict[str, int | float]:
@@ -28,6 +43,15 @@ def quality_preset(quality: str) -> dict[str, int | float]:
     return dict(QUALITY_PRESETS[key])
 
 
+def _resplan_position(value: Sequence[float], label: str) -> list[float]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) != 3:
+        raise ValueError(f"{label} must contain [x, y, z]")
+    point = [float(item) for item in value]
+    if not all(math.isfinite(item) for item in point):
+        raise ValueError(f"{label} contains a non-finite value")
+    return point
+
+
 class AcousticAgent:
     """Small object-oriented facade for the common single-room workflow."""
 
@@ -38,6 +62,8 @@ class AcousticAgent:
         shape: str = "rectangle",
         quality: str = "simulation",
         materials: Mapping[str, str | Material] | None = None,
+        material_profile: str | Mapping[str, Any] | None = None,
+        material_seed: int = 0,
         fs: int = 16000,
         duration_s: float = 2.0,
         config: SimConfig | None = None,
@@ -45,7 +71,13 @@ class AcousticAgent:
         source_model: str | Mapping[str, Any] = "omni",
         acoustic_geometry: Sequence[Mapping[str, Any]] | None = None,
     ) -> None:
-        self.room = _make_agent_room(room, shape=shape, materials=materials)
+        self.room = _make_agent_room(
+            room,
+            shape=shape,
+            materials=materials,
+            material_profile=material_profile,
+            material_seed=material_seed,
+        )
         if acoustic_geometry is not None:
             self.room = _room_with_acoustic_geometry(self.room, acoustic_geometry)
         preset = quality_preset(quality)
@@ -58,28 +90,206 @@ class AcousticAgent:
         )
         self.receiver_model = _microphone_model(receiver_model)
         self.source_model = source_directivity(source_model)
+        self.default_source: tuple[float, float, float] | None = None
+        self.default_receiver: tuple[float, float, float] | None = None
+        self.rooms: list[dict[str, Any]] = []
+        self.placement: dict[str, Any] | None = None
+        self.resplan: dict[str, Any] | None = None
+
+    @classmethod
+    def from_resplan(
+        cls,
+        idx: int,
+        *,
+        placement: str = "random",
+        seed: int | None = None,
+        source: Sequence[float] | None = None,
+        receiver: Sequence[float] | None = None,
+        source_room: str | None = None,
+        receiver_room: str | None = None,
+        quality: str = "simulation",
+        materials: Mapping[str, str | Material] | None = None,
+        material_profile: str | Mapping[str, Any] | None = None,
+        material_seed: int | None = None,
+        fs: int = 16000,
+        duration_s: float = 2.0,
+        config: SimConfig | None = None,
+        receiver_model: str | Mapping[str, Any] = "mono",
+        source_model: str | Mapping[str, Any] = "omni",
+        acoustic_geometry: Sequence[Mapping[str, Any]] | None = None,
+        mic_type: str | None = None,
+        source_directivity: str | None = None,
+        room_height_m: float = 2.8,
+        position_height_m: float = 1.4,
+        resource: ResPlanResource | str | Path | None = None,
+    ) -> "AcousticAgent":
+        loader = resource if isinstance(resource, ResPlanResource) else ResPlanResource(resource or DEFAULT_RESPLAN_RESOURCE)
+        sampled = loader.sample_placement(
+            idx,
+            placement=placement,
+            seed=seed,
+            source_room=source_room,
+            receiver_room=receiver_room,
+            height_m=position_height_m,
+        )
+        if source is not None:
+            sampled["source"] = _resplan_position(source, "source")
+        if receiver is not None:
+            sampled["receiver"] = _resplan_position(receiver, "receiver")
+        scene = loader.scene(
+            idx,
+            sampled["source_room"],
+            receiver_room_id=sampled["receiver_room"],
+            height_m=room_height_m,
+            source=sampled["source"],
+            receiver=sampled["receiver"],
+        )
+        actual_material_seed = int(seed if material_seed is None and seed is not None else material_seed or 0)
+        agent = cls(
+            room=scene["room"],
+            quality=quality,
+            materials=materials,
+            material_profile=material_profile,
+            material_seed=actual_material_seed,
+            fs=fs,
+            duration_s=duration_s,
+            config=config,
+            receiver_model=mic_type or receiver_model,
+            source_model=source_directivity or source_model,
+            acoustic_geometry=acoustic_geometry,
+        )
+        agent.default_source = tuple(float(value) for value in scene["source"])
+        agent.default_receiver = tuple(float(value) for value in scene["receiver"])
+        agent.room = room_for_motion_frame(agent.room, agent.default_source, agent.default_receiver)
+        agent.rooms = [dict(room) for room in scene["rooms"]]
+        multi_room = agent.room.metadata.get("multi_room") if isinstance(agent.room.metadata, Mapping) else None
+        resolved_source_room = str(multi_room.get("source_room_id", sampled["source_room"])) if isinstance(multi_room, Mapping) else str(sampled["source_room"])
+        resolved_receiver_room = str(multi_room.get("receiver_room_id", sampled["receiver_room"])) if isinstance(multi_room, Mapping) else str(sampled["receiver_room"])
+        agent.placement = {
+            **sampled,
+            "source_room": resolved_source_room,
+            "receiver_room": resolved_receiver_room,
+            "source": list(agent.default_source),
+            "receiver": list(agent.default_receiver),
+        }
+        agent.resplan = dict(scene["dataset"])
+        return agent
 
     def run(
         self,
-        source: Sequence[float],
-        receiver: Sequence[float],
+        source: Sequence[float] | None = None,
+        receiver: Sequence[float] | None = None,
         *,
         config: SimConfig | None = None,
         receiver_model: str | Mapping[str, Any] | None = None,
         source_model: str | Mapping[str, Any] | None = None,
     ) -> SimulationResult:
+        actual_source = source if source is not None else self.default_source
+        actual_receiver = receiver if receiver is not None else self.default_receiver
+        if actual_source is None or actual_receiver is None:
+            raise ValueError("source and receiver are required unless the agent was created with from_resplan()")
         model = self.receiver_model
         if receiver_model is not None:
             model = _microphone_model(receiver_model)
         emitter = self.source_model if source_model is None else source_directivity(source_model)
-        return simulate_rir(
+        result = simulate_rir(
             self.room,
-            source,
-            receiver,
+            actual_source,
+            actual_receiver,
             config=config or self.config,
             receiver_model=model,
             source_model=emitter,
         )
+        if self.placement is None:
+            return result
+        placement = {
+            **self.placement,
+            "source": [float(value) for value in actual_source],
+            "receiver": [float(value) for value in actual_receiver],
+        }
+        return SimulationResult(
+            result.rir,
+            result.paths,
+            result.rt60,
+            result.receiver_model,
+            {**dict(result.metadata), "placement": placement, "resplan": dict(self.resplan or {})},
+            result.ambisonic_rir,
+            result.source_model,
+        )
+
+    def sample_motion(
+        self,
+        *,
+        mode: str = "approach",
+        moving: str = "source",
+        source: Sequence[float] | None = None,
+        receiver: Sequence[float] | None = None,
+        distance_m: float = 0.8,
+        keyframes: int | None = None,
+        keyframe_spacing_m: float = 0.25,
+        seed: int = 42,
+    ) -> dict[str, Any]:
+        actual_source = source if source is not None else self.default_source
+        actual_receiver = receiver if receiver is not None else self.default_receiver
+        if actual_source is None or actual_receiver is None:
+            raise ValueError("source and receiver are required to sample motion")
+        return sample_motion(
+            self.room,
+            actual_source,
+            actual_receiver,
+            mode=mode,
+            moving=moving,
+            distance_m=distance_m,
+            keyframes=keyframes,
+            keyframe_spacing_m=keyframe_spacing_m,
+            seed=seed,
+        )
+
+    def run_dynamic(
+        self,
+        motion: Mapping[str, Any],
+        *,
+        config: SimConfig | None = None,
+        receiver_model: str | Mapping[str, Any] | None = None,
+        source_model: str | Mapping[str, Any] | None = None,
+    ) -> DynamicSimulationResult:
+        raw_frames = motion.get("frames") if isinstance(motion, Mapping) else None
+        if not isinstance(raw_frames, Sequence) or not raw_frames:
+            raise ValueError("motion must contain at least one frame")
+        results = []
+        model = self.receiver_model if receiver_model is None else _microphone_model(receiver_model)
+        emitter = self.source_model if source_model is None else source_directivity(source_model)
+        for frame in raw_frames:
+            if not isinstance(frame, Mapping):
+                raise ValueError("each motion frame must be an object")
+            actual_source = frame.get("source")
+            actual_receiver = frame.get("receiver")
+            dynamic_room = room_for_motion_frame(self.room, actual_source, actual_receiver)
+            result = simulate_rir(
+                dynamic_room,
+                actual_source,
+                actual_receiver,
+                config=config or self.config,
+                receiver_model=model,
+                source_model=emitter,
+            )
+            if self.placement is not None:
+                placement = {
+                    **self.placement,
+                    "source": [float(value) for value in actual_source],
+                    "receiver": [float(value) for value in actual_receiver],
+                }
+                result = SimulationResult(
+                    result.rir,
+                    result.paths,
+                    result.rt60,
+                    result.receiver_model,
+                    {**dict(result.metadata), "placement": placement, "resplan": dict(self.resplan or {})},
+                    result.ambisonic_rir,
+                    result.source_model,
+                )
+            results.append(result)
+        return DynamicSimulationResult(dict(motion), tuple(results))
 
     __call__ = run
 
@@ -99,21 +309,38 @@ def _make_agent_room(
     *,
     shape: str,
     materials: Mapping[str, str | Material] | None,
+    material_profile: str | Mapping[str, Any] | None,
+    material_seed: int,
 ) -> Room:
     if isinstance(room, Room):
         return room
     if not isinstance(room, Mapping):
-        return make_room(shape, size=room, materials=materials)
+        return make_room(
+            shape,
+            size=room,
+            materials=materials,
+            material_profile=material_profile,
+            material_seed=material_seed,
+        )
 
     spec = dict(room)
     room_shape = str(spec.pop("shape", shape))
     size = spec.pop("size", (6.0, 4.0, 2.8))
     room_materials = spec.pop("materials", materials)
+    room_material_profile = spec.pop("material_profile", material_profile)
+    room_material_seed = int(spec.pop("material_seed", material_seed))
     explicit_corners = spec.pop("corners", None)
     acoustic_geometry = spec.pop("acoustic_geometry", spec.pop("objects", None))
     room_metadata = spec.pop("metadata", None)
     corners = explicit_corners if explicit_corners is not None else _parametric_corners(room_shape, size, spec)
-    result = make_room(room_shape, size=size, corners=corners, materials=room_materials)
+    result = make_room(
+        room_shape,
+        size=size,
+        corners=corners,
+        materials=room_materials,
+        material_profile=room_material_profile,
+        material_seed=room_material_seed,
+    )
     if isinstance(result.metadata, dict):
         result.metadata["geometry_params"] = spec
         if isinstance(room_metadata, Mapping):
@@ -128,6 +355,12 @@ def _room_with_acoustic_geometry(
     acoustic_geometry: Sequence[Mapping[str, Any]],
 ) -> Room:
     objects = [_acoustic_object(item, index) for index, item in enumerate(acoustic_geometry)]
+    library = MaterialLibrary.load()
+    material_seed = int(room.metadata.get("material_seed", 0))
+    for index, item in enumerate(objects):
+        if item.get("semantic") == "small_objects_ignore":
+            continue
+        item["material_selection"] = material_summary(library.sample_geometry(item, seed=material_seed + index + 1))
     return Room(
         id=room.id,
         name=room.name,
@@ -156,16 +389,22 @@ def _acoustic_object(item: Mapping[str, Any], index: int) -> dict[str, Any]:
         raise ValueError(f"acoustic_geometry[{index}] contains non-finite values")
     if min(size) <= 0.0:
         raise ValueError(f"acoustic_geometry[{index}].size values must be positive")
-    return {
+    output = {
         "id": str(item.get("id", f"object_{index}")),
         "type": str(item.get("type", "cuboid")),
+        "semantic": str(item.get("semantic", item.get("type", "furniture"))),
         "title": str(item.get("title", item.get("type", "Acoustic object"))),
-        "material": str(item.get("material", "wood")),
+        "absorption_class": str(item.get("absorption_class", item.get("absorption_level", "auto"))),
         "position": position,
         "rotation": rotation,
         "size": size,
         "z": z,
     }
+    if item.get("material") or item.get("material_id"):
+        output["material"] = str(item.get("material") or item.get("material_id"))
+    if item.get("material_type"):
+        output["material_type"] = str(item["material_type"])
+    return output
 
 
 def _parametric_corners(

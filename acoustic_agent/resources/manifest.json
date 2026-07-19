@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "resources": [
+    {
+      "id": "cipic_124",
+      "path": "hrtf/cipic_124.sofa",
+      "kind": "sofa_hrtf",
+      "size_bytes": 3602890,
+      "sha256": "c28ff4a874ac889ec0c5885ca524762a70d56984232ff7aadcd9c15d32e1cfb6",
+      "license": "CIPIC license embedded in the SOFA global License attribute"
+    },
+    {
+      "id": "sadie_h12",
+      "path": "hrtf/sadie_h12.sofa",
+      "kind": "sofa_hrtf",
+      "size_bytes": 8753320,
+      "sha256": "44306dad84af6976597ec0ed1d7dbbbc13e0696a41515a9a00ce39bfb6202bd0",
+      "license": "Apache-2.0; copyright University of York"
+    },
+    {
+      "id": "acoustic_materials_v3",
+      "path": "acoustic_materials/acoustic_materials_v3.sqlite3",
+      "kind": "material_database",
+      "size_bytes": 1912832,
+      "sha256": "5f905021fad8f9352b6a761bb3ac2e80651957d0a66ae67c5ecce5e0f53bd555",
+      "license": "Project-compiled resource; see THIRD_PARTY_NOTICES.md"
+    },
+    {
+      "id": "resplan_v1",
+      "path": "resplan/resplan_v1.sqlite3",
+      "kind": "scene_database",
+      "size_bytes": 63741952,
+      "sha256": "c6c472c206835dfca69bd25c932ae7175adabe160e5d0b252296d4da5f104e06",
+      "license": "Project-compiled resource; see THIRD_PARTY_NOTICES.md"
+    }
+  ]
+}

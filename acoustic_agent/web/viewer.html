@@ -6,26 +6,50 @@
   <title>AcousticAgent WebGL Workbench</title>
   <script>
     if (window.location.protocol === "file:") {
-      window.location.replace("http://127.0.0.1:8767/");
+      window.location.replace("http://127.0.0.1:8765/");
     }
   </script>
-  <link rel="stylesheet" href="./styles.css?v=76-resplan-multi-room">
+  <link rel="stylesheet" href="./styles.css?v=102-workbench-ui">
 </head>
 <body>
-  <main id="app">
+  <main id="app" data-scene-source="geometry">
     <aside id="setupPanel" class="sidePanel">
-      <header class="panelHeader">
-        <div>
-          <h1>acoustic agent</h1>
-          <p>Scene setup</p>
-        </div>
-        <span id="sceneStatus">Live</span>
-      </header>
+      <div class="setupChrome">
+        <header class="panelHeader">
+          <div>
+            <h1>acoustic agent</h1>
+            <p>Scene setup</p>
+          </div>
+          <span id="sceneStatus">Live</span>
+        </header>
 
-      <section class="panelBlock editorBlock">
+        <div class="workbenchStatusBar" aria-live="polite">
+          <i></i>
+          <span id="status">Ready</span>
+        </div>
+
+        <div class="setupNavigation">
+          <nav class="sceneModeSwitch" aria-label="Scene source">
+            <a class="sceneModeGeometry" href="/geometry">Geometry</a>
+            <a class="sceneModeResplan" href="/resplan">ResPlan</a>
+          </nav>
+          <nav class="sectionDirectory" aria-label="Setup sections">
+            <a href="#sceneSection" data-section-link="sceneSection">Scene</a>
+            <a href="#materialsSection" data-section-link="materialsSection">Materials</a>
+            <a href="#placementSection" data-section-link="placementSection">Place</a>
+            <a href="#receiverPane" data-section-link="receiverPane">Mic</a>
+            <a href="#sourceDirectivityPane" data-section-link="sourceDirectivityPane">Source</a>
+            <a href="#objectsSection" data-section-link="objectsSection">Objects</a>
+            <a href="#solverSection" data-section-link="solverSection">Solver</a>
+          </nav>
+        </div>
+      </div>
+
+      <div id="setupScroll" class="setupScroll">
+
+      <section id="sceneSection" class="panelBlock editorBlock setupSection">
         <div class="inspectorHeader">
           <h2>Scene setup</h2>
-          <span id="status">Ready</span>
         </div>
 
         <label class="presetSelect" for="shape">Geometry
@@ -40,30 +64,6 @@
           <label>Height (m)<input id="height" type="number" min="1" max="20" step="0.1"></label>
         </div>
 
-        <div class="propertyGrid materialGrid">
-          <label>Wall
-            <select id="wallMaterial">
-              <option value="wall">Brick</option>
-              <option value="wood">Wood</option>
-              <option value="curtain">Curtain</option>
-            </select>
-          </label>
-          <label>Floor
-            <select id="floorMaterial">
-              <option value="floor">Marble</option>
-              <option value="floor_carpet">Carpet</option>
-              <option value="wood">Wood</option>
-            </select>
-          </label>
-          <label>Ceiling
-            <select id="ceilingMaterial">
-              <option value="ceiling">Wood</option>
-              <option value="ceiling_tile">Tile</option>
-              <option value="fabric">Fabric</option>
-            </select>
-          </label>
-        </div>
-
         <div id="geometryParams" class="geometryParams" aria-label="Geometry parameters"></div>
 
         <div class="editorCommandRow">
@@ -71,7 +71,29 @@
         </div>
       </section>
 
-      <section class="panelBlock positionBlock">
+      <section id="materialsSection" class="panelBlock materialBlock setupSection">
+        <div class="materialSampler">
+          <div class="materialSamplerHeader">
+            <div>
+              <h3>Acoustic materials</h3>
+              <p>acoustic_materials v3 · six bands</p>
+            </div>
+            <button id="randomMaterials" type="button">Resample</button>
+          </div>
+          <label class="materialSeedControl">Variation seed
+            <input id="materialSeed" type="number" min="0" max="2147483647" step="1" value="42">
+          </label>
+          <div class="materialSemanticList">
+            <label class="materialSemanticRow"><span><strong>Wall</strong><small id="sampled-wall">Semantic · wall</small></span><select id="wallAbsorption" aria-label="Wall absorption class"></select></label>
+            <label class="materialSemanticRow"><span><strong>Floor</strong><small id="sampled-floor">Semantic · floor</small></span><select id="floorAbsorption" aria-label="Floor absorption class"></select></label>
+            <label class="materialSemanticRow"><span><strong>Ceiling</strong><small id="sampled-ceiling">Semantic · ceiling</small></span><select id="ceilingAbsorption" aria-label="Ceiling absorption class"></select></label>
+            <label class="materialSemanticRow resplanMaterialOnly"><span><strong>Doors</strong><small id="sampled-door">Semantic · door</small></span><select id="doorAbsorption" aria-label="Door absorption class"></select></label>
+            <label class="materialSemanticRow resplanMaterialOnly"><span><strong>Windows</strong><small id="sampled-window">Semantic · window glass</small></span><select id="windowAbsorption" aria-label="Window absorption class"></select></label>
+          </div>
+        </div>
+      </section>
+
+      <section id="placementSection" class="panelBlock positionBlock setupSection">
         <div class="inspectorHeader">
           <h2>Positions</h2>
           <button id="randomPositions" type="button">Random</button>
@@ -98,9 +120,36 @@
             <label>Z<input id="receiverZ" type="number" min="0" max="20" step="0.05"></label>
           </div>
         </div>
+        <div class="positionSet motionSet">
+          <div class="positionSetHeader motionSetHeader">
+            <h3>Motion</h3>
+            <span id="motionSummary">Static</span>
+          </div>
+          <div class="motionGrid">
+            <label>Mode
+              <select id="motionMode">
+                <option value="static">Static</option>
+                <option value="approach">Approach</option>
+                <option value="random">Random</option>
+              </select>
+            </label>
+            <label>Moving
+              <select id="motionMoving">
+                <option value="source">Source</option>
+                <option value="receiver">Microphone</option>
+              </select>
+            </label>
+            <label>Travel length
+              <span class="rangeField motionTravelField"><input id="motionDistance" type="range" min="0.2" max="6" step="0.1" value="0.8"><output id="motionDistanceValue">0.8 m</output><button id="resampleMotionPath" class="iconButton" type="button" title="Resample random path" aria-label="Resample random path" hidden>&#8635;</button></span>
+            </label>
+            <label>Frame spacing (m)
+              <input id="motionFrameSpacing" type="number" min="0.1" max="1" step="0.05" value="0.25">
+            </label>
+          </div>
+        </div>
       </section>
 
-      <section id="receiverPane" class="panelPane active">
+      <section id="receiverPane" class="panelPane setupSection active">
         <section id="receiverInspector" class="inspector">
           <div class="inspectorHeader">
             <h2>Microphone</h2>
@@ -119,7 +168,7 @@
         </section>
       </section>
 
-      <section id="sourceDirectivityPane" class="panelPane active">
+      <section id="sourceDirectivityPane" class="panelPane setupSection active">
         <section id="sourceDirectivityInspector" class="inspector">
           <div class="inspectorHeader">
             <h2>Source directivity</h2>
@@ -138,7 +187,44 @@
         </section>
       </section>
 
-      <section class="panelBlock solverSetupBlock">
+      <section id="objectsSection" class="panelBlock objectBlock setupSection">
+        <div id="objectDesigner" class="objectDesigner">
+          <div class="inspectorHeader objectDesignerHeader">
+            <div>
+              <h3>Acoustic furniture</h3>
+              <p>Semantic furniture and soft coverings</p>
+            </div>
+            <span id="sceneObjectCount">0 objects</span>
+          </div>
+          <div id="objectThumbs" class="objectThumbStrip" aria-label="Acoustic object type"></div>
+          <div id="objectSettings" class="objectSettings">
+            <label>X<input id="objectX" type="number" min="-100" max="100" step="0.05"></label>
+            <label>Y<input id="objectY" type="number" min="-100" max="100" step="0.05"></label>
+            <label>Z<input id="objectZ" type="number" min="0.03" max="20" step="0.05"></label>
+            <label>W<input id="objectWidth" type="number" min="0.05" max="8" step="0.05"></label>
+            <label>D<input id="objectDepth" type="number" min="0.03" max="8" step="0.05"></label>
+            <label>H<input id="objectHeight" type="number" min="0.05" max="4" step="0.05"></label>
+            <label class="wide">Angle<input id="objectRotation" type="number" min="-180" max="180" step="5"></label>
+            <label class="wide">Absorption
+              <select id="objectAbsorption">
+                <option value="auto">Auto</option>
+                <option value="reflective">Reflective</option>
+                <option value="semi_reflective">Semi-reflective</option>
+                <option value="absorptive">Absorptive</option>
+                <option value="highly_absorptive">Highly absorptive</option>
+              </select>
+            </label>
+          </div>
+          <p id="objectMaterialResult" class="objectMaterialResult">Semantic material sampled after simulation.</p>
+          <div class="objectCommandRow">
+            <button id="addAsset" type="button">Add object</button>
+            <button id="confirmFurniture" class="confirm" type="button" hidden>Confirm object</button>
+          </div>
+          <p id="objectEditHint">Choose a furniture card, add it, then place it in the scene.</p>
+        </div>
+      </section>
+
+      <section id="solverSection" class="panelBlock solverSetupBlock setupSection">
         <div class="inspectorHeader">
           <h2>Solver setup</h2>
           <span>Engine</span>
@@ -158,32 +244,10 @@
           <label for="rirDuration">RIR length (s)
             <input id="rirDuration" type="number" min="0.3" max="6" step="0.1" value="2.0">
           </label>
-        </div>
-        <div id="objectDesigner" class="objectDesigner">
-          <div class="inspectorHeader objectDesignerHeader">
-            <div>
-              <h3>Acoustic geometry</h3>
-              <p>Simple reflecting / diffracting objects</p>
-            </div>
-            <span id="sceneObjectCount">0 objects</span>
-          </div>
-          <div id="objectThumbs" class="objectThumbStrip" aria-label="Acoustic object type"></div>
-          <div id="objectSettings" class="objectSettings">
-            <label>X<input id="objectX" type="number" min="-100" max="100" step="0.05"></label>
-            <label>Y<input id="objectY" type="number" min="-100" max="100" step="0.05"></label>
-            <label>Z<input id="objectZ" type="number" min="0.03" max="20" step="0.05"></label>
-            <label>W<input id="objectWidth" type="number" min="0.05" max="8" step="0.05"></label>
-            <label>D<input id="objectDepth" type="number" min="0.03" max="8" step="0.05"></label>
-            <label>H<input id="objectHeight" type="number" min="0.05" max="4" step="0.05"></label>
-            <label class="wide">Angle<input id="objectRotation" type="number" min="-180" max="180" step="5"></label>
-          </div>
-          <div class="objectCommandRow">
-            <button id="addAsset" type="button">Add geometry</button>
-            <button id="confirmFurniture" class="confirm" type="button" hidden>Update simulation</button>
-          </div>
-          <p id="objectEditHint">Choose a geometry card, add it, then place it in the scene.</p>
+          <button id="runSimulation" class="primaryAction solverRunButton" type="button">Run simulation</button>
         </div>
       </section>
+      </div>
     </aside>
 
     <section id="viewport">
@@ -199,6 +263,17 @@
         <span id="viewMeta">View --</span>
       </div>
 
+      <div id="viewToolbar" aria-label="Scene view">
+        <button id="viewFit" type="button" title="Fit scene">Fit</button>
+        <button id="viewIso" class="active" type="button" title="Isometric view">3D</button>
+        <button id="viewTop" type="button" title="Top view">Top</button>
+      </div>
+
+      <div id="stageReadout">
+        <span>Source to mic</span>
+        <strong id="stageDistance" aria-live="polite">-- m</strong>
+      </div>
+
       <div id="selectionToolbar">
         <div class="selectionToolbarHeader">
           <strong id="selectionName">Scene</strong>
@@ -212,14 +287,24 @@
     </section>
 
     <aside id="resultsPanel" class="sidePanel">
-      <header class="panelHeader">
-        <div>
-          <h1>simulation</h1>
-          <p>Results</p>
-        </div>
-      </header>
+      <div class="resultsChrome">
+        <header class="panelHeader">
+          <div>
+            <h1>simulation</h1>
+            <p>Results</p>
+          </div>
+          <span id="resultStatus" role="status" aria-live="polite">Pending</span>
+        </header>
+        <nav class="resultDirectory" aria-label="Result sections">
+          <a href="#pathDisplayBlock" data-result-link="pathDisplayBlock">Paths</a>
+          <a href="#metricsInspector" data-result-link="metricsInspector">Metrics</a>
+          <a href="#rirInspector" data-result-link="rirInspector">RIR</a>
+          <a href="#calibrationInspector" data-result-link="calibrationInspector">Audio</a>
+          <a href="#codeDock" data-result-link="codeDock">API</a>
+        </nav>
+      </div>
 
-      <section class="panelBlock pathDisplayBlock">
+      <section id="pathDisplayBlock" class="panelBlock pathDisplayBlock resultSection">
         <div class="inspectorHeader">
           <h2>Path visibility</h2>
           <span>Display</span>
@@ -236,20 +321,21 @@
       </section>
 
       <section id="acousticPane" class="panelPane resultPane active">
-        <section class="inspector">
+        <section id="metricsInspector" class="inspector resultSection">
           <div class="inspectorHeader">
             <h2>Metrics</h2>
             <span>Summary</span>
           </div>
           <div id="stats" class="stats"></div>
         </section>
-        <section id="rirInspector" class="inspector">
+        <section id="rirInspector" class="inspector resultSection">
           <div class="inspectorHeader">
             <h2>RIR</h2>
+            <span id="rirFrameMeta">Not computed</span>
           </div>
           <canvas id="rirCanvas" width="320" height="210"></canvas>
         </section>
-        <section id="calibrationInspector" class="inspector">
+        <section id="calibrationInspector" class="inspector resultSection">
           <div class="inspectorHeader">
             <h2>Calibration audio</h2>
             <span id="calibrationAudioMeta">reading.wav · waiting</span>
@@ -260,12 +346,12 @@
               <audio id="dryAudio" controls preload="metadata"></audio>
             </article>
             <article class="audioTrack wet">
-              <div><strong>First-channel wet voice</strong><small>Dry voice × displayed RIR Ch 1</small></div>
+              <div><strong>Rendered wet voice</strong><small>Dry voice x monitor RIR</small></div>
               <audio id="wetAudio" controls preload="metadata"></audio>
             </article>
           </div>
         </section>
-        <section id="codeDock" class="inspector">
+        <section id="codeDock" class="inspector resultSection">
           <div id="codeDockHeader">
             <span>Acoustic Agent API</span>
             <button id="copyCode" type="button">Copy</button>
@@ -283,6 +369,6 @@
       }
     }
   </script>
-  <script type="module" src="app.js?v=87-resplan-doors"></script>
+  <script type="module" src="app.js?v=118-workbench-ui"></script>
 </body>
 </html>

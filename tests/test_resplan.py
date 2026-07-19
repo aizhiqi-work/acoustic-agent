@@ -5,7 +5,7 @@ import numpy as np
 from shapely.geometry import MultiPolygon, Point, Polygon, box
 
 import acoustic_agent.steam_rt as steam_rt
-from acoustic_agent.engine import simulate_rir
+from acoustic_agent.engine import _estimate_material_rt60, simulate_rir
 from acoustic_agent.geometry import make_room
 from acoustic_agent.models import SimConfig
 from acoustic_agent.resplan import ResPlanDataset, _metric_scale, _plan_profile, scene_from_record
@@ -34,22 +34,33 @@ def _record():
     }
 
 
-def test_resplan_scene_restores_metric_scale_and_same_room_points():
+def test_resplan_same_room_uses_global_scene_and_zero_portal_route():
     scene = scene_from_record(_record(), index=7, room_id="living_0")
+    multi_room = scene["room"]["metadata"]["multi_room"]
 
     assert scene["dataset"]["meters_per_unit"] == 0.1
     assert scene["selected_room"]["area_m2"] == 25.0
-    assert scene["room"]["size"] == [5.0, 5.0, 2.8]
-    assert scene["room"]["metadata"]["opening_model"] == "full_height_equivalent_boundary_material_v1"
+    assert scene["receiver_room"]["id"] == "living_0"
+    assert scene["room"]["size"] == [10.0, 5.0, 2.8]
+    assert scene["room"]["metadata"]["opening_model"] == "vertical_portal_apertures_v1"
+    assert scene["room"]["metadata"]["geometry_model"] == "resplan_multi_room_extrusion"
+    assert multi_room["route_room_ids"] == ["living_0"]
+    assert multi_room["route_portal_ids"] == []
     assert {feature["type"] for feature in scene["room"]["metadata"]["boundary_features"]} == {"door", "window"}
-    assert any(exposure["type"] == "window" for exposure in scene["selected_room"]["exterior_exposures"])
+    assert next(feature for feature in scene["room"]["metadata"]["boundary_features"] if feature["type"] == "door")["open"] is True
+    assert scene["selected_room"]["exterior_exposures"] == [{
+        "feature_id": "window_0_living_0",
+        "feature_index": 1,
+        "type": "window",
+        "connection": "outdoor_facade",
+    }]
 
-    room_polygon = Polygon(scene["room"]["corners"])
+    room_polygon = Polygon(next(room["corners"] for room in multi_room["rooms"] if room["id"] == "living_0"))
     assert room_polygon.covers(Point(scene["source"][:2]))
     assert room_polygon.covers(Point(scene["receiver"][:2]))
 
 
-def test_resplan_surface_segments_become_door_and_window_acoustic_surfaces():
+def test_resplan_same_room_uses_open_door_aperture_and_vertical_window_surfaces():
     scene = scene_from_record(_record(), index=7, room_id="living_0")
     room = make_room(
         "resplan",
@@ -58,11 +69,43 @@ def test_resplan_surface_segments_become_door_and_window_acoustic_surfaces():
     )
     room.metadata.update(scene["room"]["metadata"])
 
-    names = [surface.name for surface in RoomRayScene(room).surfaces]
+    ray_scene = RoomRayScene(room)
+    names = [surface.name for surface in ray_scene.surfaces]
 
-    assert any(name.startswith("door_") for name in names)
-    assert any(name.startswith("window_") for name in names)
-    assert any(name.startswith("wall_") for name in names)
+    assert not any(name.endswith("_door") for name in names)
+    assert any("_window_0_glass" in surface.name and surface.z_min == 0.9 and surface.z_max == 2.1 for surface in ray_scene.surfaces)
+    assert any(name.endswith("_lintel") for name in names)
+    assert any("_window_0_lower" in surface.name and surface.z_min == 0.0 and surface.z_max == 0.9 for surface in ray_scene.surfaces)
+
+
+def test_resplan_same_and_cross_room_modes_share_identical_geometry():
+    same_room = scene_from_record(_record(), index=7, room_id="bedroom_0", receiver_room_id="bedroom_0")
+    cross_room = scene_from_record(_record(), index=7, room_id="bedroom_0", receiver_room_id="living_0")
+    same_metadata = same_room["room"]["metadata"]
+    cross_metadata = cross_room["room"]["metadata"]
+
+    assert same_room["room"]["size"] == cross_room["room"]["size"]
+    assert same_room["room"]["corners"] == cross_room["room"]["corners"]
+    assert same_metadata["surface_segments"] == cross_metadata["surface_segments"]
+    assert same_metadata["boundary_features"] == cross_metadata["boundary_features"]
+    assert same_metadata["multi_room"]["rooms"] == cross_metadata["multi_room"]["rooms"]
+    assert same_metadata["multi_room"]["portals"] == cross_metadata["multi_room"]["portals"]
+    assert same_metadata["multi_room"]["route_portal_ids"] == []
+    assert cross_metadata["multi_room"]["route_portal_ids"] == ["door_0"]
+    assert same_room["source"] == cross_room["source"]
+    assert same_room["receiver"] != cross_room["receiver"]
+
+
+def test_resplan_isolated_same_room_has_zero_length_route():
+    record = _record()
+    record["inner"] = MultiPolygon([box(0.0, 0.0, 50.0, 50.0)])
+    record["door"] = Polygon()
+    record["graph"].remove_node("bedroom_0")
+
+    scene = scene_from_record(record, index=7, room_id="living_0", receiver_room_id="living_0")
+
+    assert scene["room"]["metadata"]["multi_room"]["route_room_ids"] == ["living_0"]
+    assert scene["room"]["metadata"]["multi_room"]["route_portal_ids"] == []
 
 
 def test_resplan_workbench_reuses_the_main_layout_with_dataset_controls():
@@ -98,7 +141,9 @@ def test_resplan_deduplicates_room_nodes_and_normalizes_open_adjacency():
 
     assert [room["id"] for room in scene["rooms"]].count("bathroom_0") == 1
     assert "bathroom_1" not in {room["id"] for room in scene["rooms"]}
-    assert any(connection["type"] == "via_opening" for connection in scene["selected_room"]["connections"])
+    connection = next(item for item in scene["selected_room"]["connections"] if item["target_room_id"] == "bedroom_0")
+    assert connection["type"] == "via_door"
+    assert connection["portal_id"] == "door_0"
 
 
 def test_resplan_profile_filters_stairs_and_index_navigation_skips_them():
@@ -191,7 +236,7 @@ def test_resplan_global_scene_keeps_entry_doors_closed_but_opens_balcony_doors()
     assert any(room["id"] == "balcony_0" for room in balcony_scene["rooms"])
 
 
-def test_cross_room_solver_routes_around_wall_through_open_door_with_jit_visual_scan():
+def test_cross_room_solver_routes_around_wall_through_open_door_with_shared_energy_trace_paths():
     scene = scene_from_record(
         _record(),
         index=7,
@@ -220,16 +265,96 @@ def test_cross_room_solver_routes_around_wall_through_open_door_with_jit_visual_
     portal = next(path for path in result.paths if path.kind == "portal_path")
     steam = result.metadata["steam_audio"]
     assert portal.metadata["route_portal_ids"] == ["door_0"]
+    assert portal.metadata["aperture_pressure_gain"] == 1.0
+    assert 0.0 < portal.metadata["aperture_pressure_gain_estimate"] < 1.0
+    assert portal.metadata["aperture_attenuation_applied"] is False
+    assert portal.metadata["segment_visibility_verified"] is True
     assert portal.distance_m > direct.distance_m
-    assert portal.gain > direct.gain * 20.0
+    assert portal.gain > direct.gain * 10.0
     assert steam["portal_propagation"]["contributes_to_rir"] is True
     assert steam["portal_propagation"]["accelerator"] == "python_visibility_graph"
     assert steam["reflections"]["accelerator"] == "numba"
     assert steam["rt_visual"]["accelerator"] == "numba"
-    assert steam["rt_visual"]["model"] == "source_space_specular_ray_scan_jit"
+    assert steam["rt_visual"]["model"] == "listener_space_energy_trace_representatives"
+    assert steam["rt_visual"]["shares_energy_trace"] is True
     assert "footprint_filter" not in steam["rt_visual"]
     assert steam["diffraction"]["path_count"] == 0
     assert result.metadata["solver_pipeline"][1] == "portal_pathing"
+    assert np.isfinite(result.rir).all()
+    assert float(np.sum(result.rir * result.rir)) > 0.0
+
+
+def test_cross_room_simulation_adapts_to_at_least_96_bounces():
+    scene = scene_from_record(_record(), index=7, room_id="living_0", receiver_room_id="bedroom_0")
+    room = make_room("resplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
+    room.metadata.update(scene["room"]["metadata"])
+
+    effective, metadata = steam_rt._adaptive_reflection_config(
+        RoomRayScene(room),
+        SimConfig(rt_num_rays=32768, rt_num_bounces=64),
+    )
+
+    assert metadata["applied"] is True
+    assert metadata["requested"] == 64
+    assert metadata["effective"] >= 96
+    assert effective.rt_num_bounces == metadata["effective"]
+
+
+def test_coupled_room_late_decay_includes_semantic_furniture_absorption():
+    scene = scene_from_record(_record(), index=7, room_id="living_0", receiver_room_id="bedroom_0")
+    empty = make_room("resplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
+    empty.metadata.update(scene["room"]["metadata"])
+    furnished = make_room("resplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
+    furnished.metadata.update(scene["room"]["metadata"])
+    furnished.metadata["objects"] = [{
+        "id": "sofa_0",
+        "type": "sofa",
+        "semantic": "sofa_couch",
+        "absorption_class": "highly_absorptive",
+        "position": [2.0, 2.0],
+        "size": [2.2, 0.9, 0.8],
+        "z": 0.4,
+        "rotation": 0.0,
+    }]
+
+    empty_rt = _estimate_material_rt60(empty)
+    furnished_rt = _estimate_material_rt60(furnished)
+    object_areas = furnished_rt["coupled_decay"]["object_absorption_area_m2"]
+
+    assert max(object_areas.values()) > 0.0
+    assert np.mean(list(furnished_rt["coupled_rt60_bands"].values())) < np.mean(list(empty_rt["coupled_rt60_bands"].values()))
+
+
+def test_same_room_global_solver_uses_multi_room_rt_without_portal_path():
+    scene = scene_from_record(
+        _record(),
+        index=7,
+        room_id="living_0",
+        receiver_room_id="living_0",
+    )
+    room = make_room("resplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
+    room.metadata.update(scene["room"]["metadata"])
+    ray_scene = RoomRayScene(room)
+    result = simulate_rir(
+        room,
+        scene["source"],
+        scene["receiver"],
+        config=SimConfig(
+            fs=8000,
+            duration_s=0.2,
+            rt_num_rays=256,
+            rt_num_bounces=3,
+            rt_duration_s=0.2,
+            rt_visual_num_rays=128,
+            rt_visual_num_bounces=3,
+            late_tail=False,
+        ),
+    )
+
+    assert ray_scene.is_multi_room is True
+    assert ray_scene.is_cross_room is False
+    assert not any(path.kind == "portal_path" for path in result.paths)
+    assert result.metadata["steam_audio"]["portal_propagation"]["path_count"] == 0
     assert np.isfinite(result.rir).all()
     assert float(np.sum(result.rir * result.rir)) > 0.0
 

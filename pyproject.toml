@@ -1,13 +1,39 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "acoustic-agent"
 version = "0.1.0"
-description = "Simplified indoor acoustic simulation engine for fast RIR generation."
+description = "Indoor acoustic simulation engine and WebGL workbench for geometry and ResPlan scenes."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
+authors = [
+  { name = "Acoustic Agent Contributors" },
+]
 requires-python = ">=3.10"
+keywords = [
+  "acoustics",
+  "room-impulse-response",
+  "rir",
+  "ray-tracing",
+  "hrtf",
+  "numba",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Sound/Audio",
+  "Topic :: Scientific/Engineering :: Physics",
+]
 dependencies = [
   "numpy>=1.23",
   "numba>=0.57",
@@ -17,7 +43,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = [
+  "build>=1.2",
+  "pytest>=7",
+  "twine>=5",
+]
+
+[project.scripts]
+acoustic-agent = "acoustic_agent.cli:main"
+acoustic-agent-web = "acoustic_agent.web_server:main"
+
+[tool.setuptools]
+include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["acoustic_agent*"]
@@ -26,5 +63,11 @@ include = ["acoustic_agent*"]
 acoustic_agent = [
   "resources/acoustic_materials/*",
   "resources/hrtf/*.sofa",
+  "resources/manifest.json",
+  "resources/resplan/*.sqlite3",
   "web/*",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

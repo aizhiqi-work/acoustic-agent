@@ -1,4 +1,8 @@
+import math
+
 from acoustic_agent import AcousticAgent, SimConfig
+from acoustic_agent.geometry import point_in_polygon
+from acoustic_agent.motion import room_for_motion_frame
 
 
 def test_acoustic_agent_runs_the_common_workflow_directly():
@@ -68,6 +72,7 @@ def test_acoustic_agent_uses_microphone_specific_parameters():
 def test_acoustic_agent_accepts_acoustic_geometry_as_a_public_parameter():
     geometry = [{
         "type": "panel",
+        "semantic": "acoustic_treatment",
         "material": "plaster",
         "position": [2.0, 1.5],
         "z": 1.0,
@@ -79,5 +84,222 @@ def test_acoustic_agent_accepts_acoustic_geometry_as_a_public_parameter():
     embedded = AcousticAgent(room={"shape": "rectangle", "size": [4.0, 3.0, 2.8], "objects": geometry})
 
     assert agent.room.metadata["objects"][0]["type"] == "panel"
+    assert agent.room.metadata["objects"][0]["semantic"] == "acoustic_treatment"
     assert agent.room.metadata["objects"][0]["rotation"] == 0.0
     assert embedded.room.metadata["objects"] == agent.room.metadata["objects"]
+
+
+def test_acoustic_agent_from_resplan_accepts_semantic_furniture():
+    agent = AcousticAgent.from_resplan(
+        0,
+        seed=42,
+        acoustic_geometry=[{
+            "type": "sofa",
+            "semantic": "sofa_couch",
+            "material": "chairs_heavy_upholstered",
+            "position": [2.5, 2.0],
+            "z": 0.36,
+            "size": [2.0, 0.9, 0.72],
+            "rotation_deg": 10,
+        }],
+        config=SimConfig(
+            fs=8000,
+            duration_s=0.02,
+            reflections_enabled=False,
+            diffraction_enabled=False,
+        ),
+    )
+
+    result = agent.run()
+
+    assert agent.room.metadata["objects"][0]["semantic"] == "sofa_couch"
+    assert agent.room.metadata["objects"][0]["material"] == "chairs_heavy_upholstered"
+    assert result.rir.shape == (1, 160)
+
+
+def test_agent_samples_safe_multi_keyframe_motion_and_runs_every_frame():
+    config = SimConfig(
+        fs=8000,
+        duration_s=0.02,
+        reflections_enabled=False,
+        diffraction_enabled=False,
+    )
+    agent = AcousticAgent(room=[4.0, 3.0, 2.8], config=config)
+    motion = agent.sample_motion(
+        source=[0.4, 1.5, 1.4],
+        receiver=[3.0, 1.5, 1.4],
+        mode="recede",
+        moving="source",
+        distance_m=1.5,
+        keyframes=9,
+    )
+
+    assert motion["keyframes"] == 9
+    assert 0.0 < motion["distance_m"] < 1.5
+    assert all(point_in_polygon(frame["source"], agent.room.corners) for frame in motion["frames"])
+    assert [frame["phase"] for frame in motion["frames"]] == sorted(frame["phase"] for frame in motion["frames"])
+
+    result = agent.run_dynamic(motion)
+    assert len(result.frames) == 9
+    assert all(frame.rir.shape == (1, 160) for frame in result.frames)
+
+
+def test_geometry_travel_uses_room_route_and_quarter_meter_frame_spacing():
+    agent = AcousticAgent(room={
+        "shape": "u_shape",
+        "size": [6.0, 10.0, 2.8],
+        "opening_width": 0.42,
+        "opening_depth": 0.82,
+        "opening_offset": 0.5,
+    })
+
+    motion = agent.sample_motion(
+        source=[5.766, 2.587, 1.231],
+        receiver=[1.079, 6.252, 1.348],
+        moving="receiver",
+        distance_m=5.5998,
+        keyframe_spacing_m=0.25,
+    )
+
+    receiver_points = [frame["receiver"] for frame in motion["frames"]]
+    assert motion["path_model"] == "room_shortest_path"
+    assert motion["distance_m"] == 5.5998
+    assert motion["keyframes"] == 24
+    assert motion["keyframe_spacing_m"] == 0.2435
+    assert all(point_in_polygon(point, agent.room.corners) for point in receiver_points)
+    assert all(
+        point_in_polygon(
+            [(first[0] + second[0]) * 0.5, (first[1] + second[1]) * 0.5],
+            agent.room.corners,
+        )
+        for first, second in zip(receiver_points, receiver_points[1:])
+    )
+
+
+def test_random_geometry_travel_keeps_length_and_returns_to_current_position():
+    agent = AcousticAgent(room={
+        "shape": "u_shape",
+        "size": [6.0, 10.0, 2.8],
+        "opening_width": 0.42,
+        "opening_depth": 0.82,
+        "opening_offset": 0.5,
+    })
+    arguments = {
+        "source": [5.766, 2.587, 1.231],
+        "receiver": [1.079, 6.252, 1.348],
+        "mode": "random",
+        "moving": "receiver",
+        "distance_m": 3.0,
+        "keyframe_spacing_m": 0.25,
+    }
+
+    first = agent.sample_motion(**arguments, seed=42)
+    repeated = agent.sample_motion(**arguments, seed=42)
+    different = agent.sample_motion(**arguments, seed=43)
+
+    assert first["path_model"] == "random_room_route"
+    assert first["distance_m"] == 3.0
+    assert first["keyframes"] == 13
+    assert first["frames"] == repeated["frames"]
+    assert first["frames"][0]["receiver"] != different["frames"][0]["receiver"]
+    assert first["frames"][-1]["receiver"] == arguments["receiver"]
+    assert all(point_in_polygon(frame["receiver"], agent.room.corners) for frame in first["frames"])
+    receiver_points = [frame["receiver"] for frame in first["frames"]]
+    sampled_length = sum(math.dist(first_point, second_point) for first_point, second_point in zip(receiver_points, receiver_points[1:]))
+    assert abs(sampled_length - first["distance_m"]) < 1e-5
+
+
+def test_cross_room_approach_follows_portals_with_eased_keyframes():
+    agent = AcousticAgent.from_resplan(
+        0,
+        source_room="balcony_0",
+        receiver_room="balcony_1",
+        seed=42,
+    )
+    motion = agent.sample_motion(
+        mode="approach",
+        moving="source",
+        distance_m=3.0,
+        keyframes=13,
+    )
+    rooms = {room["id"]: room for room in agent.room.metadata["multi_room"]["rooms"]}
+    positions = [frame["source"] for frame in motion["frames"]]
+    steps = [
+        ((positions[index + 1][0] - positions[index][0]) ** 2 + (positions[index + 1][1] - positions[index][1]) ** 2) ** 0.5
+        for index in range(len(positions) - 1)
+    ]
+
+    assert motion["path_model"] == "portal_route_smoothstep"
+    assert point_in_polygon(positions[0], rooms["balcony_0"]["corners"])
+    assert any(point_in_polygon(position, rooms["bedroom_0"]["corners"]) for position in positions[1:])
+    assert steps[0] < max(steps)
+    assert steps[-1] < max(steps)
+
+
+def test_resplan_exact_positions_update_room_ownership_and_defaults():
+    reference = AcousticAgent.from_resplan(
+        0,
+        source_room="balcony_0",
+        receiver_room="balcony_1",
+        seed=42,
+    )
+    source = list(reference.default_receiver)
+    receiver = list(reference.default_source)
+
+    exact = AcousticAgent.from_resplan(0, source=source, receiver=receiver, seed=7)
+
+    assert list(exact.default_source) == source
+    assert list(exact.default_receiver) == receiver
+    assert exact.placement["source_room"] == "balcony_1"
+    assert exact.placement["receiver_room"] == "balcony_0"
+    assert exact.room.metadata["multi_room"]["route_room_ids"][0] == "balcony_1"
+
+
+def test_cross_room_through_portal_crosses_next_door_in_both_directions():
+    agent = AcousticAgent.from_resplan(
+        0,
+        source_room="balcony_0",
+        receiver_room="balcony_1",
+        seed=42,
+    )
+    rooms = {room["id"]: room for room in agent.room.metadata["multi_room"]["rooms"]}
+
+    source_motion = agent.sample_motion(mode="through_portal", moving="source", keyframes=13)
+    receiver_motion = agent.sample_motion(mode="through_portal", moving="receiver", keyframes=13)
+
+    assert source_motion["path_model"] == "portal_crossing_smoothstep"
+    assert point_in_polygon(source_motion["frames"][-1]["source"], rooms["bedroom_0"]["corners"])
+    assert point_in_polygon(receiver_motion["frames"][-1]["receiver"], rooms["bedroom_1"]["corners"])
+    assert source_motion["distance_m"] != 0.8
+    assert receiver_motion["distance_m"] != 0.8
+
+    lightweight = SimConfig(
+        fs=8000,
+        duration_s=0.02,
+        reflections_enabled=False,
+        diffraction_enabled=False,
+        late_tail=False,
+        rt_num_rays=64,
+        rt_num_bounces=4,
+    )
+    dynamic = agent.run_dynamic(source_motion, config=lightweight)
+    final_topology = dynamic.frames[-1].metadata["multi_room"]
+    assert final_topology["source_room_id"] == "bedroom_0"
+    assert final_topology["route_room_ids"][0] == "bedroom_0"
+    assert len(final_topology["route_portal_ids"]) == 3
+
+    # Crossing a doorway changes topology, not the apartment's traced floor
+    # and ceiling footprint.
+    final_room = room_for_motion_frame(
+        agent.room,
+        source_motion["frames"][-1]["source"],
+        source_motion["frames"][-1]["receiver"],
+    )
+    assert final_room.corners == agent.room.corners
+    rerun = agent.run(
+        source=source_motion["frames"][-1]["source"],
+        receiver=source_motion["frames"][-1]["receiver"],
+        config=lightweight,
+    )
+    assert rerun.metadata["multi_room"]["source_room_id"] == "bedroom_0"
+    assert rerun.metadata["multi_room"]["route_room_ids"][0] == "bedroom_0"
