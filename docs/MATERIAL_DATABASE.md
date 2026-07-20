@@ -78,17 +78,15 @@ The source-specific citations and redistribution status are recorded in
 `acoustic_agent/resources/acoustic_materials/sources.json`. The database has
 mixed terms and must not be described as wholly Apache-2.0 or wholly open data.
 
-## Reproducibility
+## Runtime packaging
 
-The runtime resource is built with:
+The open-source runtime keeps only `acoustic_materials_v3.sqlite3`,
+`sources.json`, `DATA_LICENSE.md`, and this documentation. Duplicate exports and
+the offline database-authoring workspace are intentionally excluded. The SQL
+resource contains everything required by the semantic material sampler.
 
-```bash
-python scripts/build_acoustic_material_resource.py \
-  ../acoustic_material_db_v3_20260717 \
-  acoustic_agent/resources/acoustic_materials/acoustic_materials_v3.sqlite3
-```
-
-After a rebuild, update the size and SHA-256 in
-`acoustic_agent/resources/manifest.json`, run
-`acoustic-agent verify-resources --hashes`, and run the test suite. Source-group
-counts in `sources.json` must continue to match the SQLite database.
+Historical rebuild tooling is retained on the
+`archive/material-db-rebuild-v3` branch. A replacement runtime database must be
+prepared and audited outside the runtime repository, then checked by updating
+the size and SHA-256 in `acoustic_agent/resources/manifest.json`, running
+`acoustic-agent verify-resources --hashes`, and running the test suite.

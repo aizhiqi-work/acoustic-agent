@@ -53,17 +53,10 @@ The runtime SQLite database has schema version 3 and contains:
 - 64 semantic-material mappings.
 - Six octave bands: 125, 250, 500, 1000, 2000, and 4000 Hz.
 
-The companion CSV, JSON, and JSONL files remain packaged for transparency and
-rebuilding. Rebuild from the full source collection with:
-
-```bash
-python scripts/build_acoustic_material_resource.py \
-  ../acoustic_material_db_v3_20260717 \
-  acoustic_agent/resources/acoustic_materials/acoustic_materials_v3.sqlite3
-```
-
-After rebuilding, update the manifest size and SHA-256, run all tests, and
-review source attribution and redistribution rights.
+The runtime distribution intentionally contains one material data artifact: the
+SQLite database. Duplicate CSV, JSON, JSONL, and offline rebuild inputs are not
+packaged. Historical rebuild tooling is retained on the
+`archive/material-db-rebuild-v3` branch.
 
 The material coefficients have mixed upstream terms. The VLM-assisted mappings,
 taxonomy, QA metadata, and runtime selector are project contributions; the VLM
@@ -94,10 +87,10 @@ SOFA resources are tracked directly so their license metadata and default HRTF
 remain available in an ordinary source checkout. A valid clone must run
 `git lfs pull` before installation or building.
 
-When adding or replacing a resource:
+When adding or replacing a runtime resource:
 
 1. Confirm redistribution rights and update `THIRD_PARTY_NOTICES.md`.
-2. Rebuild with the corresponding script when applicable.
+2. Prepare and audit the resource outside the runtime repository.
 3. Update `manifest.json` size and SHA-256.
 4. Run `acoustic-agent verify-resources --hashes`.
 5. Run `pytest` and build wheel/sdist.

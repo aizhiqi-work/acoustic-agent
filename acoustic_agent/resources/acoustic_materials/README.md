@@ -1,7 +1,7 @@
 # Acoustic Materials DB
 
-The runtime source of truth is `acoustic_materials_v3.sqlite3`, compiled for the
-fields used by the simulator from `acoustic_material_db_v3_20260717`.
+The runtime source of truth is `acoustic_materials_v3.sqlite3`. It is the only
+material data file loaded by a normal Acoustic Agent installation.
 
 - 20 VLM semantic object classes
 - 16 material families
@@ -15,7 +15,9 @@ Selection follows:
 semantic object -> compatible material family -> absorption class -> material instance -> six-band table
 ```
 
-`MaterialLibrary.load()` caches the parsed runtime index for the process. Sampling is deterministic for a semantic, class, optional material family, and seed. The older JSONL/CSV files remain packaged for backward compatibility and inspection, but are not loaded when the v3 SQLite resource is present.
+`MaterialLibrary.load()` caches the parsed runtime index for the process.
+Sampling is deterministic for a semantic, class, optional material family, and
+seed.
 
 The complete SQLite database is intentionally bundled with the open-source
 engine so an installed package can reproduce semantic material selection without
@@ -27,15 +29,6 @@ Apache-2.0 covers the project-authored engine, schema, taxonomy, mappings, QA
 metadata, builder, and sampler. The bundled records retain source-specific
 terms, and their inclusion does not create a new blanket license. Source counts,
 URLs, citations, and machine-readable status are in `sources.json`. Read
-`DATA_LICENSE.md` before redistribution.
-
-Rebuild the runtime resource after changing the source database:
-
-```bash
-python scripts/build_acoustic_material_resource.py \
-  ../acoustic_material_db_v3_20260717 \
-  acoustic_agent/resources/acoustic_materials/acoustic_materials_v3.sqlite3
-```
-
-After rebuilding, verify that the source-group counts still match
-`sources.json`, then update the top-level resource manifest and run the tests.
+`DATA_LICENSE.md` before redistribution. The offline database-authoring workspace
+and rebuild tooling are intentionally not part of the runtime repository; they
+remain available on the `archive/material-db-rebuild-v3` branch.
