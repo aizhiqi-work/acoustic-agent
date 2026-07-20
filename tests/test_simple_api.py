@@ -89,8 +89,8 @@ def test_acoustic_agent_accepts_acoustic_geometry_as_a_public_parameter():
     assert embedded.room.metadata["objects"] == agent.room.metadata["objects"]
 
 
-def test_acoustic_agent_from_resplan_accepts_semantic_furniture():
-    agent = AcousticAgent.from_resplan(
+def test_acoustic_agent_from_floorplan_accepts_semantic_furniture():
+    agent = AcousticAgent.from_floorplan(
         0,
         seed=42,
         acoustic_geometry=[{
@@ -210,7 +210,7 @@ def test_random_geometry_travel_keeps_length_and_returns_to_current_position():
 
 
 def test_cross_room_approach_follows_portals_with_eased_keyframes():
-    agent = AcousticAgent.from_resplan(
+    agent = AcousticAgent.from_floorplan(
         0,
         source_room="balcony_0",
         receiver_room="balcony_1",
@@ -236,8 +236,8 @@ def test_cross_room_approach_follows_portals_with_eased_keyframes():
     assert steps[-1] < max(steps)
 
 
-def test_resplan_exact_positions_update_room_ownership_and_defaults():
-    reference = AcousticAgent.from_resplan(
+def test_floorplan_exact_positions_update_room_ownership_and_defaults():
+    reference = AcousticAgent.from_floorplan(
         0,
         source_room="balcony_0",
         receiver_room="balcony_1",
@@ -246,7 +246,7 @@ def test_resplan_exact_positions_update_room_ownership_and_defaults():
     source = list(reference.default_receiver)
     receiver = list(reference.default_source)
 
-    exact = AcousticAgent.from_resplan(0, source=source, receiver=receiver, seed=7)
+    exact = AcousticAgent.from_floorplan(0, source=source, receiver=receiver, seed=7)
 
     assert list(exact.default_source) == source
     assert list(exact.default_receiver) == receiver
@@ -256,7 +256,7 @@ def test_resplan_exact_positions_update_room_ownership_and_defaults():
 
 
 def test_cross_room_through_portal_crosses_next_door_in_both_directions():
-    agent = AcousticAgent.from_resplan(
+    agent = AcousticAgent.from_floorplan(
         0,
         source_room="balcony_0",
         receiver_room="balcony_1",

@@ -1,7 +1,7 @@
 # Acoustic Agent 中文说明
 
 Acoustic Agent 是一个用于室内声场仿真和 RIR 生成的 Python 引擎，同时提供
-Geometry 与 ResPlan 共用的本地 WebGL 工作台。项目支持几何房间、户型图场景、
+Geometry 与 Floorplan 共用的本地 WebGL 工作台。项目支持几何房间、户型图场景、
 语义材料、家具、指向性声源、Mono/阵列/HRTF 接收器，以及静态和动态轨迹。
 
 ## 完整资源
@@ -11,7 +11,7 @@ Geometry 与 ResPlan 共用的本地 WebGL 工作台。项目支持几何房间�
 - `cipic_124.sofa`：默认 CIPIC subject 124 HRTF。
 - `sadie_h12.sofa`：SADIE II H12 HRTF。
 - `acoustic_materials_v3.sqlite3`：3741 条六频带材料记录。
-- `resplan_v1.sqlite3`：15376 个经过筛选的户型图场景。
+- `floorplan_v1.sqlite3`：15376 个经过筛选的户型图场景。
 
 两个 SQLite 数据库由 Git LFS 管理，两个 SOFA 文件直接保存在 Git 中。安装前需要
 执行 `git lfs pull`，安装后建议执行：
@@ -43,13 +43,13 @@ acoustic-agent web
 ```
 
 - Geometry：<http://127.0.0.1:8765/geometry>
-- ResPlan：<http://127.0.0.1:8765/resplan>
+- Floorplan：<http://127.0.0.1:8765/floorplan>
 
 修改端口或资源路径：
 
 ```bash
 acoustic-agent web --port 9000
-acoustic-agent web --resplan-resource /path/to/resplan_v1.sqlite3
+acoustic-agent web --floorplan-resource /path/to/floorplan_v1.sqlite3
 ```
 
 ## Geometry 示例
@@ -84,12 +84,17 @@ result = agent.run(
 rir = result.rir
 ```
 
-## ResPlan 示例
+## Floorplan 示例
+
+Floorplan 场景由 Mohamed Abouagour 和 Eleftherios Garyfallidis 发布的 ResPlan
+户型图数据集转换而来。论文为《ResPlan: A Large-Scale Vector-Graph Dataset of
+17,000 Residential Floor Plans》，arXiv:2508.14006（2025）；数据地址为
+https://www.kaggle.com/datasets/resplan/resplan。
 
 ```python
 from acoustic_agent import AcousticAgent
 
-agent = AcousticAgent.from_resplan(
+agent = AcousticAgent.from_floorplan(
     idx=0,
     placement="same_room",  # random / same_room / cross_room
     seed=42,
@@ -133,8 +138,10 @@ python -m twine check dist/*
 
 - [`INSTALLATION.md`](INSTALLATION.md)
 - [`CONFIGURATION.md`](CONFIGURATION.md)
+- [`FLOORPLAN.md`](FLOORPLAN.md)
 - [`RESOURCES.md`](RESOURCES.md)
 
 项目代码和项目原创文档采用 Apache-2.0。SOFA 和数据库资源保留各自授权条件。
-材料数据库与 ResPlan 原始数据目前缺少独立许可证文件，在真正公开发布到 GitHub 前，
-仓库维护者必须确认来源与再分发权利。具体见根目录 `THIRD_PARTY_NOTICES.md`。
+Floorplan V1 是 ResPlan 的转换资源，遵循 CC BY-NC-SA 4.0，要求署名、非商业使用、
+标注修改并以相同许可共享衍生数据。材料数据库采用混合来源条款。具体见根目录
+`THIRD_PARTY_NOTICES.md` 及各资源目录中的 `DATA_LICENSE.md`。

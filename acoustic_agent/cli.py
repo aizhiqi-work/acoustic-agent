@@ -22,11 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
 
-    web = commands.add_parser("web", help="Run the unified Geometry and ResPlan workbench.")
+    web = commands.add_parser("web", help="Run the unified Geometry and Floorplan workbench.")
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", default=8765, type=int)
-    web.add_argument("--resplan-resource", type=Path, default=None)
-    web.add_argument("--resplan-dataset", type=Path, default=None)
+    web.add_argument("--floorplan-resource", "--resplan-resource", dest="floorplan_resource", type=Path, default=None)
+    web.add_argument("--floorplan-dataset", "--resplan-dataset", dest="floorplan_dataset", type=Path, default=None)
     web.add_argument(
         "--no-warmup",
         action="store_true",
@@ -54,8 +54,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         serve(
             host=args.host,
             port=args.port,
-            resplan_resource=args.resplan_resource,
-            resplan_dataset=args.resplan_dataset,
+            floorplan_resource=args.floorplan_resource,
+            floorplan_dataset=args.floorplan_dataset,
             warmup=not args.no_warmup,
         )
         return 0

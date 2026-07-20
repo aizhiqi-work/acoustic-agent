@@ -8,8 +8,8 @@ import acoustic_agent.steam_rt as steam_rt
 from acoustic_agent.engine import _estimate_material_rt60, simulate_rir
 from acoustic_agent.geometry import make_room
 from acoustic_agent.models import SimConfig
-from acoustic_agent.resplan import ResPlanDataset, _metric_scale, _plan_profile, scene_from_record
-from acoustic_agent.resplan_web_server import _resplan_viewer_html
+from acoustic_agent.floorplan import FloorplanDataset, _metric_scale, _plan_profile, scene_from_record
+from acoustic_agent.floorplan_web_server import _floorplan_viewer_html
 from acoustic_agent.steam_rt import RoomRayScene
 
 
@@ -34,7 +34,7 @@ def _record():
     }
 
 
-def test_resplan_same_room_uses_global_scene_and_zero_portal_route():
+def test_floorplan_same_room_uses_global_scene_and_zero_portal_route():
     scene = scene_from_record(_record(), index=7, room_id="living_0")
     multi_room = scene["room"]["metadata"]["multi_room"]
 
@@ -43,7 +43,7 @@ def test_resplan_same_room_uses_global_scene_and_zero_portal_route():
     assert scene["receiver_room"]["id"] == "living_0"
     assert scene["room"]["size"] == [10.0, 5.0, 2.8]
     assert scene["room"]["metadata"]["opening_model"] == "vertical_portal_apertures_v1"
-    assert scene["room"]["metadata"]["geometry_model"] == "resplan_multi_room_extrusion"
+    assert scene["room"]["metadata"]["geometry_model"] == "floorplan_multi_room_extrusion"
     assert multi_room["route_room_ids"] == ["living_0"]
     assert multi_room["route_portal_ids"] == []
     assert {feature["type"] for feature in scene["room"]["metadata"]["boundary_features"]} == {"door", "window"}
@@ -60,10 +60,10 @@ def test_resplan_same_room_uses_global_scene_and_zero_portal_route():
     assert room_polygon.covers(Point(scene["receiver"][:2]))
 
 
-def test_resplan_same_room_uses_open_door_aperture_and_vertical_window_surfaces():
+def test_floorplan_same_room_uses_open_door_aperture_and_vertical_window_surfaces():
     scene = scene_from_record(_record(), index=7, room_id="living_0")
     room = make_room(
-        "resplan",
+        "floorplan",
         size=scene["room"]["size"],
         corners=scene["room"]["corners"],
     )
@@ -78,7 +78,7 @@ def test_resplan_same_room_uses_open_door_aperture_and_vertical_window_surfaces(
     assert any("_window_0_lower" in surface.name and surface.z_min == 0.0 and surface.z_max == 0.9 for surface in ray_scene.surfaces)
 
 
-def test_resplan_same_and_cross_room_modes_share_identical_geometry():
+def test_floorplan_same_and_cross_room_modes_share_identical_geometry():
     same_room = scene_from_record(_record(), index=7, room_id="bedroom_0", receiver_room_id="bedroom_0")
     cross_room = scene_from_record(_record(), index=7, room_id="bedroom_0", receiver_room_id="living_0")
     same_metadata = same_room["room"]["metadata"]
@@ -96,7 +96,7 @@ def test_resplan_same_and_cross_room_modes_share_identical_geometry():
     assert same_room["receiver"] != cross_room["receiver"]
 
 
-def test_resplan_isolated_same_room_has_zero_length_route():
+def test_floorplan_isolated_same_room_has_zero_length_route():
     record = _record()
     record["inner"] = MultiPolygon([box(0.0, 0.0, 50.0, 50.0)])
     record["door"] = Polygon()
@@ -108,19 +108,19 @@ def test_resplan_isolated_same_room_has_zero_length_route():
     assert scene["room"]["metadata"]["multi_room"]["route_portal_ids"] == []
 
 
-def test_resplan_workbench_reuses_the_main_layout_with_dataset_controls():
-    html = _resplan_viewer_html()
+def test_floorplan_workbench_reuses_the_main_layout_with_dataset_controls():
+    html = _floorplan_viewer_html()
 
-    assert 'data-scene-source="resplan"' in html
-    assert 'id="resplanIdx"' in html
-    assert 'id="resplanRoom"' in html
-    assert 'id="resplanReceiverRoom"' in html
+    assert 'data-scene-source="floorplan"' in html
+    assert 'id="floorplanIdx"' in html
+    assert 'id="floorplanRoom"' in html
+    assert 'id="floorplanReceiverRoom"' in html
     assert 'id="layerPortal"' in html
     assert 'id="sourceDirectivityPane"' in html
     assert 'id="receiverPane"' in html
 
 
-def test_resplan_uses_gross_area_proxy_when_net_area_is_corrupt():
+def test_floorplan_uses_gross_area_proxy_when_net_area_is_corrupt():
     record = _record()
     record["net_area"] = 5_000_000.0
 
@@ -130,7 +130,7 @@ def test_resplan_uses_gross_area_proxy_when_net_area_is_corrupt():
     assert math.isclose(scale, math.sqrt(0.75 * 55.0 / 5_000.0))
 
 
-def test_resplan_deduplicates_room_nodes_and_normalizes_open_adjacency():
+def test_floorplan_deduplicates_room_nodes_and_normalizes_open_adjacency():
     record = _record()
     bathroom = box(10.0, 10.0, 20.0, 20.0)
     record["graph"].add_node("bathroom_0", geometry=bathroom, type="bathroom", area=bathroom.area)
@@ -146,11 +146,11 @@ def test_resplan_deduplicates_room_nodes_and_normalizes_open_adjacency():
     assert connection["portal_id"] == "door_0"
 
 
-def test_resplan_profile_filters_stairs_and_index_navigation_skips_them():
+def test_floorplan_profile_filters_stairs_and_index_navigation_skips_them():
     record = _record()
     record["stair"] = MultiPolygon([box(20.0, 20.0, 30.0, 30.0)])
     profile = _plan_profile(record, index=2)
-    dataset = ResPlanDataset.__new__(ResPlanDataset)
+    dataset = FloorplanDataset.__new__(FloorplanDataset)
     dataset.records = [None] * 6
     dataset.eligible_indices = [0, 1, 3, 5]
 
@@ -161,7 +161,7 @@ def test_resplan_profile_filters_stairs_and_index_navigation_skips_them():
     assert dataset.resolve_index(3, "previous") == 1
 
 
-def test_resplan_cross_room_scene_builds_global_portals_and_vertical_openings():
+def test_floorplan_cross_room_scene_builds_global_portals_and_vertical_openings():
     scene = scene_from_record(
         _record(),
         index=7,
@@ -190,7 +190,7 @@ def test_resplan_cross_room_scene_builds_global_portals_and_vertical_openings():
     assert all(item["z_min"] == 2.1 and item["z_max"] == 2.8 for item in lintels)
 
 
-def test_resplan_global_scene_keeps_entry_doors_closed_but_opens_balcony_doors():
+def test_floorplan_global_scene_keeps_entry_doors_closed_but_opens_balcony_doors():
     record = _record()
     balcony = box(100.0, 0.0, 120.0, 50.0)
     record["inner"] = MultiPolygon([box(0.0, 0.0, 120.0, 50.0)])
@@ -243,7 +243,7 @@ def test_cross_room_solver_routes_around_wall_through_open_door_with_shared_ener
         room_id="living_0",
         receiver_room_id="bedroom_0",
     )
-    room = make_room("resplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
+    room = make_room("floorplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
     room.metadata.update(scene["room"]["metadata"])
     result = simulate_rir(
         room,
@@ -286,7 +286,7 @@ def test_cross_room_solver_routes_around_wall_through_open_door_with_shared_ener
 
 def test_cross_room_simulation_adapts_to_at_least_96_bounces():
     scene = scene_from_record(_record(), index=7, room_id="living_0", receiver_room_id="bedroom_0")
-    room = make_room("resplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
+    room = make_room("floorplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
     room.metadata.update(scene["room"]["metadata"])
 
     effective, metadata = steam_rt._adaptive_reflection_config(
@@ -302,9 +302,9 @@ def test_cross_room_simulation_adapts_to_at_least_96_bounces():
 
 def test_coupled_room_late_decay_includes_semantic_furniture_absorption():
     scene = scene_from_record(_record(), index=7, room_id="living_0", receiver_room_id="bedroom_0")
-    empty = make_room("resplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
+    empty = make_room("floorplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
     empty.metadata.update(scene["room"]["metadata"])
-    furnished = make_room("resplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
+    furnished = make_room("floorplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
     furnished.metadata.update(scene["room"]["metadata"])
     furnished.metadata["objects"] = [{
         "id": "sofa_0",
@@ -332,7 +332,7 @@ def test_same_room_global_solver_uses_multi_room_rt_without_portal_path():
         room_id="living_0",
         receiver_room_id="living_0",
     )
-    room = make_room("resplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
+    room = make_room("floorplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
     room.metadata.update(scene["room"]["metadata"])
     ray_scene = RoomRayScene(room)
     result = simulate_rir(
@@ -366,7 +366,7 @@ def test_cross_room_jit_intersections_match_python_for_portal_wall_spans():
         room_id="living_0",
         receiver_room_id="bedroom_0",
     )
-    room = make_room("resplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
+    room = make_room("floorplan", size=scene["room"]["size"], corners=scene["room"]["corners"])
     room.metadata.update(scene["room"]["metadata"])
     ray_scene = RoomRayScene(room)
     arrays = steam_rt._scene_kernel_arrays(ray_scene)

@@ -1063,7 +1063,7 @@ def _adaptive_reflection_config(scene: RoomRayScene, config: SimConfig) -> tuple
         return replace(config, rt_num_bounces=effective), metadata
 
     if not scene.is_cross_room:
-        metadata["reason"] = "same_room_resplan"
+        metadata["reason"] = "same_room_floorplan"
         return config, metadata
     metadata["enabled"] = bool(config.adaptive_cross_room_bounces)
     if not config.adaptive_cross_room_bounces:

@@ -9,7 +9,7 @@
 | `fine` | 65,536 | 96 | 2.0 s |
 | `reference` | 131,072 | 96 | 2.0 s |
 
-ResPlan cross-room simulation can increase the resolved bounce count to the
+Floorplan cross-room simulation can increase the resolved bounce count to the
 configured `cross_room_min_bounces` and up to `cross_room_max_bounces`.
 
 ## `AcousticAgent`
@@ -57,10 +57,10 @@ U-shape controls are normalized fractions of the width/depth:
 - `opening_depth`: opening depth fraction.
 - `opening_offset`: horizontal opening placement from 0 to 1.
 
-## ResPlan Rooms
+## Floorplan Rooms
 
 ```python
-agent = AcousticAgent.from_resplan(
+agent = AcousticAgent.from_floorplan(
     idx=0,
     placement="cross_room",
     seed=42,
@@ -77,12 +77,12 @@ agent = AcousticAgent.from_resplan(
 - `cross_room`: sample endpoints in distinct connected rooms.
 
 The scene index remains the original audited dataset index. Use
-`ResPlanResource.resolve_index()` or the Web index endpoint when an unavailable
+`FloorplanResource.resolve_index()` or the Web index endpoint when an unavailable
 index must move to the nearest, next, previous, or random eligible scene.
 
 ## Material Profiles
 
-Geometry profiles contain `wall`, `floor`, and `ceiling`. ResPlan adds `door`
+Geometry profiles contain `wall`, `floor`, and `ceiling`. Floorplan adds `door`
 and `window`. Values accept a concrete material ID, `auto`, or an absorption
 class:
 
@@ -126,7 +126,7 @@ reflected contributions according to their departure direction.
 `receiver`. `distance_m` controls travel length. `keyframe_spacing_m` defaults
 to 0.25 m; an explicit `keyframes` count overrides spacing-derived sampling.
 
-In ResPlan, trajectories use room and portal connectivity. Cross-room travel is
+In Floorplan, trajectories use room and portal connectivity. Cross-room travel is
 routed through verified openings rather than interpolated through closed walls.
 
 ## Advanced `SimConfig`
@@ -157,10 +157,10 @@ fields. Record the complete resolved config with generated data.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/geometry` | Geometry workbench |
-| `GET` | `/resplan` | ResPlan workbench |
-| `GET` | `/api/v1/resplan/stats` | Compiled-scene audit stats |
-| `GET` | `/api/v1/resplan/index` | Resolve eligible scene index |
-| `GET` | `/api/v1/resplan/scene` | Read an indexed scene |
+| `GET` | `/floorplan` | Floorplan workbench |
+| `GET` | `/api/v1/floorplan/stats` | Compiled-scene audit stats |
+| `GET` | `/api/v1/floorplan/index` | Resolve eligible scene index |
+| `GET` | `/api/v1/floorplan/scene` | Read an indexed scene |
 | `GET` | `/api/v1/materials/semantics` | Material semantic catalog |
 | `POST` | `/api/rir.wav` | Direct WAV response |
 | `POST` | `/api/rir.npy` | Direct NumPy response |

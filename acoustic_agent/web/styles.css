@@ -230,7 +230,7 @@ pre {
 }
 
 #app[data-scene-source="geometry"] .sceneModeGeometry,
-#app[data-scene-source="resplan"] .sceneModeResplan {
+#app[data-scene-source="floorplan"] .sceneModeFloorplan {
   color: #ffffff;
   border-color: var(--accent);
   background: var(--accent);
@@ -727,7 +727,7 @@ pre {
   padding: 11px;
 }
 
-#app[data-scene-source="geometry"] .resplanMaterialOnly {
+#app[data-scene-source="geometry"] .floorplanMaterialOnly {
   display: none;
 }
 
@@ -936,14 +936,14 @@ a:focus-visible {
   display: none;
 }
 
-.resplanIndexControl {
+.floorplanIndexControl {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) 34px minmax(72px, auto);
   align-items: end;
   gap: 6px;
 }
 
-.resplanIndexControl label {
+.floorplanIndexControl label {
   display: grid;
   gap: 5px;
   color: var(--soft);
@@ -951,7 +951,7 @@ a:focus-visible {
   font-weight: 620;
 }
 
-.resplanIndexControl .iconButton {
+.floorplanIndexControl .iconButton {
   width: 34px;
   min-width: 34px;
   min-height: 32px;
@@ -959,7 +959,7 @@ a:focus-visible {
   font-size: 17px;
 }
 
-#resplanPlanCanvas {
+#floorplanPlanCanvas {
   display: block;
   width: 100%;
   height: auto;
@@ -969,7 +969,7 @@ a:focus-visible {
   background: #f8fafb;
 }
 
-.resplanMeta {
+.floorplanMeta {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
@@ -979,32 +979,32 @@ a:focus-visible {
   background: var(--line);
 }
 
-.resplanMeta div {
+.floorplanMeta div {
   min-width: 0;
   padding: 7px 8px;
   background: var(--panel-2);
 }
 
-.resplanMeta span,
-.resplanMeta strong {
+.floorplanMeta span,
+.floorplanMeta strong {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.resplanMeta span {
+.floorplanMeta span {
   color: var(--muted);
   font-size: 9px;
 }
 
-.resplanMeta strong {
+.floorplanMeta strong {
   margin-top: 2px;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
 
-.resplanHeightControl {
+.floorplanHeightControl {
   grid-template-columns: minmax(0, 1fr);
 }
 

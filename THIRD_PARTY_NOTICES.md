@@ -136,15 +136,32 @@ Do not call the complete database "open source" or "Apache-2.0 data." A public
 release must obtain permission for the ODEON/manufacturer and Acoustic Supplies
 subsets or exclude them through a reviewed redistributable build profile.
 
-## ResPlan V1
+## Floorplan V1, Adapted From ResPlan
 
-File: `acoustic_agent/resources/resplan/resplan_v1.sqlite3`
+File: `acoustic_agent/resources/floorplan/floorplan_v1.sqlite3`
 
-This project-compiled database contains 15,376 audited, single-floor scenes
-derived from the local `ResPlan.pkl` source. Records are stored as zlib-compressed
-JSON while preserving the source scene index used by the API.
+Floorplan V1 is adapted from the ResPlan residential floor-plan dataset.
 
-The source dataset currently has no standalone license file in this repository.
-The repository owner must confirm its provenance and redistribution rights
-before public release. Until that review is complete, do not assume Apache-2.0
-applies to the database contents.
+- Dataset: ResPlan: A Large-Scale Vector-Graph Dataset of 17,000 Residential
+  Floor Plans.
+- Authors: Mohamed Abouagour and Eleftherios Garyfallidis.
+- Paper: https://arxiv.org/abs/2508.14006
+- DOI: https://doi.org/10.48550/arXiv.2508.14006
+- Dataset: https://www.kaggle.com/datasets/resplan/resplan
+- Upstream dataset license: Creative Commons Attribution-NonCommercial-
+  ShareAlike 4.0 International (CC BY-NC-SA 4.0),
+  https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+Acoustic Agent audited 17,107 source records and retained 15,376 eligible
+single-floor scenes. It normalized scale, cleaned and deduplicated room
+polygons, reconstructed architectural boundaries and openings, extruded 2D
+geometry into acoustic surfaces, converted verified open connections to
+portals, retained room connectivity, and stored the adapted scenes as
+zlib-compressed JSON in SQLite. These changes are not endorsed by the ResPlan
+authors.
+
+The adapted Floorplan V1 resource is distributed under CC BY-NC-SA 4.0. It
+requires attribution, noncommercial use, identification of changes, and
+ShareAlike licensing of adaptations. Apache-2.0 applies to Acoustic Agent code;
+it does not relicense this dataset-derived resource. See the packaged
+`floorplan/DATA_LICENSE.md` and `floorplan/source.json`.

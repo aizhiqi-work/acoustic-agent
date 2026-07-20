@@ -58,22 +58,22 @@ _RESULTS: OrderedDict[str, StoredResult] = OrderedDict()
 
 
 class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
-    resplan_dataset: Any | None = None
+    floorplan_dataset: Any | None = None
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=str(WEB_ROOT), **kwargs)
 
     def end_headers(self) -> None:
         path = urlparse(self.path).path
-        if path in {"/", "/geometry", "/resplan"} or Path(path).suffix in {".js", ".css", ".html"}:
+        if path in {"/", "/geometry", "/floorplan", "/resplan"} or Path(path).suffix in {".js", ".css", ".html"}:
             self.send_header("Cache-Control", "no-cache, max-age=0, must-revalidate")
         super().end_headers()
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path == "/api/v1/resplan/scene":
+        if parsed.path in {"/api/v1/floorplan/scene", "/api/v1/resplan/scene"}:
             try:
-                dataset = self._require_resplan_dataset()
+                dataset = self._require_floorplan_dataset()
                 query = parse_qs(parsed.query)
                 index = int(query.get("idx", ["0"])[0])
                 room_id = query.get("room", [None])[0]
@@ -90,9 +90,9 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=400)
             return
-        if parsed.path == "/api/v1/resplan/index":
+        if parsed.path in {"/api/v1/floorplan/index", "/api/v1/resplan/index"}:
             try:
-                dataset = self._require_resplan_dataset()
+                dataset = self._require_floorplan_dataset()
                 query = parse_qs(parsed.query)
                 index = int(query.get("idx", ["0"])[0])
                 direction = query.get("direction", ["nearest"])[0]
@@ -102,9 +102,9 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=400)
             return
-        if parsed.path == "/api/v1/resplan/stats":
+        if parsed.path in {"/api/v1/floorplan/stats", "/api/v1/resplan/stats"}:
             try:
-                self._send_json(self._require_resplan_dataset().stats())
+                self._send_json(self._require_floorplan_dataset().stats())
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=400)
             return
@@ -136,17 +136,17 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/geometry":
             self._send_html((WEB_ROOT / "viewer.html").read_text(encoding="utf-8"))
             return
-        if parsed.path == "/resplan":
-            from .resplan_web_server import _resplan_viewer_html
+        if parsed.path in {"/floorplan", "/resplan"}:
+            from .floorplan_web_server import _floorplan_viewer_html
 
-            self._send_html(_resplan_viewer_html())
+            self._send_html(_floorplan_viewer_html())
             return
         return super().do_GET()
 
-    def _require_resplan_dataset(self) -> Any:
-        if self.resplan_dataset is None:
-            raise RuntimeError("ResPlan resource is not configured")
-        return self.resplan_dataset
+    def _require_floorplan_dataset(self) -> Any:
+        if self.floorplan_dataset is None:
+            raise RuntimeError("Floorplan resource is not configured")
+        return self.floorplan_dataset
 
     def do_OPTIONS(self) -> None:
         if not urlparse(self.path).path.startswith("/api/"):
@@ -466,7 +466,7 @@ def _simulate_payload(payload: dict[str, Any]) -> PayloadSimulation:
             item["material_selection"] = material_summary(library.sample_geometry(item, seed=material_seed + index + 1))
         room.metadata["objects"] = objects
         for key in (
-            "resplan",
+            "floorplan",
             "boundary_features",
             "surface_segments",
             "opening_model",
@@ -712,24 +712,24 @@ def serve(
     *,
     host: str = "127.0.0.1",
     port: int = 8765,
-    resplan_resource: str | Path | None = None,
-    resplan_dataset: str | Path | None = None,
+    floorplan_resource: str | Path | None = None,
+    floorplan_dataset: str | Path | None = None,
     warmup: bool = True,
 ) -> None:
-    if resplan_dataset is not None:
-        from .resplan import ResPlanDataset
+    if floorplan_dataset is not None:
+        from .floorplan import FloorplanDataset
 
-        AcousticWorkbenchHandler.resplan_dataset = ResPlanDataset(resplan_dataset)
+        AcousticWorkbenchHandler.floorplan_dataset = FloorplanDataset(floorplan_dataset)
     else:
-        from .resplan_resource import DEFAULT_RESPLAN_RESOURCE, ResPlanResource
+        from .floorplan_resource import DEFAULT_FLOORPLAN_RESOURCE, FloorplanResource
 
-        resource_path = resplan_resource or DEFAULT_RESPLAN_RESOURCE
-        AcousticWorkbenchHandler.resplan_dataset = ResPlanResource(resource_path)
+        resource_path = floorplan_resource or DEFAULT_FLOORPLAN_RESOURCE
+        AcousticWorkbenchHandler.floorplan_dataset = FloorplanResource(resource_path)
     if warmup:
         _warm_simulation_kernels()
     server = ThreadingHTTPServer((host, int(port)), AcousticWorkbenchHandler)
     print(f"Acoustic Agent geometry: http://{host}:{port}/geometry")
-    print(f"Acoustic Agent ResPlan:  http://{host}:{port}/resplan")
+    print(f"Acoustic Agent Floorplan:  http://{host}:{port}/floorplan")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -743,16 +743,18 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8765, type=int)
     parser.add_argument(
-        "--resplan-resource",
+        "--floorplan-resource", "--resplan-resource",
+        dest="floorplan_resource",
         type=Path,
         default=None,
-        help="Compiled ResPlan SQLite resource for the unified ResPlan route.",
+        help="Compiled Floorplan SQLite resource for the unified Floorplan route.",
     )
     parser.add_argument(
-        "--resplan-dataset",
+        "--floorplan-dataset", "--resplan-dataset",
+        dest="floorplan_dataset",
         type=Path,
         default=None,
-        help="Optional legacy ResPlan pickle instead of the compiled resource.",
+        help="Optional legacy Floorplan pickle instead of the compiled resource.",
     )
     parser.add_argument(
         "--no-warmup",
@@ -763,8 +765,8 @@ def main() -> None:
     serve(
         host=args.host,
         port=args.port,
-        resplan_resource=args.resplan_resource,
-        resplan_dataset=args.resplan_dataset,
+        floorplan_resource=args.floorplan_resource,
+        floorplan_dataset=args.floorplan_dataset,
         warmup=not args.no_warmup,
     )
 

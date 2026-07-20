@@ -42,7 +42,7 @@ def test_semantic_sampler_reports_physical_class_fallback():
     assert material.metadata["material_type"] == "glass_reflective"
 
 
-def test_surface_sampler_covers_resplan_boundary_semantics():
+def test_surface_sampler_covers_floorplan_boundary_semantics():
     materials = MaterialLibrary.load().sample_surface_set(
         {"wall": "absorptive", "floor": "semi_reflective", "window": "reflective"},
         seed=41,
@@ -102,8 +102,8 @@ def test_new_semantic_furniture_uses_matching_reflection_proxies():
     assert all(np.all(np.asarray(box["size"]) > 0.0) for box in tile + sanitary + structural)
 
 
-def test_resplan_api_exposes_material_selection_and_semantic_furniture():
-    agent = AcousticAgent.from_resplan(
+def test_floorplan_api_exposes_material_selection_and_semantic_furniture():
+    agent = AcousticAgent.from_floorplan(
         0,
         seed=42,
         material_seed=2026,
