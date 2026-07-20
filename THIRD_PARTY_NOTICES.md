@@ -32,10 +32,10 @@ File: `acoustic_agent/resources/hrtf/sadie_h12.sofa`
 
 File: `acoustic_agent/resources/acoustic_materials/acoustic_materials_v3.sqlite3`
 
-This is a project-compiled runtime representation of the fields used from
-`acoustic_material_db_v3_20260717`. It contains 3,741 six-band records, 16
+This project-compiled runtime database contains 3,741 six-band records, 16
 material families, 20 semantic categories, and 64 semantic-material mappings.
-The companion indexes are included for inspection and reproducible rebuilding.
+The open-source runtime repository distributes the compact SQLite database, not
+the offline authoring workspace or duplicate intermediate exports.
 
 The material database has mixed upstream terms and uses the SPDX value
 `NOASSERTION`. Apache-2.0 covers the project-authored schema, semantic taxonomy,
