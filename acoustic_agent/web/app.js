@@ -14,6 +14,8 @@ const motionPlayButton = document.getElementById("motionPlay");
 const motionTimelineEl = document.getElementById("motionTimeline");
 const appRoot = document.getElementById("app");
 const floorplanMode = appRoot?.dataset.sceneSource === "floorplan";
+const customMode = appRoot?.dataset.sceneSource === "custom";
+const multiRoomMode = floorplanMode || customMode;
 
 const presets = [
   { id: "rectangle", title: "Rectangle" },
@@ -53,7 +55,7 @@ const boundaryMaterialControls = [
   ["door", "door", "doorAbsorption"],
   ["window", "window_glass", "windowAbsorption"],
 ];
-const activeBoundaryMaterialControls = floorplanMode
+const activeBoundaryMaterialControls = multiRoomMode
   ? boundaryMaterialControls
   : boundaryMaterialControls.slice(0, 3);
 const objectTypeOptions = [
@@ -148,7 +150,8 @@ const defaultState = {
   config: { fs: 16000, duration_s: 2.0, quality: "simulation", rt_num_rays: 32768, rt_num_bounces: 64, rt_duration_s: 2.0, diffraction_order: 3, max_diffraction_paths: 8 },
   mic: { type: "mono", count: 4, spacing_m: 0.08, radius_m: 0.12, orientation_deg: 0 },
   sourceDirectivity: { type: "omni", orientation_deg: 0, elevation_deg: 0, dipole_weight: 0.0, dipole_power: 1.0 },
-  floorplan: { index: 0, count: 0, roomId: null, roomType: null, receiverRoomId: null, receiverRoomType: null, corners: null, roomOptions: [], plan: null, dataset: null, selectedRoom: null, receiverRoom: null, roomMetadata: null }
+  floorplan: { index: 0, count: 0, roomId: null, roomType: null, receiverRoomId: null, receiverRoomType: null, corners: null, roomOptions: [], plan: null, dataset: null, selectedRoom: null, receiverRoom: null, roomMetadata: null },
+  custom: { spec: null, validation: null, sourceMode: "text", imageOpacity: 0.5 }
 };
 
 let state = structuredClone(defaultState);
@@ -170,6 +173,8 @@ let objectDrag = null;
 let suppressObjectSelectionUntil = 0;
 let materialSemanticCatalog = {};
 let randomMotionRouteCache = { signature: "", value: null };
+let customImageElement = null;
+let customImageUrl = null;
 const layerState = { direct: true, portal: true, diffraction: true, rt: true };
 
 let renderer;
@@ -206,6 +211,13 @@ async function bootstrap() {
   if (floorplanMode) {
     try {
       await loadFloorplanScene(0, null, "auto", { simulate: false });
+    } catch (error) {
+      setStatus(String(error?.message || error), true);
+    }
+  } else if (customMode) {
+    try {
+      await loadCustomCapabilities();
+      await generateCustomScene();
     } catch (error) {
       setStatus(String(error?.message || error), true);
     }
@@ -392,7 +404,7 @@ function setTopView() {
 }
 
 function setupControls() {
-  if (floorplanMode) return;
+  if (multiRoomMode) return;
   fillSelect("shape", presets.map((preset) => [preset.id, preset.title]));
 }
 
@@ -456,6 +468,15 @@ async function loadFloorplanScene(index, roomId = null, receiverRoomId = "auto",
   const response = await fetch(`/api/v1/floorplan/scene?${query.toString()}`, { cache: "no-store" });
   const scene = await response.json();
   if (!response.ok) throw new Error(scene.error || `Unable to load Floorplan index ${boundedIndex}`);
+  applyMultiRoomScene(scene);
+  const roomLabel = state.floorplan.roomId === state.floorplan.receiverRoomId
+    ? state.floorplan.roomType
+    : `${state.floorplan.roomType} → ${state.floorplan.receiverRoomType}`;
+  setStatus(`${roomLabel} · idx ${state.floorplan.index}`);
+  if (options.simulate === true) requestSimulation();
+}
+
+function applyMultiRoomScene(scene, customPayload = null) {
   state.shape = "floorplan";
   state.size = scene.room.size.map(Number);
   state.source = scene.source.map(Number);
@@ -476,6 +497,13 @@ async function loadFloorplanScene(index, roomId = null, receiverRoomId = "auto",
     receiverRoom: scene.receiver_room || scene.selected_room || null,
     roomMetadata: scene.room.metadata || null,
   };
+  if (customPayload) {
+    state.custom.spec = customPayload.spec || state.custom.spec;
+    state.custom.validation = customPayload.validation || state.custom.validation;
+    const editor = document.getElementById("customSpecJson");
+    if (editor && state.custom.spec) editor.value = JSON.stringify(state.custom.spec, null, 2);
+    updateCustomValidation();
+  }
   selectedObjectId = null;
   pendingObjectId = null;
   dirtyObjectId = null;
@@ -483,11 +511,150 @@ async function loadFloorplanScene(index, roomId = null, receiverRoomId = "auto",
   if (camera) camera.userData.fitted = false;
   simData = makeClientScene(state);
   updateControls();
-  const roomLabel = state.floorplan.roomId === state.floorplan.receiverRoomId
-    ? state.floorplan.roomType
-    : `${state.floorplan.roomType} → ${state.floorplan.receiverRoomType}`;
-  setStatus(`${roomLabel} · idx ${state.floorplan.index}`);
-  if (options.simulate === true) requestSimulation();
+}
+
+async function loadCustomCapabilities() {
+  const response = await fetch("/api/v1/custom/capabilities", { cache: "no-store" });
+  const capabilities = await response.json();
+  if (!response.ok) throw new Error(capabilities.error || "Unable to read Custom capabilities");
+  const status = document.getElementById("customVlmStatus");
+  const available = Boolean(capabilities.vlm?.available);
+  if (status) {
+    status.textContent = available
+      ? `${capabilities.vlm.provider || "VLM"} ready`
+      : "No API needed · use Codex with the copied prompt, then paste its JSON below";
+    status.classList.toggle("ready", available);
+  }
+}
+
+async function copyCustomVlmPrompt() {
+  const response = await fetch("/api/v1/custom/prompt", { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok || !payload.prompt) throw new Error(payload.error || "Unable to load the Codex prompt");
+  const button = document.getElementById("customVlmPrompt");
+  try {
+    await navigator.clipboard.writeText(payload.prompt);
+  } catch {
+    if (!copyTextFallback(payload.prompt)) throw new Error("Unable to copy the Codex prompt");
+  }
+  if (button) {
+    const label = button.textContent;
+    button.textContent = "Copied";
+    window.setTimeout(() => { button.textContent = label || "Copy Codex prompt"; }, 1200);
+  }
+  setStatus("Codex image prompt copied");
+}
+
+async function generateCustomScene(options = {}) {
+  if (!customMode) return;
+  clearTimeout(simulateTimer);
+  simulationRequestSeq += 1;
+  const seedInput = document.getElementById("customSeed");
+  const seed = Math.max(0, Math.round(Number(seedInput?.value || 42) + Number(options.seedOffset || 0)));
+  const description = document.getElementById("customDescription")?.value || "";
+  const descriptionHasSize = /\d+(?:\.\d+)?\s*(?:m|米)?\s*(?:x|×|by)\s*\d+(?:\.\d+)?/i.test(description);
+  if (seedInput) seedInput.value = String(seed);
+  setStatus("Generating custom floor plan...");
+  const response = await fetch("/api/v1/custom/generate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      description,
+      width_m: descriptionHasSize ? null : controlNumber("customWidth", 10),
+      depth_m: descriptionHasSize ? null : controlNumber("customDepth", 8),
+      height_m: controlNumber("height", 2.8),
+      seed,
+    }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Unable to generate custom floor plan");
+  applyMultiRoomScene(result.scene, result);
+  setStatus(`Custom floor plan generated · seed ${seed}`);
+}
+
+async function compileCustomScene(spec = state.custom.spec, roomSelection = {}) {
+  if (!customMode || !spec) return;
+  clearTimeout(simulateTimer);
+  simulationRequestSeq += 1;
+  setStatus("Validating custom floor plan...");
+  const response = await fetch("/api/v1/custom/compile", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      spec,
+      source_room: roomSelection.sourceRoom || state.floorplan.roomId,
+      receiver_room: roomSelection.receiverRoom || state.floorplan.receiverRoomId,
+      height_m: controlNumber("height", Number(spec.height_m || 2.8)),
+      seed: controlNumber("customSeed", 42),
+    }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Unable to compile custom floor plan");
+  applyMultiRoomScene(result.scene, result);
+  setStatus("Custom floor plan validated");
+}
+
+function updateCustomValidation() {
+  if (!customMode) return;
+  const element = document.getElementById("customValidation");
+  if (!element) return;
+  const validation = state.custom.validation || {};
+  const summary = validation.summary || {};
+  const errors = validation.errors || [];
+  const warnings = validation.warnings || [];
+  element.classList.toggle("error", errors.length > 0);
+  element.textContent = errors.length
+    ? errors[0]
+    : `${summary.rooms || 0} rooms · ${summary.doors || 0} doors · ${summary.windows || 0} windows${warnings.length ? ` · ${warnings[0]}` : ""}`;
+}
+
+function setCustomSourceMode(mode) {
+  if (!customMode) return;
+  state.custom.sourceMode = mode === "image" ? "image" : "text";
+  const imageMode = state.custom.sourceMode === "image";
+  document.getElementById("customTextPane")?.toggleAttribute("hidden", imageMode);
+  document.getElementById("customImagePane")?.toggleAttribute("hidden", !imageMode);
+  document.getElementById("customTextPane")?.classList.toggle("active", !imageMode);
+  document.getElementById("customImagePane")?.classList.toggle("active", imageMode);
+  document.getElementById("customTextTab")?.classList.toggle("active", !imageMode);
+  document.getElementById("customImageTab")?.classList.toggle("active", imageMode);
+  document.getElementById("customTextTab")?.setAttribute("aria-selected", String(!imageMode));
+  document.getElementById("customImageTab")?.setAttribute("aria-selected", String(imageMode));
+  drawFloorplanOverview();
+}
+
+function handleCustomImageUpload(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  if (!file.type.startsWith("image/")) {
+    setStatus("Unsupported image type", true);
+    return;
+  }
+  if (file.size > 12 * 1024 * 1024) {
+    setStatus("Floor-plan image must be smaller than 12 MB", true);
+    return;
+  }
+  if (customImageUrl) URL.revokeObjectURL(customImageUrl);
+  customImageUrl = URL.createObjectURL(file);
+  const image = new Image();
+  image.onload = () => {
+    customImageElement = image;
+    drawFloorplanOverview();
+    setStatus(`${file.name} loaded locally`);
+  };
+  image.onerror = () => setStatus("Unable to read floor-plan image", true);
+  image.src = customImageUrl;
+}
+
+function downloadCustomSpec() {
+  if (!state.custom.spec) return;
+  const blob = new Blob([JSON.stringify(state.custom.spec, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "custom-floorplan.json";
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 async function navigateFloorplan(index, direction = "nearest") {
@@ -534,13 +701,13 @@ function updateFloorplanMeta() {
   const connections = state.floorplan.roomMetadata?.connections || [];
   const exteriorExposures = state.floorplan.roomMetadata?.exterior_exposures || [];
   const rows = [
-    ["Dataset", `${Number(state.floorplan.index) + 1} / ${Number(state.floorplan.count) || 0}`],
-    ["Eligible", `${Number(dataset.eligible_count) || 0}`],
+    [customMode ? "Source" : "Dataset", customMode ? String(dataset.generator || "local") : `${Number(state.floorplan.index) + 1} / ${Number(state.floorplan.count) || 0}`],
+    [customMode ? "Rooms" : "Eligible", customMode ? String(state.floorplan.roomOptions?.length || 0) : `${Number(dataset.eligible_count) || 0}`],
     ["Source room", String(room.type || "-")],
     ["Microphone room", String(receiverRoom.type || "-")],
     ["Area", Number.isFinite(Number(room.area_m2)) ? `${Number(room.area_m2).toFixed(1)} m²` : "-"],
-    ["Scale", Number.isFinite(Number(dataset.meters_per_unit)) ? `${Number(dataset.meters_per_unit).toFixed(4)} m/u` : "-"],
-    ["Scale source", String(dataset.scale_source || "-").replaceAll("_", " ")],
+    ["Scale", customMode ? "metric" : Number.isFinite(Number(dataset.meters_per_unit)) ? `${Number(dataset.meters_per_unit).toFixed(4)} m/u` : "-"],
+    [customMode ? "Gross area" : "Scale source", customMode ? `${Number(dataset.gross_area_m2 || 0).toFixed(1)} m²` : String(dataset.scale_source || "-").replaceAll("_", " ")],
     ["Doors", String(features.filter((item) => item.type === "door").length)],
     ["Openings", String(features.filter((item) => item.type === "opening").length)],
     ["Windows", String(features.filter((item) => item.type === "window").length)],
@@ -579,6 +746,12 @@ function drawFloorplanOverview() {
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "#f8fafb";
   ctx.fillRect(0, 0, width, height);
+  if (customMode && customImageElement) {
+    ctx.save();
+    ctx.globalAlpha = Number(state.custom.imageOpacity ?? 0.5);
+    ctx.drawImage(customImageElement, pad, pad, planWidth * scale, planDepth * scale);
+    ctx.restore();
+  }
   (plan.rooms || []).forEach((room) => {
     drawCanvasPolygon(ctx, room.polygon || [], toCanvas);
     ctx.fillStyle = colors[room.type] || "#e2e6e8";
@@ -747,7 +920,7 @@ function readGeometryParams() {
 }
 
 function bindEvents() {
-  const roomIds = floorplanMode
+  const roomIds = multiRoomMode
     ? ["height", "materialSeed", ...activeBoundaryMaterialControls.map(([, , id]) => id)]
     : ["shape", "sizeX", "sizeY", "height", "materialSeed", ...activeBoundaryMaterialControls.map(([, , id]) => id)];
   const ids = [...roomIds, "qualitySelect", "rirDuration", "sourceX", "sourceY", "sourceZ", "receiverX", "receiverY", "receiverZ", "motionMode", "motionMoving", "motionDistance", "motionFrameSpacing", "micOrientation", "micCount", "micSpacing", "sourceOrientation", "sourceElevation", "sourcePower", "fs"];
@@ -755,6 +928,11 @@ function bindEvents() {
     if (floorplanMode && id === "height") {
       state.size[2] = clamp(number("height"), 2.0, 6.0);
       void loadFloorplanScene(state.floorplan.index, state.floorplan.roomId, state.floorplan.receiverRoomId);
+      return;
+    }
+    if (customMode && id === "height") {
+      state.size[2] = clamp(number("height"), 2.0, 6.0);
+      void compileCustomScene();
       return;
     }
     const oldShape = state.shape;
@@ -798,7 +976,7 @@ function bindEvents() {
   document.getElementById("randomPositions").addEventListener("click", randomizePositions);
   document.getElementById("resampleMotionPath")?.addEventListener("click", resampleRandomMotionPath);
   document.getElementById("reset").addEventListener("click", async () => {
-    const floorplanSelection = floorplanMode ? {
+    const floorplanSelection = multiRoomMode ? {
       index: state.floorplan.index,
       roomId: state.floorplan.roomId,
       receiverRoomId: state.floorplan.receiverRoomId,
@@ -809,7 +987,11 @@ function bindEvents() {
     dirtyObjectId = null;
     if (camera) camera.userData.fitted = false;
     if (floorplanSelection) {
-      await loadFloorplanScene(floorplanSelection.index, floorplanSelection.roomId, floorplanSelection.receiverRoomId, { simulate: false });
+      if (floorplanMode) {
+        await loadFloorplanScene(floorplanSelection.index, floorplanSelection.roomId, floorplanSelection.receiverRoomId, { simulate: false });
+      } else {
+        await generateCustomScene();
+      }
     }
     updateControls();
     markSimulationPending();
@@ -829,6 +1011,36 @@ function bindEvents() {
       state.floorplan.roomId,
       event.target.value,
     ));
+  } else if (customMode) {
+    document.getElementById("floorplanRoom")?.addEventListener("change", (event) => compileCustomScene(state.custom.spec, {
+      sourceRoom: event.target.value,
+      receiverRoom: state.floorplan.receiverRoomId === event.target.value ? event.target.value : state.floorplan.receiverRoomId,
+    }));
+    document.getElementById("floorplanReceiverRoom")?.addEventListener("change", (event) => compileCustomScene(state.custom.spec, {
+      sourceRoom: state.floorplan.roomId,
+      receiverRoom: event.target.value,
+    }));
+    document.getElementById("customGenerate")?.addEventListener("click", () => generateCustomScene().catch((error) => setStatus(String(error.message || error), true)));
+    document.getElementById("customVariant")?.addEventListener("click", () => generateCustomScene({ seedOffset: 1 }).catch((error) => setStatus(String(error.message || error), true)));
+    document.getElementById("customTextTab")?.addEventListener("click", () => setCustomSourceMode("text"));
+    document.getElementById("customImageTab")?.addEventListener("click", () => setCustomSourceMode("image"));
+    document.getElementById("customImageOpacity")?.addEventListener("input", (event) => {
+      state.custom.imageOpacity = Number(event.target.value || 0.5);
+      const output = document.getElementById("customImageOpacityValue");
+      if (output) output.textContent = `${Math.round(state.custom.imageOpacity * 100)}%`;
+      drawFloorplanOverview();
+    });
+    document.getElementById("customImageFile")?.addEventListener("change", handleCustomImageUpload);
+    document.getElementById("customVlmPrompt")?.addEventListener("click", () => copyCustomVlmPrompt().catch((error) => setStatus(String(error.message || error), true)));
+    document.getElementById("customApplyJson")?.addEventListener("click", () => {
+      try {
+        const spec = JSON.parse(document.getElementById("customSpecJson")?.value || "{}");
+        void compileCustomScene(spec).catch((error) => setStatus(String(error.message || error), true));
+      } catch (error) {
+        setStatus(`Invalid JSON · ${String(error.message || error)}`, true);
+      }
+    });
+    document.getElementById("customDownloadJson")?.addEventListener("click", downloadCustomSpec);
   }
   document.getElementById("randomMaterials")?.addEventListener("click", () => {
     state.materialSeed = Math.floor(Math.random() * 2147483647);
@@ -1012,7 +1224,7 @@ function handlePaletteSelection() {
 }
 
 function readControls() {
-  if (floorplanMode) {
+  if (multiRoomMode) {
     state.size[2] = number("height");
   } else {
     state.shape = value("shape");
@@ -1064,6 +1276,11 @@ function updateControls() {
     const indexInput = document.getElementById("floorplanIdx");
     if (indexInput) indexInput.max = Math.max(0, state.floorplan.count - 1);
     syncFloorplanRoomOptions();
+  } else if (customMode) {
+    setValue("customWidth", state.size[0]);
+    setValue("customDepth", state.size[1]);
+    syncFloorplanRoomOptions();
+    updateCustomValidation();
   } else {
     setValue("shape", state.shape);
     setValue("sizeX", state.size[0]);
@@ -1421,7 +1638,7 @@ function apiPayload() {
     size: state.size,
     corners: cornersFor(state.shape, state.size, state.geometry),
     geometry: state.geometry,
-    room_metadata: floorplanMode ? state.floorplan.roomMetadata : undefined,
+    room_metadata: multiRoomMode ? state.floorplan.roomMetadata : undefined,
     materials: undefined,
     material_profile: materialProfile,
     material_seed: state.materialSeed,
@@ -2556,7 +2773,7 @@ function cameraSceneSignature() {
   const bounds = sceneDisplayBounds();
   const roomIds = (simData.room?.metadata?.multi_room?.rooms || []).map((room) => room.id).join(",");
   return [
-    floorplanMode ? `idx=${state.floorplan.index}` : `shape=${state.shape}`,
+    floorplanMode ? `idx=${state.floorplan.index}` : customMode ? `custom=${state.custom.spec?.title || "scene"}` : `shape=${state.shape}`,
     `rooms=${roomIds}`,
     `bounds=${bounds.x0.toFixed(3)},${bounds.y0.toFixed(3)},${bounds.x1.toFixed(3)},${bounds.y1.toFixed(3)}`,
     `h=${Number(simData.room?.height_m || 0).toFixed(3)}`,
@@ -3041,7 +3258,7 @@ function updatePanels() {
   const sampledMotion = sampleMotionState();
   const motionLabel = state.motion?.mode === "static"
     ? "Static"
-    : `${floorplanMode ? state.motion.mode.replaceAll("_", "-") : state.motion.mode === "random" ? "random travel" : "approach travel"} · ${sampledMotion.keyframes} frames`;
+    : `${multiRoomMode ? state.motion.mode.replaceAll("_", "-") : state.motion.mode === "random" ? "random travel" : "approach travel"} · ${sampledMotion.keyframes} frames`;
   document.getElementById("hudMeta").textContent = `${presetTitle(state.shape)} | ${motionLabel} | ${paths.length} paths | ${state.config.fs} Hz`;
   document.getElementById("receiverType").textContent = state.mic.type;
   document.getElementById("sourceDirectivityType").textContent = state.sourceDirectivity.type;
@@ -3054,7 +3271,7 @@ function updatePanels() {
   refreshMicThumbnails();
   refreshSourceDirectivityThumbnails();
   refreshThumbnails();
-  if (floorplanMode) syncFloorplanRoomOptions();
+  if (multiRoomMode) syncFloorplanRoomOptions();
   renderMaterialSelections();
   renderObjectMaterialSelection();
   const countLabel = document.getElementById("sceneObjectCount");
@@ -4166,6 +4383,38 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
     rotation_deg: Number(object.rotation ?? object.rotation_deg ?? 0),
   }));
 
+  if (customMode && shape === "floorplan") {
+    const materialProfile = payload.material_profile || state.materialProfile || {};
+    const materialSeed = Number(payload.material_seed ?? state.materialSeed ?? 42);
+    const sourcePosition = JSON.stringify((payload.source || state.source).map(Number));
+    const receiverPosition = JSON.stringify((payload.receiver || state.receiver).map(Number));
+    return [
+      "from acoustic_agent import AcousticAgent",
+      "",
+      `floorplan_spec = ${JSON.stringify(state.custom.spec || {}, null, 4)}`,
+      `source = ${sourcePosition}  # [x, y, z] m`,
+      `mic = ${receiverPosition}     # [x, y, z] m`,
+      `material_seed = ${materialSeed}`,
+      `material_profile = ${JSON.stringify(materialProfile, null, 4)}`,
+      `mic_type = "${micType}"   # mono / hrtf / linear / circular`,
+      `mic_params = ${JSON.stringify(micParams, null, 4)}`,
+      `source_directivity = ${JSON.stringify(sourceModel, null, 4)}`,
+      `acoustic_geometry = ${JSON.stringify(acousticGeometry, null, 4)}`,
+      `quality = "${quality}"`,
+      `rir_length = ${rirLength}`,
+      `sample_rate = ${sampleRate}`,
+      "",
+      "agent = AcousticAgent.from_floorplan_spec(",
+      "    floorplan_spec, source=source, receiver=mic,",
+      "    material_seed=material_seed, material_profile=material_profile,",
+      '    receiver_model={"type": mic_type, **mic_params},',
+      "    source_model=source_directivity, acoustic_geometry=acoustic_geometry,",
+      "    quality=quality, duration_s=rir_length, fs=sample_rate,",
+      ")",
+      ...dynamicRunLines,
+    ].join("\n");
+  }
+
   if (shape === "floorplan") {
     const floorplan = payload.room_metadata?.floorplan || state.floorplan?.dataset || {};
     const idx = Number(floorplan.index ?? state.floorplan?.index ?? 0);
@@ -4386,7 +4635,7 @@ function sampleMotionState() {
   const separation = Math.max(Math.hypot(dx, dy), 1e-9);
   const portalRoute = acousticMotionRoute(movingSource);
   const routePortalIds = state.floorplan.roomMetadata?.multi_room?.route_portal_ids || [];
-  const followsPortalRoute = floorplanMode && routePortalIds.length > 0 && portalRoute.length >= 2;
+  const followsPortalRoute = multiRoomMode && routePortalIds.length > 0 && portalRoute.length >= 2;
   let requested = clamp(motion.distance_m, 0.2, 6.0);
   if (motion.mode === "random") {
     const sampledRoute = randomGeometryRoute(
@@ -4782,7 +5031,7 @@ function smootherstep(value) {
 }
 
 function floorplanRoomCorners(roomId) {
-  if (!floorplanMode || !roomId) return null;
+  if (!multiRoomMode || !roomId) return null;
   const rooms = state.floorplan.roomMetadata?.multi_room?.rooms || [];
   const room = rooms.find((item) => item.id === roomId);
   return Array.isArray(room?.corners) && room.corners.length >= 3 ? room.corners : null;
@@ -5267,7 +5516,9 @@ function controlNumber(id, fallback = 0) {
 }
 function roundControl(value) { return Number(value || 0).toFixed(2); }
 function presetTitle(id) {
-  if (id === "floorplan") return `Floorplan ${state.floorplan.roomType || "room"} #${state.floorplan.index}`;
+  if (id === "floorplan") return customMode
+    ? `Custom ${state.floorplan.roomType || "room"}`
+    : `Floorplan ${state.floorplan.roomType || "room"} #${state.floorplan.index}`;
   return presets.find((preset) => preset.id === id)?.title || id;
 }
 function formatSeconds(value) {

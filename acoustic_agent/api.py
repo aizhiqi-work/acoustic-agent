@@ -175,6 +175,69 @@ class AcousticAgent:
         agent.floorplan = dict(scene["dataset"])
         return agent
 
+    @classmethod
+    def from_floorplan_spec(
+        cls,
+        spec: Mapping[str, Any],
+        *,
+        seed: int = 42,
+        source: Sequence[float] | None = None,
+        receiver: Sequence[float] | None = None,
+        source_room: str | None = None,
+        receiver_room: str | None = None,
+        quality: str = "simulation",
+        materials: Mapping[str, str | Material] | None = None,
+        material_profile: str | Mapping[str, Any] | None = None,
+        material_seed: int | None = None,
+        fs: int = 16000,
+        duration_s: float = 2.0,
+        config: SimConfig | None = None,
+        receiver_model: str | Mapping[str, Any] = "mono",
+        source_model: str | Mapping[str, Any] = "omni",
+        acoustic_geometry: Sequence[Mapping[str, Any]] | None = None,
+    ) -> "AcousticAgent":
+        from .custom_floorplan import compile_floorplan_spec
+
+        scene = compile_floorplan_spec(
+            spec,
+            source_room=source_room,
+            receiver_room=receiver_room,
+            seed=int(seed),
+        )
+        actual_source = _floorplan_position(source, "source") if source is not None else list(scene["source"])
+        actual_receiver = _floorplan_position(receiver, "receiver") if receiver is not None else list(scene["receiver"])
+        actual_material_seed = int(seed if material_seed is None else material_seed)
+        agent = cls(
+            room=scene["room"],
+            quality=quality,
+            materials=materials,
+            material_profile=material_profile,
+            material_seed=actual_material_seed,
+            fs=fs,
+            duration_s=duration_s,
+            config=config,
+            receiver_model=receiver_model,
+            source_model=source_model,
+            acoustic_geometry=acoustic_geometry,
+        )
+        agent.default_source = tuple(float(value) for value in actual_source)
+        agent.default_receiver = tuple(float(value) for value in actual_receiver)
+        agent.room = room_for_motion_frame(agent.room, agent.default_source, agent.default_receiver)
+        agent.rooms = [dict(room) for room in scene["rooms"]]
+        multi_room = agent.room.metadata.get("multi_room") if isinstance(agent.room.metadata, Mapping) else None
+        source_id = str(scene["selected_room"]["id"])
+        receiver_id = str(scene["receiver_room"]["id"])
+        agent.placement = {
+            "mode": "same_room" if source_id == receiver_id else "cross_room",
+            "seed": int(seed),
+            "source_room": str(multi_room.get("source_room_id", source_id)) if isinstance(multi_room, Mapping) else source_id,
+            "receiver_room": str(multi_room.get("receiver_room_id", receiver_id)) if isinstance(multi_room, Mapping) else receiver_id,
+            "source": list(agent.default_source),
+            "receiver": list(agent.default_receiver),
+        }
+        agent.floorplan = dict(scene["dataset"])
+        return agent
+
     # Compatibility alias for releases before the public scene name became Floorplan.
     from_resplan = from_floorplan
 
