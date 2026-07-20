@@ -5,3 +5,8 @@ This product bundles HRTF data from the CIPIC HRTF Database and the SADIE II
 Database. It also bundles project-compiled acoustic-material and ResPlan scene
 databases. Attribution, source references, and data-license notes are recorded
 in THIRD_PARTY_NOTICES.md and in the metadata embedded in each SOFA file.
+
+Acoustic Materials DB includes records attributed to PTB, ODEON and identified
+manufacturers, Pyroomacoustics, JCW Acoustic Supplies, and SoundSpaces. The
+project adds VLM-assisted semantic mappings and a normalized runtime schema.
+The database has mixed upstream terms; see its packaged DATA_LICENSE.md.

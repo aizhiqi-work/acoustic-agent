@@ -23,7 +23,7 @@
       "kind": "material_database",
       "size_bytes": 1912832,
       "sha256": "5f905021fad8f9352b6a761bb3ac2e80651957d0a66ae67c5ecce5e0f53bd555",
-      "license": "Project-compiled resource; see THIRD_PARTY_NOTICES.md"
+      "license": "NOASSERTION (mixed upstream terms); see acoustic_materials/DATA_LICENSE.md and sources.json"
     },
     {
       "id": "resplan_v1",

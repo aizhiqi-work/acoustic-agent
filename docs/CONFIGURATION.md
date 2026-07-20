@@ -91,7 +91,7 @@ class:
 - `absorptive`
 - `highly_absorptive`
 
-The sampler first chooses a semantic-compatible material family, then a measured
+The sampler first chooses a semantic-compatible material family, then a published
 six-band record. Selection and fallback details are available in
 `room.metadata["material_selection"]`.
 

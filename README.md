@@ -39,7 +39,9 @@ are included in source and Python distributions.
 The SQLite databases use Git LFS; the SOFA files are versioned directly. Their
 sizes, SHA-256 values, roles, and license notes are recorded in
 `acoustic_agent/resources/manifest.json`. See
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) before redistribution.
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) before redistribution. The
+material database design, VLM-assisted mapping pipeline, and source breakdown
+are documented in [`docs/MATERIAL_DATABASE.md`](docs/MATERIAL_DATABASE.md).
 
 ## Requirements
 
@@ -212,7 +214,7 @@ agent = AcousticAgent.from_resplan(
 ```
 
 Material classes are `reflective`, `semi_reflective`, `absorptive`, and
-`highly_absorptive`. `auto` samples a compatible family and measured six-band
+`highly_absorptive`. `auto` samples a compatible family and published six-band
 record. `material_seed` makes the full selection reproducible. Door and window
 segments receive their own sampled materials instead of inheriting the wall.
 
@@ -355,7 +357,9 @@ tests/                       Solver, API, parity, resource, and Web tests
 ## License And Data Terms
 
 Acoustic Agent source code and project-authored documentation are licensed
-under Apache-2.0. Bundled datasets retain separate terms. Read
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), including the required
-provenance review for the material and ResPlan source collections, before a
-public release or redistribution.
+under Apache-2.0. Bundled datasets retain separate terms. Acoustic Materials DB
+contains a project-authored VLM Semantic-to-Material Mapping layer over five
+upstream source groups; the complete database is mixed-license (`NOASSERTION`),
+not wholly Apache-2.0. Read [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)
+and the packaged material `DATA_LICENSE.md` before a public release or
+redistribution.

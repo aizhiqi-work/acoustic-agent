@@ -47,7 +47,7 @@ or processing a file.
 
 The runtime SQLite database has schema version 3 and contains:
 
-- 3,741 measured material records.
+- 3,741 material and acoustic-property records from five source groups.
 - 16 material families.
 - 20 semantic object categories.
 - 64 semantic-material mappings.
@@ -64,6 +64,12 @@ python scripts/build_acoustic_material_resource.py \
 
 After rebuilding, update the manifest size and SHA-256, run all tests, and
 review source attribution and redistribution rights.
+
+The material coefficients have mixed upstream terms. The VLM-assisted mappings,
+taxonomy, QA metadata, and runtime selector are project contributions; the VLM
+does not generate coefficient values. See [`MATERIAL_DATABASE.md`](MATERIAL_DATABASE.md),
+the packaged `acoustic_materials/sources.json`, and
+`acoustic_materials/DATA_LICENSE.md` for the complete lineage and release gate.
 
 ## ResPlan V1
 
@@ -99,9 +105,9 @@ When adding or replacing a resource:
 
 ## Public Release Gate
 
-The CIPIC and SADIE SOFA files carry license metadata. The source collections
-behind Acoustic Materials V3 and ResPlan V1 currently have no standalone
-license documents in this repository. Their provenance and redistribution
-rights must be confirmed by the repository owner before public publication.
-This review is a licensing requirement, not a reason to silently omit the SQL
-files from a release.
+The CIPIC and SADIE SOFA files carry license metadata. Acoustic Materials V3
+now has source-level attribution and mixed-license documentation. Its ODEON /
+manufacturer and Acoustic Supplies subsets still require written redistribution
+permission or exclusion from a reviewed public build. ResPlan V1 still requires
+a separate provenance and redistribution review. These are release requirements,
+not reasons to silently omit runtime resources from an advertised complete build.
