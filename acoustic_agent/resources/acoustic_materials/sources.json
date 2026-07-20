@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "database_version": "3.0.0",
+  "database_name": "Acoustic Materials DB",
+  "record_count": 3741,
+  "license_expression": "NOASSERTION",
+  "license_note": "Mixed upstream terms; see DATA_LICENSE.md. Apache-2.0 does not apply to all material records.",
+  "retrieved_or_reviewed": "2026-07-21",
+  "project_transformations": [
+    "VLM-assisted semantic-to-material mapping",
+    "normalization into 20 simulator-facing semantic classes and 16 material families",
+    "six-band coefficient normalization at 125, 250, 500, 1000, 2000, and 4000 Hz",
+    "four-level absorption classification based on the 500, 1000, and 2000 Hz mean",
+    "source identifiers, confidence values, and quality flags",
+    "deterministic semantic material sampling"
+  ],
+  "sources": [
+    {
+      "id": "ptb",
+      "name": "PTB Absorption Coefficient Database",
+      "record_count": 2573,
+      "publisher": "Physikalisch-Technische Bundesanstalt (PTB)",
+      "url": "https://www.ptb.de/cms/en/ptb/fachabteilungen/abt1/fb-16/ag-163/absorption-coefficient-database.html",
+      "license": "LicenseRef-PTB-Web-Permission",
+      "redistribution_status": "website_permission",
+      "note": "The official page states that the Excel database can be downloaded and used as desired. No standard SPDX data license is identified. Preserve PTB attribution and verify the current page before redistribution."
+    },
+    {
+      "id": "odeon",
+      "name": "ODEON material exchange sheets and linked manufacturer data",
+      "record_count": 981,
+      "publisher": "ODEON A/S and the identified material manufacturers",
+      "url": "https://odeon.dk/downloads/materials/",
+      "terms_url": "https://odeon.dk/disclaimer/",
+      "license": "NOASSERTION",
+      "redistribution_status": "permission_required",
+      "note": "The collection includes manufacturer-specific sheets made available through ODEON. No blanket open-data redistribution license was identified. Rights may belong to ODEON and/or individual manufacturers."
+    },
+    {
+      "id": "pyroom",
+      "name": "Pyroomacoustics materials database",
+      "record_count": 90,
+      "publisher": "LCAV, EPFL and Pyroomacoustics contributors",
+      "url": "https://pyroomacoustics.readthedocs.io/en/pypi-release/pyroomacoustics.materials.database.html",
+      "repository": "https://github.com/LCAV/pyroomacoustics",
+      "license": "MIT",
+      "redistribution_status": "redistributable_with_notice",
+      "citation": "R. Scheibler, E. Bezzam, and I. Dokmanic, Pyroomacoustics: A Python package for audio room simulations and array processing algorithms, ICASSP 2018.",
+      "note": "Retain the upstream MIT notice and the original literature references carried by Pyroomacoustics."
+    },
+    {
+      "id": "acoustic_supplies",
+      "name": "Acoustic Supplies absorption coefficient chart",
+      "record_count": 67,
+      "publisher": "JCW Acoustic Supplies",
+      "url": "https://www.acoustic-supplies.com/absorption-coefficient-chart/",
+      "license": "NOASSERTION",
+      "redistribution_status": "permission_required",
+      "note": "The public chart provides guidance values but does not state an open-data redistribution license. The site displays an all-rights-reserved notice. Obtain permission before public redistribution of this subset."
+    },
+    {
+      "id": "soundspaces",
+      "name": "SoundSpaces acoustic material presets",
+      "record_count": 30,
+      "publisher": "Facebook AI Research / Meta Research",
+      "url": "https://github.com/facebookresearch/sound-spaces/blob/main/scripts/mp3d_acoustic_properties.py",
+      "repository": "https://github.com/facebookresearch/sound-spaces",
+      "license": "CC-BY-4.0",
+      "license_url": "https://github.com/facebookresearch/sound-spaces/blob/main/LICENSE",
+      "redistribution_status": "redistributable_with_attribution_and_change_notice",
+      "citations": [
+        "C. Chen et al., SoundSpaces: Audio-Visual Navigation in 3D Environments, ECCV 2020.",
+        "C. Chen et al., SoundSpaces 2.0: A Simulation Platform for Visual-Acoustic Learning, NeurIPS Datasets and Benchmarks 2022."
+      ],
+      "note": "This project normalized the presets, mapped them to its semantic taxonomy, and added quality metadata. Those changes are not endorsed by the SoundSpaces authors."
+    }
+  ]
+}

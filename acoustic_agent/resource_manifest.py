@@ -120,7 +120,7 @@ def _verify_sqlite(path: Path, required_tables: set[str]) -> str:
             count = int(connection.execute("SELECT COUNT(*) FROM scenes").fetchone()[0])
             return f"{count} compiled scenes"
         count = int(connection.execute("SELECT COUNT(*) FROM materials").fetchone()[0])
-        return f"{count} measured material records"
+        return f"{count} acoustic material records"
 
 
 def _sha256(path: Path) -> str:

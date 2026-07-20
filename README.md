@@ -36,10 +36,22 @@ are included in source and Python distributions.
 | `acoustic_materials_v3.sqlite3` | 3,741 six-band material records | 1.91 MB |
 | `resplan_v1.sqlite3` | 15,376 audited apartment scenes | 63.74 MB |
 
-The SQLite databases use Git LFS; the SOFA files are versioned directly. Their
-sizes, SHA-256 values, roles, and license notes are recorded in
-`acoustic_agent/resources/manifest.json`. See
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) before redistribution.
+The open-source distribution intentionally includes the complete runtime SQLite
+resources. A normal installation can therefore run Geometry and ResPlan
+simulations without downloading a separate material service or converting the
+material data at runtime. The SQLite files use Git LFS; wheels and source
+distributions contain the resolved database files.
+
+> **Code and data use different terms.** Apache-2.0 applies to the engine and
+> project-authored documentation. Inclusion of a database in this repository is
+> not a statement that every upstream record is Apache-2.0 data. Source terms,
+> attribution, and change notices remain attached to the bundled resources.
+
+Sizes, SHA-256 values, roles, and license notes are recorded in
+`acoustic_agent/resources/manifest.json`. Read
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) before redistributing a
+release. The material architecture and source breakdown are documented in
+[`docs/MATERIAL_DATABASE.md`](docs/MATERIAL_DATABASE.md).
 
 ## Requirements
 
@@ -192,6 +204,36 @@ cross-room runs use the same full-apartment model.
 
 ## Semantic Furniture And Materials
 
+Acoustic Materials DB is bundled as
+`acoustic_agent/resources/acoustic_materials/acoustic_materials_v3.sqlite3`.
+It provides 3,741 six-band records from five attributed source groups:
+
+| Source group | Records | Role in the compiled database |
+| --- | ---: | --- |
+| PTB | 2,573 | Absorption-coefficient database |
+| ODEON and identified manufacturers | 981 | Product and material exchange sheets |
+| Pyroomacoustics | 90 | Published room-acoustics material presets |
+| Acoustic Supplies | 67 | Common building-material coefficient chart |
+| SoundSpaces | 30 | Visual-acoustic material presets |
+
+The main project contribution is the VLM-assisted Semantic-to-Material Mapping
+layer. Material names and descriptions are organized into 20 simulator-facing
+semantic classes, 16 material families, and four absorption classes. The VLM
+does not generate or replace acoustic coefficients. At runtime the deterministic
+selection chain is:
+
+```text
+scene semantic
+  -> compatible material family
+  -> absorption class
+  -> attributed material record
+  -> six-band absorption coefficients
+```
+
+Source identifiers are retained in the database, while confidence and quality
+flags describe the normalization and mapping decisions. `material_seed` makes
+the full selection reproducible.
+
 ```python
 agent = AcousticAgent.from_resplan(
     idx=12,
@@ -212,9 +254,18 @@ agent = AcousticAgent.from_resplan(
 ```
 
 Material classes are `reflective`, `semi_reflective`, `absorptive`, and
-`highly_absorptive`. `auto` samples a compatible family and measured six-band
-record. `material_seed` makes the full selection reproducible. Door and window
-segments receive their own sampled materials instead of inheriting the wall.
+`highly_absorptive`. `auto` samples a compatible family and published six-band
+record. Door and window segments receive their own sampled materials instead of
+inheriting the wall.
+
+The SQL database is provided as a reproducibility and simulation resource, not
+as a new blanket license over the upstream records. Acoustic Agent grants only
+the rights it owns in the schema, semantic taxonomy, mappings, QA metadata,
+builder, and sampler. Users and redistributors remain responsible for following
+the source-specific terms recorded in the packaged `DATA_LICENSE.md` and
+`sources.json`. Coefficients are reference values whose validity depends on
+measurement method, mounting, geometry, and frequency; validate them for the
+intended engineering use.
 
 ## Motion
 
@@ -355,7 +406,27 @@ tests/                       Solver, API, parity, resource, and Web tests
 ## License And Data Terms
 
 Acoustic Agent source code and project-authored documentation are licensed
-under Apache-2.0. Bundled datasets retain separate terms. Read
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), including the required
-provenance review for the material and ResPlan source collections, before a
-public release or redistribution.
+under Apache-2.0. The bundled SQL databases remain part of the complete
+open-source engine distribution so simulations are reproducible and work out of
+the box, but bundled data retains separate source-specific terms.
+
+Acoustic Materials DB combines five attributed source groups with the
+project-authored VLM Semantic-to-Material Mapping, taxonomy, normalization, QA,
+and deterministic sampler. Because the upstream terms are not uniform, the
+compiled database is marked `NOASSERTION`; it is not relicensed wholesale under
+Apache-2.0. No warranty is made that a coefficient is suitable for a particular
+room, product, mounting condition, safety decision, or commercial specification.
+
+The repository does not grant rights in upstream data beyond the rights granted
+by each source. Attribution and this notice do not replace an upstream license
+or permission. The authoritative project notices are:
+
+- [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md): source attribution,
+  citations, and change notices;
+- [`DATA_LICENSE.md`](acoustic_agent/resources/acoustic_materials/DATA_LICENSE.md):
+  material database terms and release policy; and
+- [`sources.json`](acoustic_agent/resources/acoustic_materials/sources.json):
+  machine-readable source counts, URLs, and status.
+
+This repository records provenance and intended use transparently; it does not
+provide legal advice or override third-party terms.
