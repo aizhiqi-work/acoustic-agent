@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "resource": "floorplan_v1.sqlite3",
+  "public_feature_name": "Floorplan",
+  "upstream_dataset": "ResPlan",
+  "title": "ResPlan: A Large-Scale Vector-Graph Dataset of 17,000 Residential Floor Plans",
+  "authors": [
+    "Mohamed Abouagour",
+    "Eleftherios Garyfallidis"
+  ],
+  "year": 2025,
+  "paper_url": "https://arxiv.org/abs/2508.14006",
+  "doi": "10.48550/arXiv.2508.14006",
+  "dataset_url": "https://www.kaggle.com/datasets/resplan/resplan",
+  "upstream_license": "CC-BY-NC-SA-4.0",
+  "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+  "source_record_count": 17107,
+  "compiled_record_count": 15376,
+  "changes": [
+    "audited and filtered unsupported or invalid plans",
+    "normalized coordinates to metric scale",
+    "cleaned and deduplicated room geometry",
+    "converted walls, floors, ceilings, doors, and windows to acoustic surfaces",
+    "converted verified open connections to acoustic portals",
+    "retained room connectivity for same-room and cross-room simulation",
+    "stored scene payloads as zlib-compressed JSON in SQLite"
+  ]
+}

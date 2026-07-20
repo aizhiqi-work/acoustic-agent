@@ -11,7 +11,7 @@ distributions, archives, or Git LFS checkouts.
 | `cipic_124` | `resources/hrtf/cipic_124.sofa` | 3,602,890 | `c28ff4a874ac889ec0c5885ca524762a70d56984232ff7aadcd9c15d32e1cfb6` |
 | `sadie_h12` | `resources/hrtf/sadie_h12.sofa` | 8,753,320 | `44306dad84af6976597ec0ed1d7dbbbc13e0696a41515a9a00ce39bfb6202bd0` |
 | `acoustic_materials_v3` | `resources/acoustic_materials/acoustic_materials_v3.sqlite3` | 1,912,832 | `5f905021fad8f9352b6a761bb3ac2e80651957d0a66ae67c5ecce5e0f53bd555` |
-| `resplan_v1` | `resources/resplan/resplan_v1.sqlite3` | 63,741,952 | `c6c472c206835dfca69bd25c932ae7175adabe160e5d0b252296d4da5f104e06` |
+| `floorplan_v1` | `resources/floorplan/floorplan_v1.sqlite3` | 63,741,952 | `c6c472c206835dfca69bd25c932ae7175adabe160e5d0b252296d4da5f104e06` |
 
 The machine-readable copy is `acoustic_agent/resources/manifest.json`.
 
@@ -64,21 +64,28 @@ does not generate coefficient values. See [`MATERIAL_DATABASE.md`](MATERIAL_DATA
 the packaged `acoustic_materials/sources.json`, and
 `acoustic_materials/DATA_LICENSE.md` for the complete lineage and release gate.
 
-## ResPlan V1
+## Floorplan V1
 
 The runtime database has schema version 1 and stores 15,376 audited scenes from
 17,107 source records. Scene payloads use zlib-compressed JSON. The original
 dataset index is retained so Web and Python APIs address the same scene.
 
+The resource is adapted from the ResPlan dataset by Mohamed Abouagour and
+Eleftherios Garyfallidis, "ResPlan: A Large-Scale Vector-Graph Dataset of 17,000
+Residential Floor Plans," arXiv:2508.14006 (2025). See
+https://arxiv.org/abs/2508.14006 and
+https://www.kaggle.com/datasets/resplan/resplan.
+
 Rebuild from a legacy pickle with:
 
 ```bash
-python scripts/build_resplan_resource.py \
-  --source /path/to/ResPlan.pkl \
-  --output acoustic_agent/resources/resplan/resplan_v1.sqlite3
+python scripts/build_floorplan_resource.py \
+  --source /path/to/source.pkl \
+  --output acoustic_agent/resources/floorplan/floorplan_v1.sqlite3
 ```
 
 The raw pickle is not required at runtime. The compiled SQLite database is.
+The adapted resource is CC BY-NC-SA 4.0; see `floorplan/DATA_LICENSE.md`.
 
 ## Git LFS
 
@@ -101,6 +108,7 @@ When adding or replacing a runtime resource:
 The CIPIC and SADIE SOFA files carry license metadata. Acoustic Materials V3
 now has source-level attribution and mixed-license documentation. Its ODEON /
 manufacturer and Acoustic Supplies subsets still require written redistribution
-permission or exclusion from a reviewed public build. ResPlan V1 still requires
-a separate provenance and redistribution review. These are release requirements,
-not reasons to silently omit runtime resources from an advertised complete build.
+permission or exclusion from a reviewed public build. Floorplan V1 carries
+ResPlan attribution and CC BY-NC-SA 4.0 data terms. These are release
+requirements, not reasons to silently omit runtime resources from an advertised
+complete build.

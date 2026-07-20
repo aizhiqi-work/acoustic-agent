@@ -10,7 +10,10 @@ from .geometry import make_room
 from .materials import MaterialLibrary
 from .mic import microphone_array
 from .models import Material, Room, SimConfig
-from .resplan_resource import ResPlanResource
+from .floorplan_resource import FloorplanResource
+
+# Backward compatibility for the v0.1 ResPlan-named API.
+ResPlanResource = FloorplanResource
 
 __all__ = [
     "__version__",
@@ -20,6 +23,7 @@ __all__ = [
     "Material",
     "MaterialLibrary",
     "Room",
+    "FloorplanResource",
     "ResPlanResource",
     "SimConfig",
     "SimulationPair",

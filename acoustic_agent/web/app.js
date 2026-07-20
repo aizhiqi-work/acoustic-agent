@@ -13,7 +13,7 @@ const runSimulationButton = document.getElementById("runSimulation");
 const motionPlayButton = document.getElementById("motionPlay");
 const motionTimelineEl = document.getElementById("motionTimeline");
 const appRoot = document.getElementById("app");
-const resplanMode = appRoot?.dataset.sceneSource === "resplan";
+const floorplanMode = appRoot?.dataset.sceneSource === "floorplan";
 
 const presets = [
   { id: "rectangle", title: "Rectangle" },
@@ -53,7 +53,7 @@ const boundaryMaterialControls = [
   ["door", "door", "doorAbsorption"],
   ["window", "window_glass", "windowAbsorption"],
 ];
-const activeBoundaryMaterialControls = resplanMode
+const activeBoundaryMaterialControls = floorplanMode
   ? boundaryMaterialControls
   : boundaryMaterialControls.slice(0, 3);
 const objectTypeOptions = [
@@ -148,7 +148,7 @@ const defaultState = {
   config: { fs: 16000, duration_s: 2.0, quality: "simulation", rt_num_rays: 32768, rt_num_bounces: 64, rt_duration_s: 2.0, diffraction_order: 3, max_diffraction_paths: 8 },
   mic: { type: "mono", count: 4, spacing_m: 0.08, radius_m: 0.12, orientation_deg: 0 },
   sourceDirectivity: { type: "omni", orientation_deg: 0, elevation_deg: 0, dipole_weight: 0.0, dipole_power: 1.0 },
-  resplan: { index: 0, count: 0, roomId: null, roomType: null, receiverRoomId: null, receiverRoomType: null, corners: null, roomOptions: [], plan: null, dataset: null, selectedRoom: null, receiverRoom: null, roomMetadata: null }
+  floorplan: { index: 0, count: 0, roomId: null, roomType: null, receiverRoomId: null, receiverRoomType: null, corners: null, roomOptions: [], plan: null, dataset: null, selectedRoom: null, receiverRoom: null, roomMetadata: null }
 };
 
 let state = structuredClone(defaultState);
@@ -203,9 +203,9 @@ async function bootstrap() {
   setupSectionNavigation();
   setupResultNavigation();
   await loadMaterialCatalog();
-  if (resplanMode) {
+  if (floorplanMode) {
     try {
-      await loadResplanScene(0, null, "auto", { simulate: false });
+      await loadFloorplanScene(0, null, "auto", { simulate: false });
     } catch (error) {
       setStatus(String(error?.message || error), true);
     }
@@ -392,7 +392,7 @@ function setTopView() {
 }
 
 function setupControls() {
-  if (resplanMode) return;
+  if (floorplanMode) return;
   fillSelect("shape", presets.map((preset) => [preset.id, preset.title]));
 }
 
@@ -444,24 +444,24 @@ function applyMaterialAvailability() {
   });
 }
 
-async function loadResplanScene(index, roomId = null, receiverRoomId = "auto", options = {}) {
-  if (!resplanMode) return;
+async function loadFloorplanScene(index, roomId = null, receiverRoomId = "auto", options = {}) {
+  if (!floorplanMode) return;
   clearTimeout(simulateTimer);
   simulationRequestSeq += 1;
-  setStatus("Loading ResPlan room...");
+  setStatus("Loading Floorplan room...");
   const boundedIndex = Math.max(0, Math.round(Number(index) || 0));
   const query = new URLSearchParams({ idx: String(boundedIndex), height: String(state.size[2] || 2.8) });
   if (roomId) query.set("room", roomId);
   if (receiverRoomId) query.set("receiver_room", receiverRoomId);
-  const response = await fetch(`/api/v1/resplan/scene?${query.toString()}`, { cache: "no-store" });
+  const response = await fetch(`/api/v1/floorplan/scene?${query.toString()}`, { cache: "no-store" });
   const scene = await response.json();
-  if (!response.ok) throw new Error(scene.error || `Unable to load ResPlan index ${boundedIndex}`);
-  state.shape = "resplan";
+  if (!response.ok) throw new Error(scene.error || `Unable to load Floorplan index ${boundedIndex}`);
+  state.shape = "floorplan";
   state.size = scene.room.size.map(Number);
   state.source = scene.source.map(Number);
   state.receiver = scene.receiver.map(Number);
   state.objects = [];
-  state.resplan = {
+  state.floorplan = {
     index: Number(scene.dataset.index),
     count: Number(scene.dataset.count),
     roomId: String(scene.selected_room.id),
@@ -483,28 +483,28 @@ async function loadResplanScene(index, roomId = null, receiverRoomId = "auto", o
   if (camera) camera.userData.fitted = false;
   simData = makeClientScene(state);
   updateControls();
-  const roomLabel = state.resplan.roomId === state.resplan.receiverRoomId
-    ? state.resplan.roomType
-    : `${state.resplan.roomType} → ${state.resplan.receiverRoomType}`;
-  setStatus(`${roomLabel} · idx ${state.resplan.index}`);
+  const roomLabel = state.floorplan.roomId === state.floorplan.receiverRoomId
+    ? state.floorplan.roomType
+    : `${state.floorplan.roomType} → ${state.floorplan.receiverRoomType}`;
+  setStatus(`${roomLabel} · idx ${state.floorplan.index}`);
   if (options.simulate === true) requestSimulation();
 }
 
-async function navigateResplan(index, direction = "nearest") {
-  if (!resplanMode) return;
-  setStatus("Finding eligible ResPlan scene...");
+async function navigateFloorplan(index, direction = "nearest") {
+  if (!floorplanMode) return;
+  setStatus("Finding eligible Floorplan scene...");
   const query = new URLSearchParams({ idx: String(Math.round(Number(index) || 0)), direction });
-  const response = await fetch(`/api/v1/resplan/index?${query.toString()}`, { cache: "no-store" });
+  const response = await fetch(`/api/v1/floorplan/index?${query.toString()}`, { cache: "no-store" });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || "Unable to resolve an eligible ResPlan index");
-  await loadResplanScene(Number(result.index), null, "auto");
+  if (!response.ok) throw new Error(result.error || "Unable to resolve an eligible Floorplan index");
+  await loadFloorplanScene(Number(result.index), null, "auto");
 }
 
-function syncResplanRoomOptions() {
-  const select = document.getElementById("resplanRoom");
-  const receiverSelect = document.getElementById("resplanReceiverRoom");
+function syncFloorplanRoomOptions() {
+  const select = document.getElementById("floorplanRoom");
+  const receiverSelect = document.getElementById("floorplanReceiverRoom");
   if (!select || !receiverSelect) return;
-  const options = state.resplan.roomOptions || [];
+  const options = state.floorplan.roomOptions || [];
   const signature = options.map((room) => `${room.id}:${room.type}:${Number(room.area_m2).toFixed(3)}`).join("|");
   if (select.dataset.signature !== signature) {
     const makeOption = (room) => {
@@ -518,23 +518,23 @@ function syncResplanRoomOptions() {
     select.dataset.signature = signature;
     receiverSelect.dataset.signature = signature;
   }
-  select.value = state.resplan.roomId || "";
-  receiverSelect.value = state.resplan.receiverRoomId || "";
-  drawResplanOverview();
-  updateResplanMeta();
+  select.value = state.floorplan.roomId || "";
+  receiverSelect.value = state.floorplan.receiverRoomId || "";
+  drawFloorplanOverview();
+  updateFloorplanMeta();
 }
 
-function updateResplanMeta() {
-  const container = document.getElementById("resplanMeta");
+function updateFloorplanMeta() {
+  const container = document.getElementById("floorplanMeta");
   if (!container) return;
-  const dataset = state.resplan.dataset || {};
-  const room = state.resplan.selectedRoom || {};
-  const receiverRoom = state.resplan.receiverRoom || {};
-  const features = state.resplan.roomMetadata?.boundary_features || [];
-  const connections = state.resplan.roomMetadata?.connections || [];
-  const exteriorExposures = state.resplan.roomMetadata?.exterior_exposures || [];
+  const dataset = state.floorplan.dataset || {};
+  const room = state.floorplan.selectedRoom || {};
+  const receiverRoom = state.floorplan.receiverRoom || {};
+  const features = state.floorplan.roomMetadata?.boundary_features || [];
+  const connections = state.floorplan.roomMetadata?.connections || [];
+  const exteriorExposures = state.floorplan.roomMetadata?.exterior_exposures || [];
   const rows = [
-    ["Dataset", `${Number(state.resplan.index) + 1} / ${Number(state.resplan.count) || 0}`],
+    ["Dataset", `${Number(state.floorplan.index) + 1} / ${Number(state.floorplan.count) || 0}`],
     ["Eligible", `${Number(dataset.eligible_count) || 0}`],
     ["Source room", String(room.type || "-")],
     ["Microphone room", String(receiverRoom.type || "-")],
@@ -544,7 +544,7 @@ function updateResplanMeta() {
     ["Doors", String(features.filter((item) => item.type === "door").length)],
     ["Openings", String(features.filter((item) => item.type === "opening").length)],
     ["Windows", String(features.filter((item) => item.type === "window").length)],
-    ["Route", String(state.resplan.roomMetadata?.multi_room?.route_portal_ids?.length || 0) + " portals"],
+    ["Route", String(state.floorplan.roomMetadata?.multi_room?.route_portal_ids?.length || 0) + " portals"],
     ["Connections", exteriorExposures.length ? `${connections.length} · ${exteriorExposures.length} exterior` : String(connections.length)],
   ];
   container.replaceChildren(...rows.map(([label, value]) => {
@@ -558,9 +558,9 @@ function updateResplanMeta() {
   }));
 }
 
-function drawResplanOverview() {
-  const canvasEl = document.getElementById("resplanPlanCanvas");
-  const plan = state.resplan.plan;
+function drawFloorplanOverview() {
+  const canvasEl = document.getElementById("floorplanPlanCanvas");
+  const plan = state.floorplan.plan;
   if (!canvasEl || !plan) return;
   const ctx = canvasEl.getContext("2d");
   const width = canvasEl.width;
@@ -587,9 +587,9 @@ function drawResplanOverview() {
     ctx.fill();
     ctx.stroke();
   });
-  const semanticFeatures = state.resplan.roomMetadata?.boundary_features || [];
+  const semanticFeatures = state.floorplan.roomMetadata?.boundary_features || [];
   if (semanticFeatures.length) {
-    drawResplanOverviewFeatures(ctx, semanticFeatures, toSimulationCanvas);
+    drawFloorplanOverviewFeatures(ctx, semanticFeatures, toSimulationCanvas);
   } else {
     (plan.apertures || []).forEach((feature) => {
       drawCanvasPolygon(ctx, feature.polygon || [], toCanvas);
@@ -613,7 +613,7 @@ function drawResplanOverview() {
   });
 }
 
-function drawResplanOverviewFeatures(ctx, features, toCanvas) {
+function drawFloorplanOverviewFeatures(ctx, features, toCanvas) {
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   features.forEach((feature) => {
@@ -747,14 +747,14 @@ function readGeometryParams() {
 }
 
 function bindEvents() {
-  const roomIds = resplanMode
+  const roomIds = floorplanMode
     ? ["height", "materialSeed", ...activeBoundaryMaterialControls.map(([, , id]) => id)]
     : ["shape", "sizeX", "sizeY", "height", "materialSeed", ...activeBoundaryMaterialControls.map(([, , id]) => id)];
   const ids = [...roomIds, "qualitySelect", "rirDuration", "sourceX", "sourceY", "sourceZ", "receiverX", "receiverY", "receiverZ", "motionMode", "motionMoving", "motionDistance", "motionFrameSpacing", "micOrientation", "micCount", "micSpacing", "sourceOrientation", "sourceElevation", "sourcePower", "fs"];
   ids.forEach((id) => document.getElementById(id)?.addEventListener("input", () => {
-    if (resplanMode && id === "height") {
+    if (floorplanMode && id === "height") {
       state.size[2] = clamp(number("height"), 2.0, 6.0);
-      void loadResplanScene(state.resplan.index, state.resplan.roomId, state.resplan.receiverRoomId);
+      void loadFloorplanScene(state.floorplan.index, state.floorplan.roomId, state.floorplan.receiverRoomId);
       return;
     }
     const oldShape = state.shape;
@@ -798,35 +798,35 @@ function bindEvents() {
   document.getElementById("randomPositions").addEventListener("click", randomizePositions);
   document.getElementById("resampleMotionPath")?.addEventListener("click", resampleRandomMotionPath);
   document.getElementById("reset").addEventListener("click", async () => {
-    const resplanSelection = resplanMode ? {
-      index: state.resplan.index,
-      roomId: state.resplan.roomId,
-      receiverRoomId: state.resplan.receiverRoomId,
+    const floorplanSelection = floorplanMode ? {
+      index: state.floorplan.index,
+      roomId: state.floorplan.roomId,
+      receiverRoomId: state.floorplan.receiverRoomId,
     } : null;
     state = structuredClone(defaultState);
     selectedObjectId = null;
     pendingObjectId = null;
     dirtyObjectId = null;
     if (camera) camera.userData.fitted = false;
-    if (resplanSelection) {
-      await loadResplanScene(resplanSelection.index, resplanSelection.roomId, resplanSelection.receiverRoomId, { simulate: false });
+    if (floorplanSelection) {
+      await loadFloorplanScene(floorplanSelection.index, floorplanSelection.roomId, floorplanSelection.receiverRoomId, { simulate: false });
     }
     updateControls();
     markSimulationPending();
   });
-  if (resplanMode) {
-    document.getElementById("resplanIdx")?.addEventListener("change", () => navigateResplan(controlNumber("resplanIdx", 0), "nearest"));
-    document.getElementById("resplanPrev")?.addEventListener("click", () => navigateResplan(state.resplan.index, "previous"));
-    document.getElementById("resplanNext")?.addEventListener("click", () => navigateResplan(state.resplan.index, "next"));
-    document.getElementById("resplanRandom")?.addEventListener("click", () => navigateResplan(state.resplan.index, "random"));
-    document.getElementById("resplanRoom")?.addEventListener("change", (event) => loadResplanScene(
-      state.resplan.index,
+  if (floorplanMode) {
+    document.getElementById("floorplanIdx")?.addEventListener("change", () => navigateFloorplan(controlNumber("floorplanIdx", 0), "nearest"));
+    document.getElementById("floorplanPrev")?.addEventListener("click", () => navigateFloorplan(state.floorplan.index, "previous"));
+    document.getElementById("floorplanNext")?.addEventListener("click", () => navigateFloorplan(state.floorplan.index, "next"));
+    document.getElementById("floorplanRandom")?.addEventListener("click", () => navigateFloorplan(state.floorplan.index, "random"));
+    document.getElementById("floorplanRoom")?.addEventListener("change", (event) => loadFloorplanScene(
+      state.floorplan.index,
       event.target.value,
-      state.resplan.receiverRoomId === event.target.value ? "auto" : state.resplan.receiverRoomId,
+      state.floorplan.receiverRoomId === event.target.value ? "auto" : state.floorplan.receiverRoomId,
     ));
-    document.getElementById("resplanReceiverRoom")?.addEventListener("change", (event) => loadResplanScene(
-      state.resplan.index,
-      state.resplan.roomId,
+    document.getElementById("floorplanReceiverRoom")?.addEventListener("change", (event) => loadFloorplanScene(
+      state.floorplan.index,
+      state.floorplan.roomId,
       event.target.value,
     ));
   }
@@ -1012,7 +1012,7 @@ function handlePaletteSelection() {
 }
 
 function readControls() {
-  if (resplanMode) {
+  if (floorplanMode) {
     state.size[2] = number("height");
   } else {
     state.shape = value("shape");
@@ -1059,11 +1059,11 @@ function readControls() {
 
 function updateControls() {
   renderGeometryParams();
-  if (resplanMode) {
-    setValue("resplanIdx", state.resplan.index);
-    const indexInput = document.getElementById("resplanIdx");
-    if (indexInput) indexInput.max = Math.max(0, state.resplan.count - 1);
-    syncResplanRoomOptions();
+  if (floorplanMode) {
+    setValue("floorplanIdx", state.floorplan.index);
+    const indexInput = document.getElementById("floorplanIdx");
+    if (indexInput) indexInput.max = Math.max(0, state.floorplan.count - 1);
+    syncFloorplanRoomOptions();
   } else {
     setValue("shape", state.shape);
     setValue("sizeX", state.size[0]);
@@ -1421,7 +1421,7 @@ function apiPayload() {
     size: state.size,
     corners: cornersFor(state.shape, state.size, state.geometry),
     geometry: state.geometry,
-    room_metadata: resplanMode ? state.resplan.roomMetadata : undefined,
+    room_metadata: floorplanMode ? state.floorplan.roomMetadata : undefined,
     materials: undefined,
     material_profile: materialProfile,
     material_seed: state.materialSeed,
@@ -2556,7 +2556,7 @@ function cameraSceneSignature() {
   const bounds = sceneDisplayBounds();
   const roomIds = (simData.room?.metadata?.multi_room?.rooms || []).map((room) => room.id).join(",");
   return [
-    resplanMode ? `idx=${state.resplan.index}` : `shape=${state.shape}`,
+    floorplanMode ? `idx=${state.floorplan.index}` : `shape=${state.shape}`,
     `rooms=${roomIds}`,
     `bounds=${bounds.x0.toFixed(3)},${bounds.y0.toFixed(3)},${bounds.x1.toFixed(3)},${bounds.y1.toFixed(3)}`,
     `h=${Number(simData.room?.height_m || 0).toFixed(3)}`,
@@ -2617,9 +2617,9 @@ function makeClientScene(current) {
       materials: {},
       metadata: {
         shape: current.shape,
-        geometry_model: current.shape === "rectangle" ? "rectangular room" : current.shape === "resplan" ? "resplan room extrusion" : "extruded polygon",
+        geometry_model: current.shape === "rectangle" ? "rectangular room" : current.shape === "floorplan" ? "floorplan room extrusion" : "extruded polygon",
         geometry_params: { ...(current.geometry || {}) },
-        ...(current.shape === "resplan" ? (current.resplan.roomMetadata || {}) : {})
+        ...(current.shape === "floorplan" ? (current.floorplan.roomMetadata || {}) : {})
       }
     },
     sources: [current.source],
@@ -2632,8 +2632,8 @@ function makeClientScene(current) {
 }
 
 function cornersFor(shape, size, params = state.geometry) {
-  if (shape === "resplan" && Array.isArray(state.resplan?.corners) && state.resplan.corners.length >= 3) {
-    return state.resplan.corners.map((point) => point.map(Number));
+  if (shape === "floorplan" && Array.isArray(state.floorplan?.corners) && state.floorplan.corners.length >= 3) {
+    return state.floorplan.corners.map((point) => point.map(Number));
   }
   const [x, y] = size;
   const p = { ...defaultState.geometry, ...(params || {}) };
@@ -3041,7 +3041,7 @@ function updatePanels() {
   const sampledMotion = sampleMotionState();
   const motionLabel = state.motion?.mode === "static"
     ? "Static"
-    : `${resplanMode ? state.motion.mode.replaceAll("_", "-") : state.motion.mode === "random" ? "random travel" : "approach travel"} · ${sampledMotion.keyframes} frames`;
+    : `${floorplanMode ? state.motion.mode.replaceAll("_", "-") : state.motion.mode === "random" ? "random travel" : "approach travel"} · ${sampledMotion.keyframes} frames`;
   document.getElementById("hudMeta").textContent = `${presetTitle(state.shape)} | ${motionLabel} | ${paths.length} paths | ${state.config.fs} Hz`;
   document.getElementById("receiverType").textContent = state.mic.type;
   document.getElementById("sourceDirectivityType").textContent = state.sourceDirectivity.type;
@@ -3054,7 +3054,7 @@ function updatePanels() {
   refreshMicThumbnails();
   refreshSourceDirectivityThumbnails();
   refreshThumbnails();
-  if (resplanMode) syncResplanRoomOptions();
+  if (floorplanMode) syncFloorplanRoomOptions();
   renderMaterialSelections();
   renderObjectMaterialSelection();
   const countLabel = document.getElementById("sceneObjectCount");
@@ -3367,8 +3367,8 @@ function miniMapPathSelection(paths) {
     .filter((path) => path.kind === "portal_path")
     .sort((a, b) => Number(a.delay_s || 0) - Number(b.delay_s || 0))[0] || null;
   const multiRoom = simData.room?.metadata?.multi_room;
-  const sourceRoomId = multiRoom?.source_room_id || state.resplan.roomId;
-  const receiverRoomId = multiRoom?.receiver_room_id || state.resplan.receiverRoomId;
+  const sourceRoomId = multiRoom?.source_room_id || state.floorplan.roomId;
+  const receiverRoomId = multiRoom?.receiver_room_id || state.floorplan.receiverRoomId;
   const crossRoom = Boolean(sourceRoomId && receiverRoomId && sourceRoomId !== receiverRoomId);
   const portalById = new Map((multiRoom?.portals || []).map((portal) => [portal.id, portal]));
   const routeCenters = (multiRoom?.route_portal_ids || [])
@@ -4166,9 +4166,9 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
     rotation_deg: Number(object.rotation ?? object.rotation_deg ?? 0),
   }));
 
-  if (shape === "resplan") {
-    const resplan = payload.room_metadata?.resplan || state.resplan?.dataset || {};
-    const idx = Number(resplan.index ?? state.resplan?.index ?? 0);
+  if (shape === "floorplan") {
+    const floorplan = payload.room_metadata?.floorplan || state.floorplan?.dataset || {};
+    const idx = Number(floorplan.index ?? state.floorplan?.index ?? 0);
     const materialProfile = payload.material_profile || state.materialProfile || {};
     const materialSeed = Number(payload.material_seed ?? state.materialSeed ?? 42);
     const sourcePosition = JSON.stringify((payload.source || state.source || [1.2, 1.1, 1.5]).map(Number));
@@ -4189,7 +4189,7 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
       `rir_length = ${rirLength}  # seconds`,
       `sample_rate = ${sampleRate} # Hz`,
       "",
-      "agent = AcousticAgent.from_resplan(",
+      "agent = AcousticAgent.from_floorplan(",
       "    idx=idx,",
       "    source=source, receiver=mic,",
       "    material_seed=material_seed,",
@@ -4326,8 +4326,8 @@ function applyPresetPoints() {
 
 function clampScenePointsToRoom() {
   const corners = cornersFor(state.shape, state.size, state.geometry);
-  const sourceCorners = resplanRoomCorners(state.resplan.roomId) || corners;
-  const receiverCorners = resplanRoomCorners(state.resplan.receiverRoomId) || corners;
+  const sourceCorners = floorplanRoomCorners(state.floorplan.roomId) || corners;
+  const receiverCorners = floorplanRoomCorners(state.floorplan.receiverRoomId) || corners;
   state.source = safeRoomPoint(state.source, sourceCorners);
   state.receiver = safeRoomPoint(state.receiver, receiverCorners);
   state.source[2] = clamp(state.source[2], 0.05, Math.max(0.05, state.size[2] - 0.05));
@@ -4337,8 +4337,8 @@ function clampScenePointsToRoom() {
 
 function randomizePositions() {
   const corners = cornersFor(state.shape, state.size, state.geometry);
-  const sourceCorners = resplanRoomCorners(state.resplan.roomId) || corners;
-  const receiverCorners = resplanRoomCorners(state.resplan.receiverRoomId) || corners;
+  const sourceCorners = floorplanRoomCorners(state.floorplan.roomId) || corners;
+  const receiverCorners = floorplanRoomCorners(state.floorplan.receiverRoomId) || corners;
   const bounds = getBounds(corners);
   const minDistance = Math.max(0.65, Math.min(bounds.w, bounds.h) * 0.22);
   const source = randomRoomPoint(sourceCorners, state.size[2]);
@@ -4379,14 +4379,14 @@ function sampleMotionState() {
   const movingSource = motion.moving !== "receiver";
   const movingStart = movingSource ? source : receiver;
   const target = movingSource ? receiver : source;
-  const roomId = movingSource ? state.resplan.roomId : state.resplan.receiverRoomId;
-  const corners = resplanRoomCorners(roomId) || cornersFor(state.shape, state.size, state.geometry);
+  const roomId = movingSource ? state.floorplan.roomId : state.floorplan.receiverRoomId;
+  const corners = floorplanRoomCorners(roomId) || cornersFor(state.shape, state.size, state.geometry);
   const dx = target[0] - movingStart[0];
   const dy = target[1] - movingStart[1];
   const separation = Math.max(Math.hypot(dx, dy), 1e-9);
   const portalRoute = acousticMotionRoute(movingSource);
-  const routePortalIds = state.resplan.roomMetadata?.multi_room?.route_portal_ids || [];
-  const followsPortalRoute = resplanMode && routePortalIds.length > 0 && portalRoute.length >= 2;
+  const routePortalIds = state.floorplan.roomMetadata?.multi_room?.route_portal_ids || [];
+  const followsPortalRoute = floorplanMode && routePortalIds.length > 0 && portalRoute.length >= 2;
   let requested = clamp(motion.distance_m, 0.2, 6.0);
   if (motion.mode === "random") {
     const sampledRoute = randomGeometryRoute(
@@ -4661,7 +4661,7 @@ function acousticMotionRoute(movingSource) {
 }
 
 function metadataPortalMotionRoute() {
-  const multiRoom = state.resplan.roomMetadata?.multi_room || {};
+  const multiRoom = state.floorplan.roomMetadata?.multi_room || {};
   const roomIds = Array.isArray(multiRoom.route_room_ids) ? multiRoom.route_room_ids : [];
   const portalIds = Array.isArray(multiRoom.route_portal_ids) ? multiRoom.route_portal_ids : [];
   if (!portalIds.length || roomIds.length !== portalIds.length + 1) return [];
@@ -4759,7 +4759,7 @@ function samplePolyline3D(points, distance, count, eased = true) {
 }
 
 function snapMotionPositionsToRooms(positions) {
-  const multiRoom = state.resplan.roomMetadata?.multi_room || {};
+  const multiRoom = state.floorplan.roomMetadata?.multi_room || {};
   const rooms = multiRoom.rooms || [];
   const portalPoints = (multiRoom.portals || [])
     .filter((portal) => portal.open)
@@ -4781,9 +4781,9 @@ function smootherstep(value) {
   return bounded ** 3 * (bounded * (bounded * 6 - 15) + 10);
 }
 
-function resplanRoomCorners(roomId) {
-  if (!resplanMode || !roomId) return null;
-  const rooms = state.resplan.roomMetadata?.multi_room?.rooms || [];
+function floorplanRoomCorners(roomId) {
+  if (!floorplanMode || !roomId) return null;
+  const rooms = state.floorplan.roomMetadata?.multi_room?.rooms || [];
   const room = rooms.find((item) => item.id === roomId);
   return Array.isArray(room?.corners) && room.corners.length >= 3 ? room.corners : null;
 }
@@ -5267,7 +5267,7 @@ function controlNumber(id, fallback = 0) {
 }
 function roundControl(value) { return Number(value || 0).toFixed(2); }
 function presetTitle(id) {
-  if (id === "resplan") return `ResPlan ${state.resplan.roomType || "room"} #${state.resplan.index}`;
+  if (id === "floorplan") return `Floorplan ${state.floorplan.roomType || "room"} #${state.floorplan.index}`;
   return presets.find((preset) => preset.id === id)?.title || id;
 }
 function formatSeconds(value) {

@@ -11,7 +11,7 @@ Runtime dependencies:
 - NumPy for numeric arrays and signal processing.
 - Numba for JIT-compiled tracing and FDN kernels.
 - h5py for SOFA HRTF files.
-- Shapely and NetworkX for ResPlan geometry, portals, and motion routing.
+- Shapely and NetworkX for Floorplan geometry, portals, and motion routing.
 
 ## Clone With Binary Resources
 
@@ -31,7 +31,7 @@ Check that the large files are present:
 git lfs ls-files
 ```
 
-The LFS list must include the material and ResPlan SQLite databases. The two
+The LFS list must include the material and Floorplan SQLite databases. The two
 SOFA files must exist under `acoustic_agent/resources/hrtf/` as regular files.
 
 ## Editable Development Install

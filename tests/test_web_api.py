@@ -3,7 +3,7 @@ import struct
 
 import numpy as np
 
-from acoustic_agent.resplan_web_server import _resplan_viewer_html
+from acoustic_agent.floorplan_web_server import _floorplan_viewer_html
 from acoustic_agent.web_server import (
     WEB_ROOT,
     _get_stored_result,
@@ -12,13 +12,13 @@ from acoustic_agent.web_server import (
 )
 
 
-def test_geometry_and_resplan_share_the_unified_workbench_shell():
+def test_geometry_and_floorplan_share_the_unified_workbench_shell():
     geometry_html = (WEB_ROOT / "viewer.html").read_text(encoding="utf-8")
-    resplan_html = _resplan_viewer_html()
+    floorplan_html = _floorplan_viewer_html()
 
-    for html in (geometry_html, resplan_html):
+    for html in (geometry_html, floorplan_html):
         assert 'href="/geometry"' in html
-        assert 'href="/resplan"' in html
+        assert 'href="/floorplan"' in html
         assert 'id="materialsSection"' in html
         assert 'id="placementSection"' in html
         assert 'id="objectsSection"' in html
@@ -41,9 +41,11 @@ def test_geometry_and_resplan_share_the_unified_workbench_shell():
         assert html.count('id="sceneSection"') == 1
 
     assert 'data-scene-source="geometry"' in geometry_html
-    assert 'data-scene-source="resplan"' in resplan_html
+    assert 'data-scene-source="floorplan"' in floorplan_html
+    assert "Floorplan scene" in floorplan_html
+    assert "ResPlan scene" not in floorplan_html
     assert 'id="shape"' in geometry_html
-    assert 'id="resplanIdx"' in resplan_html
+    assert 'id="floorplanIdx"' in floorplan_html
     app_js = (WEB_ROOT / "app.js").read_text(encoding="utf-8")
     assert "Broadband EDC RT60" in app_js
     assert "Early / late equivalent RT" not in app_js
@@ -146,7 +148,7 @@ def test_dynamic_workbench_returns_downloadable_rir_for_each_motion_frame():
         assert _get_stored_result(frame["result_id"]) is not None
 
 
-def test_geometry_dynamic_workbench_accepts_more_than_resplan_frame_limit():
+def test_geometry_dynamic_workbench_accepts_more_than_floorplan_frame_limit():
     frames = [
         {
             "phase": index / 17.0,

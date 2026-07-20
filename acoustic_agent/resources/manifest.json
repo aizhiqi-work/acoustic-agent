@@ -26,12 +26,12 @@
       "license": "NOASSERTION (mixed upstream terms); see acoustic_materials/DATA_LICENSE.md and sources.json"
     },
     {
-      "id": "resplan_v1",
-      "path": "resplan/resplan_v1.sqlite3",
+      "id": "floorplan_v1",
+      "path": "floorplan/floorplan_v1.sqlite3",
       "kind": "scene_database",
       "size_bytes": 63741952,
       "sha256": "c6c472c206835dfca69bd25c932ae7175adabe160e5d0b252296d4da5f104e06",
-      "license": "Project-compiled resource; see THIRD_PARTY_NOTICES.md"
+      "license": "CC-BY-NC-SA-4.0; adapted from ResPlan; see floorplan/DATA_LICENSE.md"
     }
   ]
 }

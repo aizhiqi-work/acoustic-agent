@@ -12,7 +12,7 @@ from .materials import MaterialLibrary, material_summary
 from .mic import microphone_array
 from .models import Material, Room, SimConfig
 from .motion import room_for_motion_frame, sample_motion
-from .resplan_resource import DEFAULT_RESPLAN_RESOURCE, ResPlanResource
+from .floorplan_resource import DEFAULT_FLOORPLAN_RESOURCE, FloorplanResource
 
 
 QUALITY_PRESETS: dict[str, dict[str, int | float]] = {
@@ -43,7 +43,7 @@ def quality_preset(quality: str) -> dict[str, int | float]:
     return dict(QUALITY_PRESETS[key])
 
 
-def _resplan_position(value: Sequence[float], label: str) -> list[float]:
+def _floorplan_position(value: Sequence[float], label: str) -> list[float]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) != 3:
         raise ValueError(f"{label} must contain [x, y, z]")
     point = [float(item) for item in value]
@@ -94,10 +94,10 @@ class AcousticAgent:
         self.default_receiver: tuple[float, float, float] | None = None
         self.rooms: list[dict[str, Any]] = []
         self.placement: dict[str, Any] | None = None
-        self.resplan: dict[str, Any] | None = None
+        self.floorplan: dict[str, Any] | None = None
 
     @classmethod
-    def from_resplan(
+    def from_floorplan(
         cls,
         idx: int,
         *,
@@ -121,9 +121,9 @@ class AcousticAgent:
         source_directivity: str | None = None,
         room_height_m: float = 2.8,
         position_height_m: float = 1.4,
-        resource: ResPlanResource | str | Path | None = None,
+        resource: FloorplanResource | str | Path | None = None,
     ) -> "AcousticAgent":
-        loader = resource if isinstance(resource, ResPlanResource) else ResPlanResource(resource or DEFAULT_RESPLAN_RESOURCE)
+        loader = resource if isinstance(resource, FloorplanResource) else FloorplanResource(resource or DEFAULT_FLOORPLAN_RESOURCE)
         sampled = loader.sample_placement(
             idx,
             placement=placement,
@@ -133,9 +133,9 @@ class AcousticAgent:
             height_m=position_height_m,
         )
         if source is not None:
-            sampled["source"] = _resplan_position(source, "source")
+            sampled["source"] = _floorplan_position(source, "source")
         if receiver is not None:
-            sampled["receiver"] = _resplan_position(receiver, "receiver")
+            sampled["receiver"] = _floorplan_position(receiver, "receiver")
         scene = loader.scene(
             idx,
             sampled["source_room"],
@@ -172,8 +172,19 @@ class AcousticAgent:
             "source": list(agent.default_source),
             "receiver": list(agent.default_receiver),
         }
-        agent.resplan = dict(scene["dataset"])
+        agent.floorplan = dict(scene["dataset"])
         return agent
+
+    # Compatibility alias for releases before the public scene name became Floorplan.
+    from_resplan = from_floorplan
+
+    @property
+    def resplan(self) -> dict[str, Any] | None:
+        return self.floorplan
+
+    @resplan.setter
+    def resplan(self, value: Mapping[str, Any] | None) -> None:
+        self.floorplan = dict(value) if value is not None else None
 
     def run(
         self,
@@ -187,7 +198,7 @@ class AcousticAgent:
         actual_source = source if source is not None else self.default_source
         actual_receiver = receiver if receiver is not None else self.default_receiver
         if actual_source is None or actual_receiver is None:
-            raise ValueError("source and receiver are required unless the agent was created with from_resplan()")
+            raise ValueError("source and receiver are required unless the agent was created with from_floorplan()")
         model = self.receiver_model
         if receiver_model is not None:
             model = _microphone_model(receiver_model)
@@ -212,7 +223,7 @@ class AcousticAgent:
             result.paths,
             result.rt60,
             result.receiver_model,
-            {**dict(result.metadata), "placement": placement, "resplan": dict(self.resplan or {})},
+            {**dict(result.metadata), "placement": placement, "floorplan": dict(self.floorplan or {})},
             result.ambisonic_rir,
             result.source_model,
         )
@@ -284,7 +295,7 @@ class AcousticAgent:
                     result.paths,
                     result.rt60,
                     result.receiver_model,
-                    {**dict(result.metadata), "placement": placement, "resplan": dict(self.resplan or {})},
+                    {**dict(result.metadata), "placement": placement, "floorplan": dict(self.floorplan or {})},
                     result.ambisonic_rir,
                     result.source_model,
                 )

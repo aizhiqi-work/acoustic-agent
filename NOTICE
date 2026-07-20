@@ -2,7 +2,7 @@ Acoustic Agent
 Copyright 2026 Acoustic Agent Contributors
 
 This product bundles HRTF data from the CIPIC HRTF Database and the SADIE II
-Database. It also bundles project-compiled acoustic-material and ResPlan scene
+Database. It also bundles project-compiled acoustic-material and Floorplan scene
 databases. Attribution, source references, and data-license notes are recorded
 in THIRD_PARTY_NOTICES.md and in the metadata embedded in each SOFA file.
 
@@ -10,3 +10,8 @@ Acoustic Materials DB includes records attributed to PTB, ODEON and identified
 manufacturers, Pyroomacoustics, JCW Acoustic Supplies, and SoundSpaces. The
 project adds VLM-assisted semantic mappings and a normalized runtime schema.
 The database has mixed upstream terms; see its packaged DATA_LICENSE.md.
+
+Floorplan V1 is adapted from the ResPlan dataset by Mohamed Abouagour and
+Eleftherios Garyfallidis (2025), https://doi.org/10.48550/arXiv.2508.14006. The
+adapted resource is distributed under CC BY-NC-SA 4.0; see its packaged
+DATA_LICENSE.md for attribution, change notice, and use conditions.

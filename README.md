@@ -2,11 +2,11 @@
 
 Acoustic Agent is a Python indoor sound-field simulation engine and local
 WebGL workbench for generating room impulse responses (RIRs). It supports
-editable geometric rooms, indexed ResPlan apartments, semantic materials,
+editable geometric rooms, indexed Floorplan apartments, semantic materials,
 directional sources, mono/array/HRTF receivers, and static or moving endpoints.
 
 The repository is self-contained for normal use. Both bundled SOFA HRTF files,
-the acoustic-material SQLite database, and the compiled ResPlan SQLite database
+the acoustic-material SQLite database, and the compiled Floorplan SQLite database
 are included in source and Python distributions.
 
 > **Project status:** research alpha. The solver is designed for reproducible
@@ -15,8 +15,8 @@ are included in source and Python distributions.
 
 ## Highlights
 
-- One Python API for Geometry and ResPlan scenes.
-- Unified WebGL workbench at `/geometry` and `/resplan`.
+- One Python API for Geometry and Floorplan scenes.
+- Unified WebGL workbench at `/geometry` and `/floorplan`.
 - Direct sound with distance attenuation and air absorption.
 - Occlusion, transmission, UTD-style diffraction, and path-traced reflections.
 - Six-band energy tracing and a 16-line Hadamard FDN late-reverb model.
@@ -34,10 +34,10 @@ are included in source and Python distributions.
 | `cipic_124.sofa` | Default CIPIC subject 124 HRTF | 3.60 MB |
 | `sadie_h12.sofa` | SADIE II subject H12 HRTF | 8.75 MB |
 | `acoustic_materials_v3.sqlite3` | 3,741 six-band material records | 1.91 MB |
-| `resplan_v1.sqlite3` | 15,376 audited apartment scenes | 63.74 MB |
+| `floorplan_v1.sqlite3` | 15,376 audited apartment scenes | 63.74 MB |
 
 The open-source distribution intentionally includes the complete runtime SQLite
-resources. A normal installation can therefore run Geometry and ResPlan
+resources. A normal installation can therefore run Geometry and Floorplan
 simulations without downloading a separate material service or converting the
 material data at runtime. The SQLite files use Git LFS; wheels and source
 distributions contain the resolved database files.
@@ -93,6 +93,9 @@ python -m pip install .
 Detailed platform, wheel, offline, and troubleshooting instructions are in
 [`docs/INSTALLATION.md`](docs/INSTALLATION.md).
 
+Floorplan data conversion, geometry semantics, attribution, and license terms
+are documented in [`docs/FLOORPLAN.md`](docs/FLOORPLAN.md).
+
 ## Start The Workbench
 
 ```bash
@@ -102,14 +105,14 @@ acoustic-agent web
 Open:
 
 - Geometry: http://127.0.0.1:8765/geometry
-- ResPlan: http://127.0.0.1:8765/resplan
+- Floorplan: http://127.0.0.1:8765/floorplan
 
 Configuration examples:
 
 ```bash
 acoustic-agent web --host 127.0.0.1 --port 9000
-acoustic-agent web --resplan-resource /path/to/resplan_v1.sqlite3
-acoustic-agent web --resplan-dataset /path/to/ResPlan.pkl
+acoustic-agent web --floorplan-resource /path/to/floorplan_v1.sqlite3
+acoustic-agent web --floorplan-dataset /path/to/ResPlan.pkl
 ```
 
 Startup performs a small Numba warmup. Use `--no-warmup` only when faster server
@@ -161,15 +164,22 @@ paths = result.paths             # direct/diffraction/representative RT paths
 metadata = result.metadata       # solver, materials, decay, cache, diagnostics
 ```
 
-## ResPlan Python API
+## Floorplan Python API
 
 The shortest form reads the bundled database by `idx`, samples rooms and valid
 positions, and builds the complete apartment geometry:
 
+The bundled scenes are derived from **ResPlan**, a 17,000-plan vector-graph
+dataset by Mohamed Abouagour and Eleftherios Garyfallidis. Acoustic Agent uses
+the name **Floorplan** for its converted geometry and simulation interface.
+See the [paper](https://arxiv.org/abs/2508.14006),
+[dataset](https://www.kaggle.com/datasets/resplan/resplan), and
+[`docs/FLOORPLAN.md`](docs/FLOORPLAN.md) for attribution and conversion details.
+
 ```python
 from acoustic_agent import AcousticAgent
 
-agent = AcousticAgent.from_resplan(
+agent = AcousticAgent.from_floorplan(
     idx=0,
     placement="same_room",       # random / same_room / cross_room
     seed=42,
@@ -235,7 +245,7 @@ flags describe the normalization and mapping decisions. `material_seed` makes
 the full selection reproducible.
 
 ```python
-agent = AcousticAgent.from_resplan(
+agent = AcousticAgent.from_floorplan(
     idx=12,
     seed=42,
     material_seed=2026,
@@ -282,7 +292,7 @@ dynamic = agent.run_dynamic(motion)
 rir_frames = dynamic.rirs
 ```
 
-ResPlan trajectories route through verified openings when they cross rooms.
+Floorplan trajectories route through verified openings when they cross rooms.
 Each frame is solved against its updated source/receiver position and contains
 its own RIR and metrics.
 
@@ -360,7 +370,7 @@ The current pipeline combines:
 2. UTD-style diffraction for non-line-of-sight geometry.
 3. Path-traced six-band reflection energy with specular and diffuse scattering.
 4. Per-band decay estimation and a calibrated 16-line Hadamard FDN tail.
-5. Coupled-room energy statistics and deterministic portal paths for ResPlan.
+5. Coupled-room energy statistics and deterministic portal paths for Floorplan.
 6. Receiver rendering to mono, arrays, FOA diagnostics, or binaural HRTF output.
 
 Displayed RT paths are a representative stratified subset of the same traced
@@ -395,10 +405,10 @@ and builds both wheel and source distribution. See
 
 ```text
 acoustic_agent/              Python package and solver
-  resources/                 SOFA, material SQL, ResPlan SQL, manifests
-  web/                       Shared Geometry/ResPlan WebGL frontend
+  resources/                 SOFA, material SQL, Floorplan SQL, manifests
+  web/                       Shared Geometry/Floorplan WebGL frontend
 docs/                        Installation, configuration, resource documentation
-examples/                    Geometry, ResPlan, and motion examples
+examples/                    Geometry, Floorplan, and motion examples
 scripts/                     Web launchers and reproducible resource builders
 tests/                       Solver, API, parity, resource, and Web tests
 ```
@@ -409,6 +419,13 @@ Acoustic Agent source code and project-authored documentation are licensed
 under Apache-2.0. The bundled SQL databases remain part of the complete
 open-source engine distribution so simulations are reproducible and work out of
 the box, but bundled data retains separate source-specific terms.
+
+Floorplan V1 is adapted from the ResPlan dataset and distributed under
+CC BY-NC-SA 4.0. Its use is limited to noncommercial purposes, attribution and
+change notices are required, and adaptations must use the same license. These
+conditions apply to the dataset-derived Floorplan resource, not to the
+Apache-2.0 engine code. See the packaged
+[`floorplan/DATA_LICENSE.md`](acoustic_agent/resources/floorplan/DATA_LICENSE.md).
 
 Acoustic Materials DB combines five attributed source groups with the
 project-authored VLM Semantic-to-Material Mapping, taxonomy, normalization, QA,

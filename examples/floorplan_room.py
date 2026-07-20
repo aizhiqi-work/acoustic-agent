@@ -5,11 +5,11 @@ import numpy as np
 from acoustic_agent import AcousticAgent
 
 
-OUTPUT = Path(__file__).resolve().parent / "output" / "resplan_rir.npy"
+OUTPUT = Path(__file__).resolve().parent / "output" / "floorplan_rir.npy"
 
 
 def main() -> None:
-    agent = AcousticAgent.from_resplan(
+    agent = AcousticAgent.from_floorplan(
         idx=0,
         placement="same_room",
         seed=42,

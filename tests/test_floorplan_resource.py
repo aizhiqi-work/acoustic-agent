@@ -1,10 +1,13 @@
-from acoustic_agent import AcousticAgent, ResPlanResource, SimConfig
+import json
+from importlib.resources import files
+
+from acoustic_agent import AcousticAgent, FloorplanResource, ResPlanResource, SimConfig
 from acoustic_agent.engine import _estimate_material_rt60
 from acoustic_agent.geometry import point_in_polygon
 
 
-def test_resplan_resource_loads_compiled_scene_by_dense_index():
-    resource = ResPlanResource()
+def test_floorplan_resource_loads_compiled_scene_by_dense_index():
+    resource = FloorplanResource()
 
     assert len(resource) == 15376
     assert resource.stats()["storage"] == "sqlite_zlib_json"
@@ -15,12 +18,42 @@ def test_resplan_resource_loads_compiled_scene_by_dense_index():
     assert scene["dataset"]["index"] == 0
     assert scene["dataset"]["source_index"] == 0
     assert scene["dataset"]["resource_schema"] == 1
-    assert scene["room"]["metadata"]["geometry_model"] == "resplan_multi_room_extrusion"
+    assert scene["room"]["metadata"]["geometry_model"] == "floorplan_multi_room_extrusion"
     assert len(scene["rooms"]) >= 1
 
 
-def test_resplan_resource_samples_reproducible_room_placements():
-    resource = ResPlanResource()
+def test_floorplan_resource_carries_resplan_citation_and_data_terms():
+    resource_dir = files("acoustic_agent").joinpath("resources", "floorplan")
+    source = json.loads(resource_dir.joinpath("source.json").read_text(encoding="utf-8"))
+    terms = resource_dir.joinpath("DATA_LICENSE.md").read_text(encoding="utf-8")
+
+    assert source["upstream_dataset"] == "ResPlan"
+    assert source["authors"] == ["Mohamed Abouagour", "Eleftherios Garyfallidis"]
+    assert source["doi"] == "10.48550/arXiv.2508.14006"
+    assert source["upstream_license"] == "CC-BY-NC-SA-4.0"
+    assert source["compiled_record_count"] == len(FloorplanResource())
+    assert "CC BY-NC-SA 4.0" in terms
+
+
+def test_pre_floorplan_python_names_remain_compatible():
+    assert ResPlanResource is FloorplanResource
+    agent = AcousticAgent.from_resplan(
+        0,
+        seed=123,
+        config=SimConfig(
+            fs=8000,
+            duration_s=0.01,
+            reflections_enabled=False,
+            diffraction_enabled=False,
+        ),
+    )
+
+    assert agent.resplan == agent.floorplan
+    assert agent.run().rir.shape == (1, 80)
+
+
+def test_floorplan_resource_samples_reproducible_room_placements():
+    resource = FloorplanResource()
 
     first = resource.sample_placement(0, placement="random", seed=42)
     second = resource.sample_placement(0, placement="random", seed=42)
@@ -38,8 +71,8 @@ def test_resplan_resource_samples_reproducible_room_placements():
         assert point_in_polygon(placement["receiver"][:2], room_by_id[placement["receiver_room"]]["corners"])
 
 
-def test_acoustic_agent_from_resplan_runs_without_manual_positions():
-    agent = AcousticAgent.from_resplan(
+def test_acoustic_agent_from_floorplan_runs_without_manual_positions():
+    agent = AcousticAgent.from_floorplan(
         0,
         seed=123,
         config=SimConfig(
@@ -55,11 +88,11 @@ def test_acoustic_agent_from_resplan_runs_without_manual_positions():
     assert result.rir.shape == (1, 320)
     assert len(agent.rooms) >= 1
     assert result.metadata["placement"]["source_room"] == agent.placement["source_room"]
-    assert result.metadata["resplan"]["index"] == 0
+    assert result.metadata["floorplan"]["index"] == 0
 
 
-def test_resplan_material_rt60_uses_source_room_surfaces_and_open_portals():
-    agent = AcousticAgent.from_resplan(
+def test_floorplan_material_rt60_uses_source_room_surfaces_and_open_portals():
+    agent = AcousticAgent.from_floorplan(
         0,
         placement="same_room",
         seed=42,
