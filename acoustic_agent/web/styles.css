@@ -1009,33 +1009,8 @@ a:focus-visible {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.customSourceTabs {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 3px;
-  padding: 3px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--panel-3);
-}
-
-.customSourceTabs button {
-  min-height: 30px;
-  color: var(--muted);
-  border-color: transparent;
-  background: transparent;
-}
-
-.customSourceTabs button.active {
-  color: #ffffff;
-  border-color: var(--accent);
-  background: var(--accent);
-}
-
-.customSourcePane,
-.customSourcePane label,
 .customUploadField,
-.customGenerateRow label,
+.customJsonPaste,
 .customImageCommands label {
   display: grid;
   gap: 5px;
@@ -1044,11 +1019,6 @@ a:focus-visible {
   font-weight: 620;
 }
 
-.customSourcePane[hidden] {
-  display: none;
-}
-
-#customDescription,
 #customSpecJson {
   width: 100%;
   min-width: 0;
@@ -1068,21 +1038,6 @@ a:focus-visible {
 
 .customDimensions {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.customGenerateRow {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(84px, auto) 34px;
-  align-items: end;
-  gap: 6px;
-}
-
-.customGenerateRow .iconButton {
-  width: 34px;
-  min-width: 34px;
-  min-height: 32px;
-  padding: 0;
-  font-size: 17px;
 }
 
 .customImageCommands {
@@ -1113,21 +1068,8 @@ a:focus-visible {
   border-left-color: #c4513d;
 }
 
-.customSpecEditor {
-  border-top: 1px solid var(--line);
-  padding-top: 8px;
-}
-
-.customSpecEditor summary {
-  cursor: pointer;
-  color: var(--soft);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.customSpecEditor[open] {
-  display: grid;
-  gap: 8px;
+.editorCommandRow.customApplyRow {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .materialSampler {

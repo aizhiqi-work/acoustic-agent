@@ -151,7 +151,7 @@ const defaultState = {
   mic: { type: "mono", count: 4, spacing_m: 0.08, radius_m: 0.12, orientation_deg: 0 },
   sourceDirectivity: { type: "omni", orientation_deg: 0, elevation_deg: 0, dipole_weight: 0.0, dipole_power: 1.0 },
   floorplan: { index: 0, count: 0, roomId: null, roomType: null, receiverRoomId: null, receiverRoomType: null, corners: null, roomOptions: [], plan: null, dataset: null, selectedRoom: null, receiverRoom: null, roomMetadata: null },
-  custom: { spec: null, validation: null, sourceMode: "text", imageOpacity: 0.5 }
+  custom: { spec: null, validation: null, imageOpacity: 1.0 }
 };
 
 let state = structuredClone(defaultState);
@@ -175,6 +175,7 @@ let materialSemanticCatalog = {};
 let randomMotionRouteCache = { signature: "", value: null };
 let customImageElement = null;
 let customImageUrl = null;
+let customEditTimer = null;
 const layerState = { direct: true, portal: true, diffraction: true, rt: true };
 
 let renderer;
@@ -501,7 +502,9 @@ function applyMultiRoomScene(scene, customPayload = null) {
     state.custom.spec = customPayload.spec || state.custom.spec;
     state.custom.validation = customPayload.validation || state.custom.validation;
     const editor = document.getElementById("customSpecJson");
-    if (editor && state.custom.spec) editor.value = JSON.stringify(state.custom.spec, null, 2);
+    if (editor && state.custom.spec && customPayload.populateEditor !== false) {
+      editor.value = JSON.stringify(state.custom.spec, null, 2);
+    }
     updateCustomValidation();
   }
   selectedObjectId = null;
@@ -551,8 +554,7 @@ async function generateCustomScene(options = {}) {
   simulationRequestSeq += 1;
   const seedInput = document.getElementById("customSeed");
   const seed = Math.max(0, Math.round(Number(seedInput?.value || 42) + Number(options.seedOffset || 0)));
-  const description = document.getElementById("customDescription")?.value || "";
-  const descriptionHasSize = /\d+(?:\.\d+)?\s*(?:m|米)?\s*(?:x|×|by)\s*\d+(?:\.\d+)?/i.test(description);
+  const description = "";
   if (seedInput) seedInput.value = String(seed);
   setStatus("Generating custom floor plan...");
   const response = await fetch("/api/v1/custom/generate", {
@@ -560,15 +562,15 @@ async function generateCustomScene(options = {}) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       description,
-      width_m: descriptionHasSize ? null : controlNumber("customWidth", 10),
-      depth_m: descriptionHasSize ? null : controlNumber("customDepth", 8),
+      width_m: controlNumber("customWidth", 10),
+      depth_m: controlNumber("customDepth", 8),
       height_m: controlNumber("height", 2.8),
       seed,
     }),
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "Unable to generate custom floor plan");
-  applyMultiRoomScene(result.scene, result);
+  applyMultiRoomScene(result.scene, { ...result, populateEditor: options.populateEditor === true });
   setStatus(`Custom floor plan generated · seed ${seed}`);
 }
 
@@ -577,15 +579,17 @@ async function compileCustomScene(spec = state.custom.spec, roomSelection = {}) 
   clearTimeout(simulateTimer);
   simulationRequestSeq += 1;
   setStatus("Validating custom floor plan...");
+  const requestedSpec = structuredClone(spec);
+  requestedSpec.height_m = controlNumber("height", Number(spec.height_m || 2.8));
   const response = await fetch("/api/v1/custom/compile", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      spec,
+      spec: requestedSpec,
       source_room: roomSelection.sourceRoom || state.floorplan.roomId,
       receiver_room: roomSelection.receiverRoom || state.floorplan.receiverRoomId,
-      height_m: controlNumber("height", Number(spec.height_m || 2.8)),
-      seed: controlNumber("customSeed", 42),
+      height_m: requestedSpec.height_m,
+      seed: 42,
     }),
   });
   const result = await response.json();
@@ -606,21 +610,6 @@ function updateCustomValidation() {
   element.textContent = errors.length
     ? errors[0]
     : `${summary.rooms || 0} rooms · ${summary.doors || 0} doors · ${summary.windows || 0} windows${warnings.length ? ` · ${warnings[0]}` : ""}`;
-}
-
-function setCustomSourceMode(mode) {
-  if (!customMode) return;
-  state.custom.sourceMode = mode === "image" ? "image" : "text";
-  const imageMode = state.custom.sourceMode === "image";
-  document.getElementById("customTextPane")?.toggleAttribute("hidden", imageMode);
-  document.getElementById("customImagePane")?.toggleAttribute("hidden", !imageMode);
-  document.getElementById("customTextPane")?.classList.toggle("active", !imageMode);
-  document.getElementById("customImagePane")?.classList.toggle("active", imageMode);
-  document.getElementById("customTextTab")?.classList.toggle("active", !imageMode);
-  document.getElementById("customImageTab")?.classList.toggle("active", imageMode);
-  document.getElementById("customTextTab")?.setAttribute("aria-selected", String(!imageMode));
-  document.getElementById("customImageTab")?.setAttribute("aria-selected", String(imageMode));
-  drawFloorplanOverview();
 }
 
 function handleCustomImageUpload(event) {
@@ -646,15 +635,55 @@ function handleCustomImageUpload(event) {
   image.src = customImageUrl;
 }
 
-function downloadCustomSpec() {
-  if (!state.custom.spec) return;
-  const blob = new Blob([JSON.stringify(state.custom.spec, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "custom-floorplan.json";
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+function customSpecBounds(spec) {
+  const points = Array.isArray(spec?.outer_boundary) ? spec.outer_boundary : [];
+  const xs = points.map((point) => Number(point?.[0])).filter(Number.isFinite);
+  const ys = points.map((point) => Number(point?.[1])).filter(Number.isFinite);
+  if (xs.length < 3 || ys.length < 3) return null;
+  const x0 = Math.min(...xs);
+  const y0 = Math.min(...ys);
+  const x1 = Math.max(...xs);
+  const y1 = Math.max(...ys);
+  if (x1 - x0 <= 1e-6 || y1 - y0 <= 1e-6) return null;
+  return { x0, y0, width: x1 - x0, depth: y1 - y0 };
+}
+
+async function rescaleCustomScene(axis) {
+  const bounds = customSpecBounds(state.custom.spec);
+  if (!bounds) throw new Error("Apply a valid floor plan before calibrating its size");
+  const requested = axis === "depth"
+    ? controlNumber("customDepth", bounds.depth)
+    : controlNumber("customWidth", bounds.width);
+  const base = axis === "depth" ? bounds.depth : bounds.width;
+  const minScale = Math.max(3 / bounds.width, 3 / bounds.depth);
+  const maxScale = Math.min(40 / bounds.width, 40 / bounds.depth);
+  const scale = clamp(requested / base, minScale, maxScale);
+  const next = structuredClone(state.custom.spec);
+  const scalePoint = (point) => [
+    Number((bounds.x0 + (Number(point[0]) - bounds.x0) * scale).toFixed(6)),
+    Number((bounds.y0 + (Number(point[1]) - bounds.y0) * scale).toFixed(6)),
+  ];
+  next.outer_boundary = next.outer_boundary.map(scalePoint);
+  next.rooms = (next.rooms || []).map((room) => ({ ...room, corners: room.corners.map(scalePoint) }));
+  next.openings = (next.openings || []).map((opening) => ({ ...opening, segment: opening.segment.map(scalePoint) }));
+  next.provenance = {
+    ...(next.provenance || {}),
+    scale_calibration: {
+      uniform_scale: Number(scale.toFixed(8)),
+      width_m: Number((bounds.width * scale).toFixed(4)),
+      depth_m: Number((bounds.depth * scale).toFixed(4)),
+    },
+  };
+  await compileCustomScene(next);
+  setStatus("Floor-plan scale calibrated");
+}
+
+function scheduleCustomEdit(action, input) {
+  clearTimeout(customEditTimer);
+  if (input?.value === "") return;
+  customEditTimer = setTimeout(() => {
+    Promise.resolve(action()).catch((error) => setStatus(String(error.message || error), true));
+  }, 300);
 }
 
 async function navigateFloorplan(index, direction = "nearest") {
@@ -920,19 +949,16 @@ function readGeometryParams() {
 }
 
 function bindEvents() {
-  const roomIds = multiRoomMode
+  const roomIds = floorplanMode
     ? ["height", "materialSeed", ...activeBoundaryMaterialControls.map(([, , id]) => id)]
+    : customMode
+      ? ["materialSeed", ...activeBoundaryMaterialControls.map(([, , id]) => id)]
     : ["shape", "sizeX", "sizeY", "height", "materialSeed", ...activeBoundaryMaterialControls.map(([, , id]) => id)];
   const ids = [...roomIds, "qualitySelect", "rirDuration", "sourceX", "sourceY", "sourceZ", "receiverX", "receiverY", "receiverZ", "motionMode", "motionMoving", "motionDistance", "motionFrameSpacing", "micOrientation", "micCount", "micSpacing", "sourceOrientation", "sourceElevation", "sourcePower", "fs"];
   ids.forEach((id) => document.getElementById(id)?.addEventListener("input", () => {
     if (floorplanMode && id === "height") {
       state.size[2] = clamp(number("height"), 2.0, 6.0);
       void loadFloorplanScene(state.floorplan.index, state.floorplan.roomId, state.floorplan.receiverRoomId);
-      return;
-    }
-    if (customMode && id === "height") {
-      state.size[2] = clamp(number("height"), 2.0, 6.0);
-      void compileCustomScene();
       return;
     }
     const oldShape = state.shape;
@@ -990,7 +1016,9 @@ function bindEvents() {
       if (floorplanMode) {
         await loadFloorplanScene(floorplanSelection.index, floorplanSelection.roomId, floorplanSelection.receiverRoomId, { simulate: false });
       } else {
-        await generateCustomScene();
+        const editor = document.getElementById("customSpecJson");
+        if (editor) editor.value = "";
+        await generateCustomScene({ populateEditor: false });
       }
     }
     updateControls();
@@ -1020,18 +1048,22 @@ function bindEvents() {
       sourceRoom: state.floorplan.roomId,
       receiverRoom: event.target.value,
     }));
-    document.getElementById("customGenerate")?.addEventListener("click", () => generateCustomScene().catch((error) => setStatus(String(error.message || error), true)));
-    document.getElementById("customVariant")?.addEventListener("click", () => generateCustomScene({ seedOffset: 1 }).catch((error) => setStatus(String(error.message || error), true)));
-    document.getElementById("customTextTab")?.addEventListener("click", () => setCustomSourceMode("text"));
-    document.getElementById("customImageTab")?.addEventListener("click", () => setCustomSourceMode("image"));
     document.getElementById("customImageOpacity")?.addEventListener("input", (event) => {
-      state.custom.imageOpacity = Number(event.target.value || 0.5);
+      state.custom.imageOpacity = Number(event.target.value || 1);
       const output = document.getElementById("customImageOpacityValue");
       if (output) output.textContent = `${Math.round(state.custom.imageOpacity * 100)}%`;
       drawFloorplanOverview();
     });
     document.getElementById("customImageFile")?.addEventListener("change", handleCustomImageUpload);
     document.getElementById("customVlmPrompt")?.addEventListener("click", () => copyCustomVlmPrompt().catch((error) => setStatus(String(error.message || error), true)));
+    document.getElementById("customWidth")?.addEventListener("input", (event) => scheduleCustomEdit(() => rescaleCustomScene("width"), event.target));
+    document.getElementById("customDepth")?.addEventListener("input", (event) => scheduleCustomEdit(() => rescaleCustomScene("depth"), event.target));
+    document.getElementById("height")?.addEventListener("input", (event) => scheduleCustomEdit(() => {
+      if (!state.custom.spec) return;
+      const next = structuredClone(state.custom.spec);
+      next.height_m = clamp(controlNumber("height", 2.8), 2.0, 6.0);
+      return compileCustomScene(next);
+    }, event.target));
     document.getElementById("customApplyJson")?.addEventListener("click", () => {
       try {
         const spec = JSON.parse(document.getElementById("customSpecJson")?.value || "{}");
@@ -1040,7 +1072,6 @@ function bindEvents() {
         setStatus(`Invalid JSON · ${String(error.message || error)}`, true);
       }
     });
-    document.getElementById("customDownloadJson")?.addEventListener("click", downloadCustomSpec);
   }
   document.getElementById("randomMaterials")?.addEventListener("click", () => {
     state.materialSeed = Math.floor(Math.random() * 2147483647);

@@ -50,10 +50,16 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
     assert "ResPlan scene" not in floorplan_html
     assert 'id="shape"' in geometry_html
     assert 'id="floorplanIdx"' in floorplan_html
-    assert 'id="customDescription"' in custom_html
+    assert 'id="customDescription"' not in custom_html
+    assert 'id="customTextTab"' not in custom_html
+    assert 'id="customImageTab"' not in custom_html
     assert 'id="customImageFile"' in custom_html
     assert 'id="customVlmPrompt"' in custom_html
     assert 'id="customSpecJson"' in custom_html
+    assert 'id="customGenerate"' not in custom_html
+    assert 'id="customVariant"' not in custom_html
+    assert 'id="customDownloadJson"' not in custom_html
+    assert 'id="customImageOpacityValue">100%' in custom_html
     assert 'id="floorplanRoom"' in custom_html
     app_js = (WEB_ROOT / "app.js").read_text(encoding="utf-8")
     assert "Broadband EDC RT60" in app_js

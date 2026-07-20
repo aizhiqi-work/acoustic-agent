@@ -89,6 +89,7 @@ def generate_floorplan_from_text(
         "schema_version": SCHEMA_VERSION,
         "title": _short_title(text),
         "units": "m",
+        "coordinate_system": "image_top_left",
         "height_m": height,
         "wall_depth_m": 0.12,
         "outer_boundary": [[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]],
@@ -280,7 +281,24 @@ def _normalize_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("outer_boundary must contain at least three points")
     min_x = min(point[0] for point in outer)
     min_y = min(point[1] for point in outer)
-    shift = lambda point: [round(float(point[0]) - min_x, 6), round(float(point[1]) - min_y, 6)]
+    max_y = max(point[1] for point in outer)
+    coordinate_system = str(raw.get("coordinate_system", "image_top_left")).strip().lower()
+    coordinate_aliases = {
+        "image_top_left": "image_top_left",
+        "top_left": "image_top_left",
+        "y_down": "image_top_left",
+        "cartesian_bottom_left": "cartesian_bottom_left",
+        "bottom_left": "cartesian_bottom_left",
+        "y_up": "cartesian_bottom_left",
+    }
+    if coordinate_system not in coordinate_aliases:
+        raise ValueError("coordinate_system must be image_top_left or cartesian_bottom_left")
+    flip_vertical = coordinate_aliases[coordinate_system] == "cartesian_bottom_left"
+
+    def shift(point: Sequence[float]) -> list[float]:
+        y = max_y - float(point[1]) if flip_vertical else float(point[1]) - min_y
+        return [round(float(point[0]) - min_x, 6), round(y, 6)]
+
     outer = [shift(point) for point in outer]
 
     raw_rooms = raw.get("rooms")
@@ -340,16 +358,20 @@ def _normalize_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
             "open": bool(item.get("open", kind == "opening" or connection == "interior_room")),
             "confidence": round(min(1.0, max(0.0, float(item.get("confidence", 1.0)))), 4),
         })
+    provenance = deepcopy(dict(raw.get("provenance", {}))) if isinstance(raw.get("provenance"), Mapping) else {}
+    if flip_vertical:
+        provenance["coordinate_transform"] = "cartesian_bottom_left_to_image_top_left"
     return {
         "schema_version": SCHEMA_VERSION,
         "title": str(raw.get("title", "Custom floor plan"))[:120],
         "units": "m",
+        "coordinate_system": "image_top_left",
         "height_m": height,
         "wall_depth_m": round(min(0.5, max(0.03, float(raw.get("wall_depth_m", 0.12)))), 6),
         "outer_boundary": outer,
         "rooms": rooms,
         "openings": openings,
-        "provenance": deepcopy(dict(raw.get("provenance", {}))) if isinstance(raw.get("provenance"), Mapping) else {},
+        "provenance": provenance,
     }
 
 
@@ -798,7 +820,7 @@ def floorplan_vlm_prompt() -> str:
     return """You are converting an attached residential floor-plan image into Acoustic Agent Floorplan JSON.
 
 Return exactly one JSON object and no Markdown. Follow these rules:
-1. Use meters. Set the lower-left of outer_boundary to [0, 0], x to the right, and y upward.
+1. Use meters and preserve the attached image orientation exactly. Set the top-left of outer_boundary to [0, 0], x to the right, and y downward. Do not rotate, mirror, or vertically flip the plan.
 2. If a printed scale or dimensions exist, use them. Otherwise set the outer width to 10 m, preserve the image aspect ratio, and record that assumption in provenance.scale_assumption.
 3. Trace the indoor outer boundary and every indoor room polygon. Room polygons must not overlap, must remain inside outer_boundary, and together must cover the indoor boundary.
 4. Supported room types are living, kitchen, bedroom, bathroom, storage, and balcony. Give every room a unique id such as bedroom_0.
@@ -813,6 +835,7 @@ Required JSON shape:
   \"schema_version\": 1,
   \"title\": \"...\",
   \"units\": \"m\",
+  \"coordinate_system\": \"image_top_left\",
   \"height_m\": 2.8,
   \"wall_depth_m\": 0.12,
   \"outer_boundary\": [[x, y], ...],

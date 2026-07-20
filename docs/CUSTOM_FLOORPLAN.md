@@ -8,7 +8,7 @@ scenes. It is intentionally usable without an OpenAI, GPT, or VLM API key.
 
 | Workflow | API key | Behavior |
 | --- | --- | --- |
-| Text to floor plan | No | Deterministic local partitioning, doors, windows, validation, and RIR solving |
+| Text to floor plan (Python/HTTP) | No | Deterministic local partitioning, doors, windows, validation, and RIR solving |
 | JSON editing | No | Edit, validate, compile, export, and solve a complete floor plan |
 | Image overlay | No | The browser displays the image locally under the vector plan |
 | Codex image handoff | No | Copy the extraction prompt, attach the image to Codex, and paste the returned JSON |
@@ -23,17 +23,19 @@ configured. Uploading an image does not send it to the Acoustic Agent server.
 acoustic-agent web
 ```
 
-Open <http://127.0.0.1:8765/custom>. The default description generates a scene
-immediately but does not run the expensive RIR solver. Select rooms and press
-**Run static simulation** when the scene is ready.
+Open <http://127.0.0.1:8765/custom>. The workbench opens with a lightweight
+template but does not run the expensive RIR solver. Replace it with returned
+JSON, select rooms, and press **Run static simulation** when the scene is ready.
 
 For an image with no API key:
 
-1. Open the Image tab and choose a clear floor-plan image.
+1. Choose a clear floor-plan image.
 2. Click **Copy Codex prompt**.
 3. Attach the same image and the copied prompt in a Codex task.
 4. Paste the returned JSON into **Floorplan JSON**.
-5. Click **Apply JSON**, inspect validation, then run the simulation.
+5. Click **Apply floor plan** and inspect validation.
+6. Calibrate Width or Depth; the other dimension follows with uniform scaling.
+7. Set Height, select rooms, then run the simulation.
 
 The JSON remains the review boundary: a generated or VLM-derived plan must pass
 the same geometry checks before it can reach the solver.
@@ -76,6 +78,7 @@ Coordinates use meters in an XY floor plane. A minimal specification contains:
   "schema_version": 1,
   "title": "Two-room example",
   "units": "m",
+  "coordinate_system": "image_top_left",
   "height_m": 2.8,
   "wall_depth_m": 0.12,
   "outer_boundary": [[0, 0], [6, 0], [6, 4], [0, 4]],
@@ -98,6 +101,9 @@ windows reference one room.
 Validation rejects overlapping or uncovered rooms, out-of-bound polygons,
 misaligned opening segments, unknown room references, and disconnected indoor
 door graphs. This protects both the WebGL model and acoustic portal solver.
+Image-derived JSON uses a top-left origin with X right and Y down, matching the
+uploaded bitmap, minimap, and top view. Explicit legacy
+`cartesian_bottom_left` JSON is vertically normalized during validation.
 
 ## HTTP API
 

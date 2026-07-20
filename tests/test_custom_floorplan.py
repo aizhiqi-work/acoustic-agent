@@ -97,10 +97,32 @@ def test_compile_uses_normalized_metric_coordinates() -> None:
     assert scene["room"]["corners"] == [[0.0, 0.0], [8.0, 0.0], [8.0, 6.0], [0.0, 6.0]]
 
 
+def test_bottom_left_vlm_coordinates_are_normalized_without_a_mirrored_plan() -> None:
+    expected = FloorplanBuilder.from_text("9m x 7m，两室一厅一厨一卫", seed=9)
+    raw = deepcopy(expected)
+    raw["coordinate_system"] = "cartesian_bottom_left"
+    depth = 7.0
+    raw["outer_boundary"] = [[x, depth - y] for x, y in raw["outer_boundary"]]
+    for room in raw["rooms"]:
+        room["corners"] = [[x, depth - y] for x, y in room["corners"]]
+    for opening in raw["openings"]:
+        opening["segment"] = [[x, depth - y] for x, y in opening["segment"]]
+
+    normalized = FloorplanBuilder.validate(raw)["spec"]
+
+    assert normalized["coordinate_system"] == "image_top_left"
+    assert normalized["outer_boundary"] == expected["outer_boundary"]
+    assert normalized["rooms"] == expected["rooms"]
+    assert normalized["openings"] == expected["openings"]
+    assert normalized["provenance"]["coordinate_transform"] == "cartesian_bottom_left_to_image_top_left"
+
+
 def test_codex_handoff_prompt_describes_the_validated_schema() -> None:
     prompt = FloorplanBuilder.vlm_prompt()
 
     assert "Return exactly one JSON object" in prompt
     assert '"schema_version": 1' in prompt
+    assert '"coordinate_system": "image_top_left"' in prompt
+    assert "Do not rotate, mirror, or vertically flip" in prompt
     assert 'connection="interior_room"' in prompt
     assert "check polygon coverage" in prompt

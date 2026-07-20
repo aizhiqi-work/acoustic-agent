@@ -139,9 +139,10 @@ agent = AcousticAgent.from_floorplan_spec(
 rir = agent.run().rir
 ```
 
-图像模式默认只在浏览器本地显示上传图片，不会上传到服务器。没有模型 API 时，点击
-“Copy Codex prompt”，把提示词和图片交给 Codex，再将它输出的 JSON 粘贴回页面并
-点击 “Apply JSON”。完整格式与测试方式见 [`CUSTOM_FLOORPLAN.md`](CUSTOM_FLOORPLAN.md)。
+上传图片只会在浏览器本地显示，不会上传到服务器。点击 “Copy Codex prompt”，把
+提示词和图片交给 Codex，再将它输出的 JSON 粘贴回页面并点击 “Apply floor plan”。
+Width 与 Depth 始终等比例校准，Height 独立设置。完整格式与测试方式见
+[`CUSTOM_FLOORPLAN.md`](CUSTOM_FLOORPLAN.md)。
 
 ## 档位
 
