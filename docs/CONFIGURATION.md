@@ -129,6 +129,18 @@ to 0.25 m; an explicit `keyframes` count overrides spacing-derived sampling.
 In Floorplan, trajectories use room and portal connectivity. Cross-room travel is
 routed through verified openings rather than interpolated through closed walls.
 
+## Custom Floorplans
+
+`FloorplanBuilder.from_text()` is deterministic and local. It supports metric
+dimensions and bedroom, living, kitchen, bathroom, storage, and balcony counts
+in compact Chinese or English descriptions. `FloorplanBuilder.validate()` checks
+coverage, overlap, opening placement, references, and open-door connectivity.
+`AcousticAgent.from_floorplan_spec()` compiles a valid spec into the normal
+multi-room solver model.
+
+The Custom JSON schema and zero-key image workflow are documented in
+[`CUSTOM_FLOORPLAN.md`](CUSTOM_FLOORPLAN.md).
+
 ## Advanced `SimConfig`
 
 Common controls:
@@ -158,6 +170,9 @@ fields. Record the complete resolved config with generated data.
 | --- | --- | --- |
 | `GET` | `/geometry` | Geometry workbench |
 | `GET` | `/floorplan` | Floorplan workbench |
+| `GET` | `/custom` | Local custom-floorplan workbench |
+| `GET` | `/api/v1/custom/capabilities` | Available local/provider features |
+| `GET` | `/api/v1/custom/prompt` | Codex/VLM extraction prompt |
 | `GET` | `/api/v1/floorplan/stats` | Compiled-scene audit stats |
 | `GET` | `/api/v1/floorplan/index` | Resolve eligible scene index |
 | `GET` | `/api/v1/floorplan/scene` | Read an indexed scene |
@@ -167,6 +182,9 @@ fields. Record the complete resolved config with generated data.
 | `POST` | `/api/v1/simulate` | Compact static simulation response |
 | `POST` | `/api/v1/workbench` | Static workbench response |
 | `POST` | `/api/v1/dynamic-workbench` | Multi-frame workbench response |
+| `POST` | `/api/v1/custom/generate` | Generate and compile a local text scene |
+| `POST` | `/api/v1/custom/validate` | Validate an editable Floorplan JSON spec |
+| `POST` | `/api/v1/custom/compile` | Compile a valid spec for the workbench |
 
 Legacy `POST /api/simulate` remains available for compatibility. API responses
 enable CORS for local integration, but the server has no authentication.

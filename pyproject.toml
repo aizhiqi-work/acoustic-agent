@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "acoustic-agent"
 version = "0.1.0"
-description = "Indoor acoustic simulation engine and WebGL workbench for geometry and Floorplan scenes."
+description = "Indoor acoustic simulation engine and WebGL workbench for geometry, Floorplan, and custom scenes."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]

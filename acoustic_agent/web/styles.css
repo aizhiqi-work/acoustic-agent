@@ -205,7 +205,7 @@ pre {
 
 .sceneModeSwitch {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 3px;
   padding: 3px;
   border: 1px solid var(--line);
@@ -230,7 +230,8 @@ pre {
 }
 
 #app[data-scene-source="geometry"] .sceneModeGeometry,
-#app[data-scene-source="floorplan"] .sceneModeFloorplan {
+#app[data-scene-source="floorplan"] .sceneModeFloorplan,
+#app[data-scene-source="custom"] .sceneModeCustom {
   color: #ffffff;
   border-color: var(--accent);
   background: var(--accent);
@@ -1006,6 +1007,69 @@ a:focus-visible {
 
 .floorplanHeightControl {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.customUploadField,
+.customJsonPaste,
+.customImageCommands label {
+  display: grid;
+  gap: 5px;
+  color: var(--soft);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+#customSpecJson {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  font: inherit;
+  line-height: 1.45;
+}
+
+#customSpecJson {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.customDimensions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.customImageCommands {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(110px, auto);
+  align-items: end;
+  gap: 7px;
+}
+
+.customProviderStatus,
+.customValidation {
+  margin: 0;
+  padding: 7px 8px;
+  color: var(--muted);
+  border-left: 3px solid #9aa5aa;
+  background: var(--panel-2);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.customProviderStatus.ready,
+.customValidation:not(.error) {
+  border-left-color: #2f8978;
+}
+
+.customValidation.error {
+  color: #a73e30;
+  border-left-color: #c4513d;
+}
+
+.editorCommandRow.customApplyRow {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .materialSampler {

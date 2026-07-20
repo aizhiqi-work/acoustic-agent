@@ -3,7 +3,8 @@
 Acoustic Agent is a Python indoor sound-field simulation engine and local
 WebGL workbench for generating room impulse responses (RIRs). It supports
 editable geometric rooms, indexed Floorplan apartments, semantic materials,
-directional sources, mono/array/HRTF receivers, and static or moving endpoints.
+locally generated custom floor plans, directional sources, mono/array/HRTF
+receivers, and static or moving endpoints.
 
 The repository is self-contained for normal use. Both bundled SOFA HRTF files,
 the acoustic-material SQLite database, and the compiled Floorplan SQLite database
@@ -15,8 +16,8 @@ are included in source and Python distributions.
 
 ## Highlights
 
-- One Python API for Geometry and Floorplan scenes.
-- Unified WebGL workbench at `/geometry` and `/floorplan`.
+- One Python API for Geometry, indexed Floorplan, and Custom scenes.
+- Unified WebGL workbench at `/geometry`, `/floorplan`, and `/custom`.
 - Direct sound with distance attenuation and air absorption.
 - Occlusion, transmission, UTD-style diffraction, and path-traced reflections.
 - Six-band energy tracing and a 16-line Hadamard FDN late-reverb model.
@@ -106,6 +107,7 @@ Open:
 
 - Geometry: http://127.0.0.1:8765/geometry
 - Floorplan: http://127.0.0.1:8765/floorplan
+- Custom: http://127.0.0.1:8765/custom
 
 Configuration examples:
 
@@ -211,6 +213,40 @@ Verified interior doors are represented as open portals with reflective
 lintels. Wall-free room connections are full-height portals. Unmatched entry
 doors remain closed surfaces, and windows remain glass surfaces. Same-room and
 cross-room runs use the same full-apartment model.
+
+## Custom Floorplan Python API
+
+Custom scenes work without a model API. The local generator accepts compact
+Chinese or English room programs, returns an editable metric JSON spec, and
+compiles it through the same full-apartment solver used by indexed Floorplan
+scenes:
+
+```python
+from acoustic_agent import AcousticAgent, FloorplanBuilder
+
+spec = FloorplanBuilder.from_text(
+    "12m x 9m，三室两厅一厨两卫，一个储物间",
+    seed=42,
+)
+
+agent = AcousticAgent.from_floorplan_spec(
+    spec,
+    source_room="living_0",
+    receiver_room="bedroom_2",
+    seed=42,
+    receiver_model={"type": "mono"},
+    source_model={"type": "omni"},
+    quality="preview",
+    duration_s=2.0,
+    fs=16000,
+)
+rir = agent.run().rir
+```
+
+The `/custom` workbench also accepts an uploaded floor-plan image as a local
+overlay. With no VLM API, use **Copy Codex prompt**, attach the image to Codex,
+then paste the returned JSON into the built-in editor. No image is uploaded by
+the workbench. See [`docs/CUSTOM_FLOORPLAN.md`](docs/CUSTOM_FLOORPLAN.md).
 
 ## Semantic Furniture And Materials
 
@@ -406,9 +442,9 @@ and builds both wheel and source distribution. See
 ```text
 acoustic_agent/              Python package and solver
   resources/                 SOFA, material SQL, Floorplan SQL, manifests
-  web/                       Shared Geometry/Floorplan WebGL frontend
+  web/                       Shared Geometry/Floorplan/Custom WebGL frontend
 docs/                        Installation, configuration, resource documentation
-examples/                    Geometry, Floorplan, and motion examples
+examples/                    Geometry, Floorplan, Custom, and motion examples
 scripts/                     Web launchers and reproducible resource builders
 tests/                       Solver, API, parity, resource, and Web tests
 ```

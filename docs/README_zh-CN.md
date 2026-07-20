@@ -2,7 +2,8 @@
 
 Acoustic Agent 是一个用于室内声场仿真和 RIR 生成的 Python 引擎，同时提供
 Geometry 与 Floorplan 共用的本地 WebGL 工作台。项目支持几何房间、户型图场景、
-语义材料、家具、指向性声源、Mono/阵列/HRTF 接收器，以及静态和动态轨迹。
+本地生成的定制户型、语义材料、家具、指向性声源、Mono/阵列/HRTF 接收器，
+以及静态和动态轨迹。
 
 ## 完整资源
 
@@ -44,6 +45,7 @@ acoustic-agent web
 
 - Geometry：<http://127.0.0.1:8765/geometry>
 - Floorplan：<http://127.0.0.1:8765/floorplan>
+- Custom：<http://127.0.0.1:8765/custom>
 
 修改端口或资源路径：
 
@@ -114,6 +116,34 @@ rir = agent.run().rir
 同房间和跨房间使用同一个完整户型模型。确认的室内门按敞开 portal 处理，墙体连接
 处没有门墙的区域按全高连通区域处理，未匹配的入户门保持关闭，窗户保持玻璃表面。
 
+## 定制户型示例
+
+定制户型不需要 GPT 或 VLM API。内置的本地生成器可以解析简短的中英文房间描述，
+生成可编辑、可校验的米制户型 JSON，再复用 Floorplan 的门洞、材料和 RIR 求解流程。
+
+```python
+from acoustic_agent import AcousticAgent, FloorplanBuilder
+
+spec = FloorplanBuilder.from_text(
+    "12m x 9m，三室两厅一厨两卫，一个储物间",
+    seed=42,
+)
+agent = AcousticAgent.from_floorplan_spec(
+    spec,
+    source_room="living_0",
+    receiver_room="bedroom_2",
+    quality="preview",
+    duration_s=2.0,
+    fs=16000,
+)
+rir = agent.run().rir
+```
+
+上传图片只会在浏览器本地显示，不会上传到服务器。点击 “Copy Codex prompt”，把
+提示词和图片交给 Codex，再将它输出的 JSON 粘贴回页面并点击 “Apply floor plan”。
+Width 与 Depth 始终等比例校准，Height 独立设置。完整格式与测试方式见
+[`CUSTOM_FLOORPLAN.md`](CUSTOM_FLOORPLAN.md)。
+
 ## 档位
 
 | 档位 | Rays | Bounces |
@@ -139,6 +169,7 @@ python -m twine check dist/*
 - [`INSTALLATION.md`](INSTALLATION.md)
 - [`CONFIGURATION.md`](CONFIGURATION.md)
 - [`FLOORPLAN.md`](FLOORPLAN.md)
+- [`CUSTOM_FLOORPLAN.md`](CUSTOM_FLOORPLAN.md)
 - [`RESOURCES.md`](RESOURCES.md)
 
 项目代码和项目原创文档采用 Apache-2.0。SOFA 和数据库资源保留各自授权条件。

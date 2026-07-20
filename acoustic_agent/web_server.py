@@ -65,7 +65,7 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
 
     def end_headers(self) -> None:
         path = urlparse(self.path).path
-        if path in {"/", "/geometry", "/floorplan", "/resplan"} or Path(path).suffix in {".js", ".css", ".html"}:
+        if path in {"/", "/geometry", "/floorplan", "/resplan", "/custom"} or Path(path).suffix in {".js", ".css", ".html"}:
             self.send_header("Cache-Control", "no-cache, max-age=0, must-revalidate")
         super().end_headers()
 
@@ -108,6 +108,24 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=400)
             return
+        if parsed.path == "/api/v1/custom/capabilities":
+            self._send_json({
+                "local_text_generation": True,
+                "image_overlay": True,
+                "json_editing": True,
+                "codex_handoff": True,
+                "vlm": {
+                    "available": False,
+                    "provider": None,
+                    "reason": "No VLM runtime is configured. Upload and edit locally, or add a provider later.",
+                },
+            })
+            return
+        if parsed.path == "/api/v1/custom/prompt":
+            from .custom_floorplan import floorplan_vlm_prompt
+
+            self._send_json({"prompt": floorplan_vlm_prompt(), "schema_version": 1})
+            return
         if parsed.path.startswith("/api/v1/results/"):
             self._send_stored_result(parsed.path)
             return
@@ -141,6 +159,11 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
 
             self._send_html(_floorplan_viewer_html())
             return
+        if parsed.path == "/custom":
+            from .custom_floorplan_web import custom_viewer_html
+
+            self._send_html(custom_viewer_html())
+            return
         return super().do_GET()
 
     def _require_floorplan_dataset(self) -> Any:
@@ -161,11 +184,46 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path not in {"/api/simulate", "/api/v1/simulate", "/api/v1/workbench", "/api/v1/dynamic-workbench", "/api/rir.wav", "/api/rir.npy"}:
+        if parsed.path not in {"/api/simulate", "/api/v1/simulate", "/api/v1/workbench", "/api/v1/dynamic-workbench", "/api/v1/custom/generate", "/api/v1/custom/compile", "/api/v1/custom/validate", "/api/rir.wav", "/api/rir.npy"}:
             self.send_error(404, "unknown API endpoint")
             return
         try:
             payload = self._read_json()
+            if parsed.path.startswith("/api/v1/custom/"):
+                from .custom_floorplan import compile_floorplan_spec, generate_floorplan_from_text, validate_floorplan_spec
+
+                if parsed.path == "/api/v1/custom/generate":
+                    spec = generate_floorplan_from_text(
+                        str(payload.get("description", "")),
+                        seed=int(payload.get("seed", 42)),
+                        width_m=payload.get("width_m"),
+                        depth_m=payload.get("depth_m"),
+                        height_m=payload.get("height_m"),
+                    )
+                    validation = validate_floorplan_spec(spec)
+                    scene = compile_floorplan_spec(
+                        spec,
+                        source_room=payload.get("source_room"),
+                        receiver_room=payload.get("receiver_room"),
+                        seed=int(payload.get("placement_seed", payload.get("seed", 42))),
+                    )
+                    self._send_json({"spec": spec, "validation": validation, "scene": scene})
+                elif parsed.path == "/api/v1/custom/validate":
+                    self._send_json(validate_floorplan_spec(payload.get("spec", {})))
+                else:
+                    spec = payload.get("spec")
+                    if not isinstance(spec, dict):
+                        raise ValueError("spec must be a JSON object")
+                    validation = validate_floorplan_spec(spec)
+                    scene = compile_floorplan_spec(
+                        spec,
+                        source_room=payload.get("source_room"),
+                        receiver_room=payload.get("receiver_room"),
+                        seed=int(payload.get("seed", 42)),
+                        height_m=payload.get("height_m"),
+                    )
+                    self._send_json({"spec": validation.get("spec"), "validation": validation, "scene": scene})
+                return
             with _SIMULATION_LOCK:
                 if parsed.path == "/api/simulate":
                     response = simulate_from_payload(payload)
@@ -730,6 +788,7 @@ def serve(
     server = ThreadingHTTPServer((host, int(port)), AcousticWorkbenchHandler)
     print(f"Acoustic Agent geometry: http://{host}:{port}/geometry")
     print(f"Acoustic Agent Floorplan:  http://{host}:{port}/floorplan")
+    print(f"Acoustic Agent Custom:     http://{host}:{port}/custom")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

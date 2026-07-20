@@ -4,6 +4,7 @@ import struct
 import numpy as np
 
 from acoustic_agent.floorplan_web_server import _floorplan_viewer_html
+from acoustic_agent.custom_floorplan_web import custom_viewer_html
 from acoustic_agent.web_server import (
     WEB_ROOT,
     _get_stored_result,
@@ -15,10 +16,12 @@ from acoustic_agent.web_server import (
 def test_geometry_and_floorplan_share_the_unified_workbench_shell():
     geometry_html = (WEB_ROOT / "viewer.html").read_text(encoding="utf-8")
     floorplan_html = _floorplan_viewer_html()
+    custom_html = custom_viewer_html()
 
-    for html in (geometry_html, floorplan_html):
+    for html in (geometry_html, floorplan_html, custom_html):
         assert 'href="/geometry"' in html
         assert 'href="/floorplan"' in html
+        assert 'href="/custom"' in html
         assert 'id="materialsSection"' in html
         assert 'id="placementSection"' in html
         assert 'id="objectsSection"' in html
@@ -42,10 +45,22 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
 
     assert 'data-scene-source="geometry"' in geometry_html
     assert 'data-scene-source="floorplan"' in floorplan_html
+    assert 'data-scene-source="custom"' in custom_html
     assert "Floorplan scene" in floorplan_html
     assert "ResPlan scene" not in floorplan_html
     assert 'id="shape"' in geometry_html
     assert 'id="floorplanIdx"' in floorplan_html
+    assert 'id="customDescription"' not in custom_html
+    assert 'id="customTextTab"' not in custom_html
+    assert 'id="customImageTab"' not in custom_html
+    assert 'id="customImageFile"' in custom_html
+    assert 'id="customVlmPrompt"' in custom_html
+    assert 'id="customSpecJson"' in custom_html
+    assert 'id="customGenerate"' not in custom_html
+    assert 'id="customVariant"' not in custom_html
+    assert 'id="customDownloadJson"' not in custom_html
+    assert 'id="customImageOpacityValue">100%' in custom_html
+    assert 'id="floorplanRoom"' in custom_html
     app_js = (WEB_ROOT / "app.js").read_text(encoding="utf-8")
     assert "Broadband EDC RT60" in app_js
     assert "Early / late equivalent RT" not in app_js
