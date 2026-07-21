@@ -5,6 +5,8 @@ semantic versioning after the initial `0.x` research releases.
 
 ## Unreleased
 
+## 0.1.1 - 2026-07-22
+
 ### Added
 
 - Unified `AcousticAgent.create()` entry point for Geometry, Floorplan, and
@@ -20,12 +22,32 @@ semantic versioning after the initial `0.x` research releases.
   audio, and a separately positioned background source.
 - Receiver-domain SNR mixing for independently propagated foreground and
   background signals.
+- Accuracy benchmark reports for direct arrival, distance attenuation, RT60,
+  reflections, FDN isolation, portals, HRTF, motion, and Steam Audio parity.
+- Custom floor-plan generation from image-assisted or text-assisted JSON, plus
+  semantic furniture auto-placement.
+- Cached BVH intersection traversal with an exact linear reference mode.
 
 ### Changed
 
 - Web workbench Python examples now use the compact unified API and emit valid
   Python literals for custom scene JSON.
 - The background `Level` control is now a target broadband receiver SNR.
+- Mono API simulations use a headless path that omits visualization-only RT
+  paths and Ambisonic buffers.
+- Geometry, Floorplan, and Custom scenes share one workbench and API style.
+
+### Fixed
+
+- Fractional-delay interpolation now preserves energy continuity between
+  neighboring RIR samples.
+- Dynamic trajectories, portal traversal, late reverberation, and displayed
+  acoustic metrics received regression coverage in the benchmark suite.
+
+### Bundled Data
+
+- Added main narration, background speech, two piano programs, and a
+  pink-noise bed to wheel and source distributions.
 
 ## 0.1.0 - 2026-07-20
 
