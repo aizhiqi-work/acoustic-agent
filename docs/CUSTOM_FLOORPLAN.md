@@ -10,8 +10,8 @@ scenes. It is intentionally usable without an OpenAI, GPT, or VLM API key.
 | --- | --- | --- |
 | Text to floor plan (Python/HTTP) | No | Deterministic local partitioning, doors, windows, validation, and RIR solving |
 | JSON editing | No | Edit, validate, compile, export, and solve a complete floor plan |
-| Image overlay | No | The browser displays the image locally under the vector plan |
-| Codex image handoff | No | Copy the extraction prompt, attach the image to Codex, and paste the returned JSON |
+| ChatGPT image handoff | No | Copy the image prompt, attach the image to ChatGPT, and paste the returned JSON |
+| ChatGPT text handoff | No | Describe the desired home, copy the generated prompt to ChatGPT, and paste the returned JSON |
 | Automatic server-side VLM | Optional | Not enabled in this release; a provider must be added explicitly |
 
 The workbench never claims that an image was understood when no VLM provider is
@@ -27,11 +27,11 @@ Open <http://127.0.0.1:8765/custom>. The workbench opens with a lightweight
 template but does not run the expensive RIR solver. Replace it with returned
 JSON, select rooms, and press **Run static simulation** when the scene is ready.
 
-For an image with no API key:
+For either input with no API key:
 
-1. Choose a clear floor-plan image.
-2. Click **Copy Codex prompt**.
-3. Attach the same image and the copied prompt in a Codex task.
+1. Choose **Floor-plan image** and select a clear image, or choose **Text description** and describe the desired home.
+2. Click **Copy ChatGPT prompt**.
+3. For image input, attach the same image with the copied prompt in ChatGPT. The text prompt already contains the description.
 4. Paste the returned JSON into **Floorplan JSON**.
 5. Click **Apply floor plan** and inspect validation.
 6. Calibrate Width or Depth; the other dimension follows with uniform scaling.
@@ -117,8 +117,9 @@ curl -X POST http://127.0.0.1:8765/api/v1/custom/generate \
 
 Validate or compile edited JSON with `POST /api/v1/custom/validate` and
 `POST /api/v1/custom/compile`, using `{"spec": {...}}`. Read provider
-capabilities at `GET /api/v1/custom/capabilities` and the exact image extraction
-contract at `GET /api/v1/custom/prompt`.
+capabilities at `GET /api/v1/custom/capabilities`. Read the image extraction
+contract at `GET /api/v1/custom/prompt?mode=image`, or create a text generation
+prompt with `GET /api/v1/custom/prompt?mode=text&description=...`.
 
 The local HTTP server has no authentication or TLS. Do not expose it publicly
 without adding authentication, request limits, and a secure reverse proxy.

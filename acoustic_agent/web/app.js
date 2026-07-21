@@ -151,7 +151,7 @@ const defaultState = {
   mic: { type: "mono", count: 4, spacing_m: 0.08, radius_m: 0.12, orientation_deg: 0 },
   sourceDirectivity: { type: "omni", orientation_deg: 0, elevation_deg: 0, dipole_weight: 0.0, dipole_power: 1.0 },
   floorplan: { index: 0, count: 0, roomId: null, roomType: null, receiverRoomId: null, receiverRoomType: null, corners: null, roomOptions: [], plan: null, dataset: null, selectedRoom: null, receiverRoom: null, roomMetadata: null },
-  custom: { spec: null, validation: null, imageOpacity: 1.0 }
+  custom: { spec: null, validation: null }
 };
 
 let state = structuredClone(defaultState);
@@ -217,7 +217,7 @@ async function bootstrap() {
     }
   } else if (customMode) {
     try {
-      await loadCustomCapabilities();
+      setCustomInputMode("image");
       await generateCustomScene();
     } catch (error) {
       setStatus(String(error?.message || error), true);
@@ -516,36 +516,43 @@ function applyMultiRoomScene(scene, customPayload = null) {
   updateControls();
 }
 
-async function loadCustomCapabilities() {
-  const response = await fetch("/api/v1/custom/capabilities", { cache: "no-store" });
-  const capabilities = await response.json();
-  if (!response.ok) throw new Error(capabilities.error || "Unable to read Custom capabilities");
+function setCustomInputMode(mode) {
+  const selectedMode = mode === "text" ? "text" : "image";
+  document.getElementById("customImageSource")?.toggleAttribute("hidden", selectedMode !== "image");
+  document.getElementById("customTextSource")?.toggleAttribute("hidden", selectedMode !== "text");
+  const selected = document.querySelector(`input[name="customInputMode"][value="${selectedMode}"]`);
+  if (selected) selected.checked = true;
   const status = document.getElementById("customVlmStatus");
-  const available = Boolean(capabilities.vlm?.available);
   if (status) {
-    status.textContent = available
-      ? `${capabilities.vlm.provider || "VLM"} ready`
-      : "No API needed · use Codex with the copied prompt, then paste its JSON below";
-    status.classList.toggle("ready", available);
+    status.textContent = selectedMode === "image"
+      ? "Send your floor-plan image and the copied prompt to ChatGPT. Paste its JSON below."
+      : "The prompt includes your description. Send it to ChatGPT and paste its JSON below.";
   }
 }
 
 async function copyCustomVlmPrompt() {
-  const response = await fetch("/api/v1/custom/prompt", { cache: "no-store" });
+  const mode = document.querySelector('input[name="customInputMode"]:checked')?.value === "text" ? "text" : "image";
+  const params = new URLSearchParams({ mode });
+  if (mode === "text") {
+    const description = String(document.getElementById("customDescription")?.value || "").trim();
+    if (!description) throw new Error("Describe the home before copying the ChatGPT prompt");
+    params.set("description", description);
+  }
+  const response = await fetch(`/api/v1/custom/prompt?${params}`, { cache: "no-store" });
   const payload = await response.json();
-  if (!response.ok || !payload.prompt) throw new Error(payload.error || "Unable to load the Codex prompt");
+  if (!response.ok || !payload.prompt) throw new Error(payload.error || "Unable to load the ChatGPT prompt");
   const button = document.getElementById("customVlmPrompt");
   try {
     await navigator.clipboard.writeText(payload.prompt);
   } catch {
-    if (!copyTextFallback(payload.prompt)) throw new Error("Unable to copy the Codex prompt");
+    if (!copyTextFallback(payload.prompt)) throw new Error("Unable to copy the ChatGPT prompt");
   }
   if (button) {
     const label = button.textContent;
     button.textContent = "Copied";
-    window.setTimeout(() => { button.textContent = label || "Copy Codex prompt"; }, 1200);
+    window.setTimeout(() => { button.textContent = label || "Copy ChatGPT prompt"; }, 1200);
   }
-  setStatus("Codex image prompt copied");
+  setStatus(mode === "image" ? "ChatGPT image prompt copied" : "ChatGPT description prompt copied");
 }
 
 async function generateCustomScene(options = {}) {
@@ -629,10 +636,23 @@ function handleCustomImageUpload(event) {
   image.onload = () => {
     customImageElement = image;
     drawFloorplanOverview();
-    setStatus(`${file.name} loaded locally`);
+    setStatus(`${file.name} ready · attach it with the copied prompt in ChatGPT`);
   };
   image.onerror = () => setStatus("Unable to read floor-plan image", true);
   image.src = customImageUrl;
+}
+
+function resetCustomHandoff() {
+  const editor = document.getElementById("customSpecJson");
+  const description = document.getElementById("customDescription");
+  const file = document.getElementById("customImageFile");
+  if (editor) editor.value = "";
+  if (description) description.value = "";
+  if (file) file.value = "";
+  if (customImageUrl) URL.revokeObjectURL(customImageUrl);
+  customImageUrl = null;
+  customImageElement = null;
+  setCustomInputMode("image");
 }
 
 function customSpecBounds(spec) {
@@ -777,7 +797,6 @@ function drawFloorplanOverview() {
   ctx.fillRect(0, 0, width, height);
   if (customMode && customImageElement) {
     ctx.save();
-    ctx.globalAlpha = Number(state.custom.imageOpacity ?? 0.5);
     ctx.drawImage(customImageElement, pad, pad, planWidth * scale, planDepth * scale);
     ctx.restore();
   }
@@ -786,7 +805,10 @@ function drawFloorplanOverview() {
     ctx.fillStyle = colors[room.type] || "#e2e6e8";
     ctx.strokeStyle = room.selected ? "#ef476f" : room.receiver ? "#0f7f9f" : "#65727a";
     ctx.lineWidth = room.selected || room.receiver ? 3 : 1;
+    ctx.save();
+    ctx.globalAlpha = customMode && customImageElement ? 0.72 : 1;
     ctx.fill();
+    ctx.restore();
     ctx.stroke();
   });
   const semanticFeatures = state.floorplan.roomMetadata?.boundary_features || [];
@@ -1016,8 +1038,7 @@ function bindEvents() {
       if (floorplanMode) {
         await loadFloorplanScene(floorplanSelection.index, floorplanSelection.roomId, floorplanSelection.receiverRoomId, { simulate: false });
       } else {
-        const editor = document.getElementById("customSpecJson");
-        if (editor) editor.value = "";
+        resetCustomHandoff();
         await generateCustomScene({ populateEditor: false });
       }
     }
@@ -1048,11 +1069,8 @@ function bindEvents() {
       sourceRoom: state.floorplan.roomId,
       receiverRoom: event.target.value,
     }));
-    document.getElementById("customImageOpacity")?.addEventListener("input", (event) => {
-      state.custom.imageOpacity = Number(event.target.value || 1);
-      const output = document.getElementById("customImageOpacityValue");
-      if (output) output.textContent = `${Math.round(state.custom.imageOpacity * 100)}%`;
-      drawFloorplanOverview();
+    document.querySelectorAll('input[name="customInputMode"]').forEach((input) => {
+      input.addEventListener("change", (event) => setCustomInputMode(event.target.value));
     });
     document.getElementById("customImageFile")?.addEventListener("change", handleCustomImageUpload);
     document.getElementById("customVlmPrompt")?.addEventListener("click", () => copyCustomVlmPrompt().catch((error) => setStatus(String(error.message || error), true)));

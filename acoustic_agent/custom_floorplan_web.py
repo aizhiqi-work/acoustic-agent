@@ -7,22 +7,32 @@ from .web_server import WEB_ROOT
 _CUSTOM_SCENE_SETUP = '''      <section id="sceneSection" class="panelBlock editorBlock customEditorBlock setupSection">
         <div class="inspectorHeader">
           <h2>Custom floor plan</h2>
-          <span id="customGeneratorBadge">Codex</span>
+          <span id="customGeneratorBadge">ChatGPT</span>
         </div>
 
-        <label class="customUploadField" for="customImageFile">Floor-plan image
-          <input id="customImageFile" type="file" accept="image/png,image/jpeg,image/webp">
-        </label>
-        <div class="customImageCommands">
-          <label>Overlay
-            <span class="rangeField"><input id="customImageOpacity" type="range" min="0" max="1" step="0.05" value="1"><output id="customImageOpacityValue">100%</output></span>
+        <fieldset class="customInputMode">
+          <legend>Input</legend>
+          <div class="customModeSwitch" role="radiogroup" aria-label="Custom floor-plan input">
+            <label><input type="radio" name="customInputMode" value="image" checked><span>Floor-plan image</span></label>
+            <label><input type="radio" name="customInputMode" value="text"><span>Text description</span></label>
+          </div>
+        </fieldset>
+
+        <div id="customImageSource" class="customSourcePanel">
+          <label class="customUploadField" for="customImageFile">Floor-plan image
+            <input id="customImageFile" type="file" accept="image/png,image/jpeg,image/webp">
           </label>
-          <button id="customVlmPrompt" type="button">Copy Codex prompt</button>
         </div>
-        <p id="customVlmStatus" class="customProviderStatus">Attach the image and copied prompt to Codex, then paste its JSON below.</p>
+        <div id="customTextSource" class="customSourcePanel" hidden>
+          <label for="customDescription">Home description
+            <textarea id="customDescription" rows="4" maxlength="1200" placeholder="For example: a 10 m x 8 m home with two bedrooms, one living room, one kitchen and one bathroom"></textarea>
+          </label>
+        </div>
+        <button id="customVlmPrompt" class="customPromptButton" type="button">Copy ChatGPT prompt</button>
+        <p id="customVlmStatus" class="customProviderStatus">Paste ChatGPT's JSON output below.</p>
 
         <label class="customJsonPaste" for="customSpecJson">Floorplan JSON
-          <textarea id="customSpecJson" rows="10" spellcheck="false" placeholder="Paste JSON returned by Codex"></textarea>
+          <textarea id="customSpecJson" rows="10" spellcheck="false" placeholder="Paste JSON returned by ChatGPT"></textarea>
         </label>
         <div class="editorCommandRow customApplyRow">
           <button id="customApplyJson" class="primaryAction" type="button">Apply floor plan</button>

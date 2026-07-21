@@ -172,7 +172,7 @@ fields. Record the complete resolved config with generated data.
 | `GET` | `/floorplan` | Floorplan workbench |
 | `GET` | `/custom` | Local custom-floorplan workbench |
 | `GET` | `/api/v1/custom/capabilities` | Available local/provider features |
-| `GET` | `/api/v1/custom/prompt` | Codex/VLM extraction prompt |
+| `GET` | `/api/v1/custom/prompt?mode=image|text` | ChatGPT image/text JSON prompt |
 | `GET` | `/api/v1/floorplan/stats` | Compiled-scene audit stats |
 | `GET` | `/api/v1/floorplan/index` | Resolve eligible scene index |
 | `GET` | `/api/v1/floorplan/scene` | Read an indexed scene |
