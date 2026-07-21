@@ -1,0 +1,5 @@
+absolute_area_bin,floorplans,cases,median_error_m,p90_error_m,room_accuracy,cross_room_cases,cross_room_median_error_m,cross_room_room_accuracy
+compact_lt60,32,172,0.6373,1.5067,0.9477,37,0.92,0.8919
+large_100_150,34,376,0.5677,1.6237,0.9468,154,0.75,0.8896
+medium_60_100,25,202,0.6055,1.4072,0.9505,70,0.7949,0.8571
+very_large_ge150,19,240,0.7127,1.9187,0.9208,109,0.8483,0.844

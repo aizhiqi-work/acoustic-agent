@@ -321,6 +321,8 @@ class RoomRayScene:
         for surface_index in candidates:
             surface = self.surfaces[surface_index]
             t = surface.intersect(origin, direction)
+            if not np.isfinite(t):
+                continue
             if t < best_t or (t == best_t and surface_index < best_index):
                 best_t = t
                 best = surface

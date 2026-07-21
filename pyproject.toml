@@ -73,3 +73,4 @@ acoustic_agent = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+pythonpath = ["."]

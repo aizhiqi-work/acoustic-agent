@@ -22,6 +22,7 @@ sources or receivers.
 - [Performance](#performance)
 - [Resources And Data Terms](#resources-and-data-terms)
 - [Accuracy Benchmark](#accuracy-benchmark)
+- [Research Workflows](#research-workflows)
 - [Documentation](#documentation)
 - [Development](#development)
 
@@ -383,6 +384,36 @@ acoustic-agent benchmark \
 Both profiles generate machine-readable JSON plus Markdown and self-contained
 HTML reports. If the Steam Audio SDK is unavailable, its native comparison is
 reported as skipped rather than silently replaced.
+
+## Research Workflows
+
+Research code is kept under [`research/`](research/README.md), separate from
+the short API examples and the simulation engine. The first study provides
+line-of-sight DOA baselines for HRTF, linear-array, and circular-array
+receivers in both Geometry and FloorPlan scenes:
+
+```bash
+python -m research.doa.run_los --quick
+python -m research.doa.run_los
+```
+
+It compares direct-only propagation with LOS room simulation, reports angular
+error, handles the linear array's mirror ambiguity explicitly, and writes
+reproducible CSV, JSON, Markdown, and NPZ artifacts. See the
+[LOS DOA study](research/doa/README.md) for coordinates, estimators, and
+interpretation limits.
+
+The [distributed FloorPlan study](research/doa/DISTRIBUTED_FLOORPLAN.md)
+compares single microphones, synchronized and asynchronous array nodes, and a
+hybrid deployment on disjoint train/test layouts. It evaluates static position,
+room identity, cross-room coverage, door-crossing trajectories, and the number
+of channels required by a traditional SRP-PHAT/TDOA/Kalman pipeline. Its
+stratified protocol scans all 15,376 FloorPlans and validates ten unseen layouts
+for every exact room count from 4 to 14, with floor-area-decile coverage:
+
+```bash
+python -m research.doa.run_stratified
+```
 
 ## Documentation
 

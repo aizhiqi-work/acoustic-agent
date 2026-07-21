@@ -227,6 +227,18 @@ def test_disabling_transmission_does_not_restore_occluded_direct_sound():
     assert max(direct["band_gains"].values()) == 0.0
 
 
+def test_closest_hit_does_not_accept_infinite_surface_intersections():
+    room = make_room("rectangle", size=(4.0, 4.0, 2.8))
+    scene = RoomRayScene(room)
+    hit = scene.closest_hit(
+        np.asarray((10.0, 10.0, 1.4)),
+        np.asarray((1.0, 0.0, 0.0)),
+    )
+
+    assert hit["valid"] is False
+    assert math.isinf(hit["distance"])
+
+
 def test_volumetric_occlusion_discards_samples_hidden_from_source():
     room = make_room("rectangle", size=(4.0, 4.0, 2.8))
     scene = RoomRayScene(room)
