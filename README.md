@@ -16,6 +16,7 @@ sources or receivers.
 - [Installation](#installation)
 - [Web Workbench](#web-workbench)
 - [Python API](#python-api)
+- [Audio And Noise](#audio-and-noise)
 - [Motion And Batch Production](#motion-and-batch-production)
 - [Quality Presets](#quality-presets)
 - [Performance](#performance)
@@ -37,6 +38,7 @@ sources or receivers.
 - VLM-assisted semantic-to-material mapping with deterministic sampling.
 - Editable acoustic furniture with room-semantic automatic placement.
 - Static and multi-keyframe motion simulation.
+- Independent multi-source RIRs and speech, music, or noise auralization.
 - Numba JIT kernels, deterministic seeds, and reusable scene caches.
 
 ## Installation
@@ -175,6 +177,37 @@ it, calibrate its scale, and run it through the same multi-room solver.
 `result` exposes `rir`, `paths`, `rt60`, and `metadata`. Receiver models,
 directivity, materials, furniture, full configuration, and compatibility APIs
 are documented in the [Python API guide](docs/API.md).
+
+## Audio And Noise
+
+The RIR is independent of signal content: speech, piano, and noise emitted from
+the same point reuse the same RIR. A background signal at a different position
+needs its own source-to-receiver RIR:
+
+```python
+from acoustic_agent import mix_audio, render_audio
+
+sources = agent.run_sources({
+    "voice": [1.2, 1.1, 1.5],
+    "background": [4.8, 1.0, 1.2],
+})
+
+voice_wet = render_audio(voice_samples, sources["voice"].rir)
+noise_wet = render_audio(noise_samples, sources["background"].rir, gain_db=-18)
+room_mix = mix_audio([voice_wet, noise_wet], normalize=True)
+```
+
+Input arrays must use the simulation sample rate; `resample_audio` provides a
+dependency-free conversion helper. The Web workbench can audition Voice,
+Piano, deterministic white/pink/brown noise, or an uploaded browser-supported
+audio file. Its optional background source has an independent position, level,
+and RIR, including receiver-motion updates.
+
+For this development workspace the server discovers `reading.wav` and
+`traces-of-stillness.mp3` from the parent directory. Equivalent paths can be
+set with `ACOUSTIC_AGENT_VOICE_AUDIO` and `ACOUSTIC_AGENT_PIANO_AUDIO`. These
+local recordings are not included in the open-source distribution unless their
+redistribution terms are documented; uploaded audio uses the same workflow.
 
 ## Motion And Batch Production
 
@@ -331,7 +364,7 @@ Current branch verification:
 
 | Check | Result |
 | --- | ---: |
-| Unit and integration tests | 122 passed |
+| Unit and integration tests | 131 passed |
 | Quick accuracy profile | 9/9 passed |
 | Full accuracy profile | 9/9 passed |
 | Source distribution and wheel | Passed `twine check` |

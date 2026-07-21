@@ -8,7 +8,7 @@ result = agent.run()
 ```
 
 The older constructors remain available for compatibility, but new applications
-only need `create`, `run`, `run_batch`, and `run_many`.
+only need `create`, `run`, `run_sources`, `run_batch`, and `run_many`.
 
 ## Geometry
 
@@ -109,6 +109,46 @@ while `"bvh"` forces the cached bounding-volume hierarchy. The default
 `"auto"` uses Linear for small Geometry scenes and BVH when a scene has at
 least 16 surfaces, which normally includes complete Floorplan scenes and
 furnished rooms. Both backends call the same exact surface intersection code.
+
+## Multiple Sources And Audio
+
+An RIR describes propagation and does not depend on whether the emitted signal
+is speech, music, or noise. Reuse one RIR when only the audio changes at the
+same position. Simulate one RIR per source when signals originate at different
+positions:
+
+```python
+from acoustic_agent import AcousticAgent, mix_audio, render_audio
+
+agent = AcousticAgent.create(
+    scene="geometry",
+    room={"shape": "rectangle", "size": [6.0, 4.0, 2.8]},
+    source=[1.2, 1.1, 1.5],
+    receiver=[4.7, 2.8, 1.4],
+    fs=16000,
+)
+
+sources = agent.run_sources({
+    "voice": {"position": [1.2, 1.1, 1.5], "source_model": "cardioid"},
+    "piano": {"position": [4.8, 1.0, 1.2], "source_model": "omni"},
+})
+
+# These decoded arrays must use agent.config.fs.
+voice_wet = render_audio(voice_samples, sources["voice"].rir)
+piano_wet = render_audio(piano_samples, sources["piano"].rir, gain_db=-18.0)
+room_mix = mix_audio([voice_wet, piano_wet], normalize=True)
+```
+
+`render_audio` downmixes a source recording to one emitting point and preserves
+all receiver channels. `mix_audio` sums already rendered tracks; normalization
+is optional and occurs only after summation so relative source level and room
+attenuation remain intact. Use `resample_audio` when a decoded array does not
+match the simulation sample rate.
+
+The Web workbench performs browser-side WAV/MP3 decoding and supports Voice,
+Piano, deterministic white/pink/brown noise, and uploaded audio. Enabling its
+background source adds a second position and RIR. Changing the recording or
+gain reuses existing RIRs; changing source position requires a new simulation.
 
 ## Motion
 

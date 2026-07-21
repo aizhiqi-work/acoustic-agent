@@ -216,6 +216,8 @@ data.
 | `GET` | `/api/v1/floorplan/index` | Resolve eligible scene index |
 | `GET` | `/api/v1/floorplan/scene` | Read an indexed scene |
 | `GET` | `/api/v1/materials/semantics` | Material semantic catalog |
+| `GET` | `/api/v1/audio/catalog` | Available recordings and generated noise |
+| `GET` | `/api/v1/audio/source?id=...` | Named recording or deterministic noise signal |
 | `POST` | `/api/rir.wav` | Direct WAV response |
 | `POST` | `/api/rir.npy` | Direct NumPy response |
 | `POST` | `/api/v1/simulate` | Compact static simulation response |

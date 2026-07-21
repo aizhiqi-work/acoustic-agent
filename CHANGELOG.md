@@ -13,6 +13,10 @@ semantic versioning after the initial `0.x` research releases.
 - Plain tuple/mapping inputs for `agent.run_batch()` and mixed-scene dataset
   production through `AcousticAgent.run_many()`.
 - NPZ production manifests and optional per-job failure collection.
+- Independent multi-source RIR simulation through `agent.run_sources()`.
+- NumPy audio rendering, gain-preserving source mixing, and resampling helpers.
+- Web auralization with Voice, local Piano, deterministic white/pink/brown
+  noise, uploaded audio, and a separately positioned background source.
 
 ### Changed
 
