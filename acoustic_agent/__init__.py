@@ -13,6 +13,7 @@ from .mic import microphone_array
 from .models import Material, Room, SimConfig
 from .floorplan_resource import FloorplanResource
 from .furnishing import FURNITURE_CATALOG, generate_floorplan_furniture
+from .benchmark import AccuracyBenchmarkReport, run_accuracy_benchmark, write_accuracy_report
 
 # Backward compatibility for the v0.1 ResPlan-named API.
 ResPlanResource = FloorplanResource
@@ -20,6 +21,7 @@ ResPlanResource = FloorplanResource
 __all__ = [
     "__version__",
     "AcousticAgent",
+    "AccuracyBenchmarkReport",
     "DynamicSimulationResult",
     "BatchResult",
     "ProductionResult",
@@ -38,5 +40,7 @@ __all__ = [
     "simulate_batch",
     "simulate_rir",
     "generate_floorplan_furniture",
+    "run_accuracy_benchmark",
     "source_directivity",
+    "write_accuracy_report",
 ]
