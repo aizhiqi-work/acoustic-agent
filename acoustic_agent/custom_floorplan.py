@@ -871,11 +871,37 @@ Create a practical, compact, axis-aligned layout that satisfies the requested ro
 """ + _floorplan_json_contract("vlm_text")
 
 
+def furnish_floorplan_spec(
+    spec: Mapping[str, Any],
+    *,
+    compactness: str = "balanced",
+    seed: int = 42,
+    source_room: str | None = None,
+    receiver_room: str | None = None,
+) -> dict[str, Any]:
+    """Compile a custom specification and generate editable semantic furniture."""
+    from .furnishing import generate_floorplan_furniture
+
+    scene = compile_floorplan_spec(
+        spec,
+        source_room=source_room,
+        receiver_room=receiver_room,
+        seed=int(seed),
+    )
+    return generate_floorplan_furniture(
+        scene["room"]["metadata"],
+        compactness=compactness,
+        seed=int(seed),
+        exclude_points=(scene["source"], scene["receiver"]),
+    )
+
+
 class FloorplanBuilder:
     """Provider-independent entry point for custom floor-plan generation."""
 
     from_text = staticmethod(generate_floorplan_from_text)
     validate = staticmethod(validate_floorplan_spec)
     compile = staticmethod(compile_floorplan_spec)
+    furnish = staticmethod(furnish_floorplan_spec)
     vlm_prompt = staticmethod(floorplan_vlm_prompt)
     text_prompt = staticmethod(floorplan_text_prompt)

@@ -74,6 +74,7 @@ agent = AcousticAgent(
     room=room,
     receiver_model={"type": "mono"},
     source_model={"type": "omni"},
+    furnishing={"mode": "auto", "compactness": "balanced", "seed": 42},
     quality="simulation",
     duration_s=2.0,
     fs=16000,
@@ -115,6 +116,10 @@ rir = agent.run().rir
 
 同房间和跨房间使用同一个完整户型模型。确认的室内门按敞开 portal 处理，墙体连接
 处没有门墙的区域按全高连通区域处理，未匹配的入户门保持关闭，窗户保持玻璃表面。
+
+Floorplan 和 Custom 页面中的 Acoustic furniture 支持语义自动摆放。紧凑程度可选
+`sparse`、`balanced` 或 `compact`；相同 seed 可复现。自动布局会避开门洞、声源、
+麦克风和已有手工家具，生成后仍可拖动、旋转、删除或继续添加家具。
 
 ## 定制户型示例
 

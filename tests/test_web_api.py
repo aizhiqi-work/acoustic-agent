@@ -65,6 +65,9 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
     assert 'id="customImageOpacity"' not in custom_html
     assert "Overlay" not in custom_html
     assert 'id="floorplanRoom"' in custom_html
+    assert 'id="furnitureCompactness"' in custom_html
+    assert 'id="furnitureSeed"' in custom_html
+    assert 'id="autoPlaceFurniture"' in custom_html
     app_js = (WEB_ROOT / "app.js").read_text(encoding="utf-8")
     assert "Broadband EDC RT60" in app_js
     assert "Early / late equivalent RT" not in app_js
@@ -80,6 +83,7 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
     assert "decodeFloat32WavFirstChannel" not in app_js
     assert "monitorRirChannels" in app_js
     assert "function sceneDisplayBounds()" in app_js
+    assert 'fetch("/api/v1/furniture/auto-layout"' in app_js
     assert "const bounds = sceneDisplayBounds();" in app_js
     assert "camera.zoom = 1;" in app_js
     assert "controls.minZoom = 0.55;" in app_js

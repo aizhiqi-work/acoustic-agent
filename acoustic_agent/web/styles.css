@@ -595,6 +595,47 @@ p { margin-top: 4px; color: var(--muted); font-size: 12px; }
   white-space: nowrap;
 }
 
+.autoFurnitureControls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(72px, 0.7fr);
+  align-items: end;
+  gap: 6px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--line);
+}
+
+.autoFurnitureControls label {
+  display: grid;
+  gap: 5px;
+  color: var(--soft);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.autoFurnitureControls select,
+.autoFurnitureControls input,
+.autoFurnitureControls button {
+  width: 100%;
+  min-height: 32px;
+}
+
+.autoFurnitureControls button {
+  grid-column: 1 / -1;
+  color: #ffffff;
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.autoFurnitureControls button:disabled {
+  color: var(--muted);
+  border-color: var(--line);
+  background: var(--panel-2);
+}
+
+[data-scene-source="geometry"] .autoFurnitureControls {
+  display: none;
+}
+
 .objectThumbStrip {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

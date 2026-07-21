@@ -150,6 +150,7 @@ agent = AcousticAgent(
     room=room,
     source_model={"type": "omni"},
     receiver_model={"type": "mono"},
+    furnishing={"mode": "auto", "compactness": "balanced", "seed": 42},
     quality="simulation",
     duration_s=2.0,
     fs=16000,
@@ -208,6 +209,11 @@ rir = agent.run().rir
 Use `source_room`, `receiver_room`, `source`, or `receiver` only when an
 experiment needs explicit placement. The default indexed workflow does not
 require room names.
+
+Floorplan and Custom workbenches also provide semantic furniture auto-placement.
+Choose `Sparse`, `Balanced`, or `Compact`, then press **Auto place**. Doorways,
+source/receiver positions, and manual objects are kept clear; generated objects
+remain draggable and editable.
 
 Verified interior doors are represented as open portals with reflective
 lintels. Wall-free room connections are full-height portals. Unmatched entry
