@@ -8,7 +8,7 @@ result = agent.run()
 ```
 
 The older constructors remain available for compatibility, but new applications
-only need `create`, `run`, `run_batch`, and `run_many`.
+only need `create`, `run`, `run_sources`, `run_batch`, and `run_many`.
 
 ## Geometry
 
@@ -109,6 +109,47 @@ while `"bvh"` forces the cached bounding-volume hierarchy. The default
 `"auto"` uses Linear for small Geometry scenes and BVH when a scene has at
 least 16 surfaces, which normally includes complete Floorplan scenes and
 furnished rooms. Both backends call the same exact surface intersection code.
+
+## Multiple Sources And Audio
+
+An RIR describes propagation and does not depend on whether the emitted signal
+is speech, music, or noise. Reuse one RIR when only the audio changes at the
+same position. Simulate one RIR per source when signals originate at different
+positions:
+
+```python
+from acoustic_agent import AcousticAgent, mix_audio_at_snr, render_audio
+
+agent = AcousticAgent.create(
+    scene="geometry",
+    room={"shape": "rectangle", "size": [6.0, 4.0, 2.8]},
+    source=[1.2, 1.1, 1.5],
+    receiver=[4.7, 2.8, 1.4],
+    fs=16000,
+)
+
+sources = agent.run_sources({
+    "voice": {"position": [1.2, 1.1, 1.5], "source_model": "cardioid"},
+    "piano_1": {"position": [4.8, 1.0, 1.2], "source_model": "omni"},
+})
+
+# These decoded arrays must use agent.config.fs.
+voice_wet = render_audio(voice_samples, sources["voice"].rir)
+piano_wet = render_audio(piano_samples, sources["piano_1"].rir)
+room_mix = mix_audio_at_snr(voice_wet, piano_wet, snr_db=10.0, normalize=True)
+```
+
+`render_audio` downmixes a source recording to one emitting point and preserves
+all receiver channels. `mix_audio_at_snr` scales the rendered background to a
+receiver-domain broadband RMS target before summation. Optional final
+normalization preserves that ratio. Use `resample_audio` when a decoded array
+does not match the simulation sample rate.
+
+The Web workbench performs browser-side WAV/MP3 decoding and includes Project
+narration, Background speech, two Piano programs, a Pink-noise bed,
+deterministic generated noise, and uploaded audio. Enabling its background
+source adds a second position and RIR. Changing the program or SNR reuses
+existing RIRs; changing source position requires a new simulation.
 
 ## Motion
 

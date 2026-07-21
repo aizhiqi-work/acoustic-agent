@@ -2,7 +2,8 @@
 
 __version__ = "0.1.0"
 
-from .api import AcousticAgent, DynamicSimulationResult
+from .api import AcousticAgent, DynamicSimulationResult, MultiSourceSimulationResult
+from .audio import mix_audio, mix_audio_at_snr, render_audio, resample_audio
 from .batch import BatchResult, ProductionResult, SimulationPair, simulate_batch
 from .custom_floorplan import FloorplanBuilder
 from .directivity import source_directivity
@@ -23,6 +24,7 @@ __all__ = [
     "AcousticAgent",
     "AccuracyBenchmarkReport",
     "DynamicSimulationResult",
+    "MultiSourceSimulationResult",
     "BatchResult",
     "ProductionResult",
     "Material",
@@ -36,11 +38,15 @@ __all__ = [
     "SimulationPair",
     "SimulationResult",
     "make_room",
+    "mix_audio",
+    "mix_audio_at_snr",
     "microphone_array",
     "simulate_batch",
     "simulate_rir",
     "generate_floorplan_furniture",
     "run_accuracy_benchmark",
+    "render_audio",
+    "resample_audio",
     "source_directivity",
     "write_accuracy_report",
 ]

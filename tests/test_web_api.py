@@ -11,6 +11,7 @@ from acoustic_agent.web_server import (
     _simulate_payload,
     simulate_api_from_payload,
     simulate_dynamic_workbench_from_payload,
+    simulate_workbench_from_payload,
 )
 
 
@@ -58,6 +59,15 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
         assert 'id="motionMoving"' in html
         assert 'id="motionFrameSpacing"' in html
         assert 'id="intersectionBackend"' in html
+        assert 'id="audioSection"' in html
+        assert 'id="foregroundAudio"' in html
+        assert 'id="backgroundEnabled"' in html
+        assert 'id="backgroundAudio"' in html
+        assert 'id="backgroundSnr"' in html
+        assert 'id="backgroundGain"' not in html
+        assert 'id="backgroundX"' in html
+        assert 'id="foregroundAudioFile"' in html
+        assert 'id="backgroundAudioFile"' in html
         assert 'id="resampleMotionPath"' in html
         assert 'id="viewToolbar"' in html
         assert 'id="stageDistance"' in html
@@ -109,6 +119,12 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
     assert "motionSourceRoomCorners" not in app_js
     assert 'fetch("/api/v1/workbench"' in app_js
     assert "convolveDynamicChannels" in app_js
+    assert "loadAudioCatalog" in app_js
+    assert "loadProgramAudio" in app_js
+    assert "mixRenderedTracks" in app_js
+    assert "receiverSnrBackgroundGain" in app_js
+    assert "backgroundSourcePoint3D" in app_js
+    assert "agent.run_sources" in app_js
     assert "decodeFloat32WavFirstChannel" not in app_js
     assert "monitorRirChannels" in app_js
     assert "function sceneDisplayBounds()" in app_js
@@ -132,6 +148,42 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
     assert '["source", source]' in app_js
     assert '["receiver", mic]' in app_js
     assert '"    placement=placement,"' not in app_js
+
+
+def test_workbench_background_source_returns_an_independent_rir():
+    response = simulate_workbench_from_payload({
+        "shape": "rectangle",
+        "size": [4.0, 3.0, 2.5],
+        "source": [0.7, 0.8, 1.2],
+        "receiver": [2.0, 1.4, 1.2],
+        "config": {
+            "fs": 8000,
+            "duration_s": 0.03,
+            "reflections_enabled": False,
+            "diffraction_enabled": False,
+        },
+        "auralization": {
+            "foreground": {"audio_id": "voice", "gain_db": 0.0},
+            "background": {
+                "enabled": True,
+                "audio_id": "pink_noise",
+                "snr_db": 10.0,
+                "source": [2.8, 2.2, 1.2],
+                "source_model": {"type": "omni"},
+            },
+        },
+    })
+
+    auralization = response["auralization"]
+    assert auralization["model"] == "independent_source_rirs_then_sum"
+    assert auralization["foreground"]["result_id"] == response["result_id"]
+    assert auralization["background"]["enabled"] is True
+    assert auralization["background"]["audio_id"] == "pink_noise"
+    assert auralization["background"]["snr_db"] == 10.0
+    assert auralization["background"]["source"] == [2.8, 2.2, 1.2]
+    assert auralization["background"]["result_id"] != response["result_id"]
+    assert auralization["background"]["rir"]["wav_url"].endswith("/rir.wav")
+    assert _get_stored_result(auralization["background"]["result_id"]) is not None
 
 
 def test_simple_api_returns_exact_binary_artifacts_without_base64():

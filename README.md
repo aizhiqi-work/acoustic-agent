@@ -16,7 +16,10 @@ sources or receivers.
 - [Installation](#installation)
 - [Web Workbench](#web-workbench)
 - [Python API](#python-api)
+- [Audio And Noise](#audio-and-noise)
 - [Motion And Batch Production](#motion-and-batch-production)
+- [Quality Presets](#quality-presets)
+- [Performance](#performance)
 - [Resources And Data Terms](#resources-and-data-terms)
 - [Accuracy Benchmark](#accuracy-benchmark)
 - [Documentation](#documentation)
@@ -35,6 +38,7 @@ sources or receivers.
 - VLM-assisted semantic-to-material mapping with deterministic sampling.
 - Editable acoustic furniture with room-semantic automatic placement.
 - Static and multi-keyframe motion simulation.
+- Independent multi-source RIRs and speech, music, or noise auralization.
 - Numba JIT kernels, deterministic seeds, and reusable scene caches.
 
 ## Installation
@@ -174,6 +178,39 @@ it, calibrate its scale, and run it through the same multi-room solver.
 directivity, materials, furniture, full configuration, and compatibility APIs
 are documented in the [Python API guide](docs/API.md).
 
+## Audio And Noise
+
+The RIR is independent of signal content: speech, piano, and noise emitted from
+the same point reuse the same RIR. A background signal at a different position
+needs its own source-to-receiver RIR:
+
+```python
+from acoustic_agent import mix_audio_at_snr, render_audio
+
+sources = agent.run_sources({
+    "voice": [1.2, 1.1, 1.5],
+    "background": [4.8, 1.0, 1.2],
+})
+
+voice_wet = render_audio(voice_samples, sources["voice"].rir)
+noise_wet = render_audio(noise_samples, sources["background"].rir)
+room_mix = mix_audio_at_snr(voice_wet, noise_wet, snr_db=10, normalize=True)
+```
+
+Input arrays must use the simulation sample rate; `resample_audio` provides a
+dependency-free conversion helper. The Web workbench bundles Project
+narration, Background speech, Piano 1, Piano 2, and a Pink-noise bed. It also
+generates deterministic white, pink, and brown noise and accepts uploaded
+browser-supported audio. Each background source has an independent position
+and RIR, including receiver-motion updates.
+
+The SNR control is receiver-domain broadband SNR, not source gain. Both signals
+are first propagated through their own RIR; the rendered background is then
+scaled to the target RMS ratio. For example, `10 dB` makes the rendered
+foreground RMS approximately 10 dB higher than the rendered background RMS.
+See the packaged [audio release note](acoustic_agent/resources/audio/DATA_LICENSE.md)
+before redistributing the demo recordings.
+
 ## Motion And Batch Production
 
 Static and dynamic simulations share `run()`:
@@ -227,15 +264,67 @@ The NPZ archive stores float32 RIRs plus a structured JSON manifest. See
 
 ## Quality Presets
 
-| Quality | Rays | Bounces | Typical use |
+| Quality | Rays | Base bounces | Typical use |
 | --- | ---: | ---: | --- |
 | `preview` | 8,192 | 32 | Layout and interaction checks |
 | `simulation` | 32,768 | 64 | Default listening and dataset work |
 | `fine` | 65,536 | 96 | Higher-stability analysis |
 | `reference` | 131,072 | 96 | Slow convergence/reference runs |
 
-Cross-room scenes can raise the bounce budget adaptively to 96-128. RIR length
-is controlled separately with `duration_s`.
+These values are the requested base budgets. At `simulation` and above, the
+solver can increase the effective depth without reducing the ray count:
+
+- Reflective single-room Geometry scenes estimate the depth needed to reach the
+  decay fitting floor, capped at 128 bounces by default.
+- Cross-room Floorplan and Custom scenes use at least 96 bounces and can rise to
+  128 according to portal count and surface survival.
+- Preview keeps its explicit 32-bounce budget for responsive editing.
+
+The requested and effective values are recorded in `result.metadata`. RIR
+length is independent of quality and is controlled with `duration_s`.
+
+## Performance
+
+Ray intersection can be selected independently of the quality preset:
+
+```python
+agent = AcousticAgent.create(
+    scene="floorplan",
+    idx=0,
+    quality="simulation",
+    intersection_backend="auto",  # auto / linear / bvh
+)
+```
+
+`linear` checks every surface and remains the reference traversal. `bvh` uses a
+cached bounding-volume hierarchy to reject surfaces that a ray cannot hit, then
+runs the same exact primitive intersection test. `auto` keeps scenes with fewer
+than 16 surfaces on Linear and selects BVH for larger scenes.
+
+The following Apple M4 measurements use Python 3.12, a 16 kHz 1.2-second Mono
+RIR, a warm Numba cache, and the median of five runs. Floorplan idx 0 contains
+90 acoustic surfaces.
+
+| Quality | Linear | BVH | BVH speedup |
+| --- | ---: | ---: | ---: |
+| `preview` | 63 ms | 55 ms | 1.15x |
+| `simulation` | 139 ms | 110 ms | 1.26x |
+| `fine` | 237 ms | 182 ms | 1.30x |
+| `reference` | 437 ms | 332 ms | 1.32x |
+
+Representative additional results:
+
+| Scene | Mode | Time | Notes |
+| --- | --- | ---: | --- |
+| Small Geometry | `simulation`, Auto -> Linear | 109 ms | Avoids BVH overhead |
+| Furnished Floorplan, 110 surfaces | `simulation`, Linear | 261 ms | Reference traversal |
+| Furnished Floorplan, 110 surfaces | `simulation`, BVH | 125 ms | 2.08x speedup |
+
+The first run in a new environment also includes Numba compilation and should
+not be compared with these steady-state numbers. Runtime varies with CPU,
+surface count, materials, adaptive bounce depth, receiver model, and RIR
+length. Linear and BVH produced exactly equal hit surfaces, distances, normals,
+and final same-room and cross-room RIR samples in the automated tests.
 
 ## Resources And Data Terms
 
@@ -272,6 +361,28 @@ The suite checks direct arrival and attenuation, shoebox RT60, first-order
 reflections, FDN isolation, portal coupling, HRTF behavior, dynamic continuity,
 and an optional native Steam Audio same-scene comparison. See the
 [benchmark guide](docs/BENCHMARKS.md) for profiles and thresholds.
+
+Current branch verification:
+
+| Check | Result |
+| --- | ---: |
+| Unit and integration tests | 132 passed |
+| Quick accuracy profile | 9/9 passed |
+| Full accuracy profile | 9/9 passed |
+| Source distribution and wheel | Passed `twine check` |
+
+Run the longer profile and native Steam Audio comparison with:
+
+```bash
+acoustic-agent benchmark \
+  --profile full \
+  --steam-audio-root /path/to/steam-audio \
+  --output benchmark-results/full
+```
+
+Both profiles generate machine-readable JSON plus Markdown and self-contained
+HTML reports. If the Steam Audio SDK is unavailable, its native comparison is
+reported as skipped rather than silently replaced.
 
 ## Documentation
 

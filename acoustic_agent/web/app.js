@@ -9,6 +9,10 @@ const copyCodeButton = document.getElementById("copyCode");
 const dryAudioEl = document.getElementById("dryAudio");
 const wetAudioEl = document.getElementById("wetAudio");
 const calibrationAudioMetaEl = document.getElementById("calibrationAudioMeta");
+const foregroundAudioEl = document.getElementById("foregroundAudio");
+const backgroundAudioEl = document.getElementById("backgroundAudio");
+const foregroundAudioFileEl = document.getElementById("foregroundAudioFile");
+const backgroundAudioFileEl = document.getElementById("backgroundAudioFile");
 const runSimulationButton = document.getElementById("runSimulation");
 const motionPlayButton = document.getElementById("motionPlay");
 const motionTimelineEl = document.getElementById("motionTimeline");
@@ -146,6 +150,16 @@ const defaultState = {
   objects: [],
   source: [1.2, 1.1, 1.5],
   receiver: [4.7, 2.8, 1.4],
+  audio: {
+    foreground_id: "voice",
+    foreground_gain_db: 0,
+    background_enabled: false,
+    background_id: "piano_1",
+    background_snr_db: 10,
+    background_source: [3.6, 1.2, 1.35],
+    preview_duration_s: 12,
+    noise_seed: 42,
+  },
   motion: { mode: "static", moving: "source", distance_m: 0.8, keyframe_spacing_m: 0.25, random_seed: 42 },
   config: { fs: 16000, duration_s: 2.0, quality: "simulation", intersection_backend: "auto", rt_num_rays: 32768, rt_num_bounces: 64, rt_duration_s: 2.0, diffraction_order: 3, max_diffraction_paths: 8 },
   mic: { type: "mono", count: 4, spacing_m: 0.08, radius_m: 0.12, orientation_deg: 0 },
@@ -161,6 +175,9 @@ let simulationRequestSeq = 0;
 let lastSimulationPayload = null;
 let calibrationAudioSeq = 0;
 let calibrationAudioUrls = [];
+let audioCatalog = [];
+let foregroundUploadFile = null;
+let backgroundUploadFile = null;
 let simulationRunning = false;
 let displayedMotionFrameIndex = -1;
 let motionDisplayPhase = 0;
@@ -209,6 +226,7 @@ async function bootstrap() {
   setupSectionNavigation();
   setupResultNavigation();
   await loadMaterialCatalog();
+  await loadAudioCatalog();
   if (floorplanMode) {
     try {
       await loadFloorplanScene(0, null, "auto", { simulate: false });
@@ -445,6 +463,47 @@ async function loadMaterialCatalog() {
   }
 }
 
+async function loadAudioCatalog() {
+  try {
+    const response = await fetch("/api/v1/audio/catalog", { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Unable to load audio catalog");
+    audioCatalog = (payload.sources || []).filter((item) => item.available !== false);
+  } catch (error) {
+    console.warn("Audio catalog unavailable", error);
+    audioCatalog = [
+      { id: "pink_noise", title: "Pink noise", kind: "generated_noise" },
+      { id: "white_noise", title: "White noise", kind: "generated_noise" },
+      { id: "brown_noise", title: "Brown noise", kind: "generated_noise" },
+    ];
+  }
+  setAudioSelectOptions(foregroundAudioEl);
+  setAudioSelectOptions(backgroundAudioEl);
+  const available = new Set(audioCatalog.map((item) => item.id));
+  if (!available.has(state.audio.foreground_id)) state.audio.foreground_id = available.has("voice") ? "voice" : "pink_noise";
+  if (!available.has(state.audio.background_id)) state.audio.background_id = available.has("piano_1") ? "piano_1" : "pink_noise";
+  syncAudioControls();
+}
+
+function setAudioSelectOptions(select) {
+  if (!select) return;
+  select.replaceChildren();
+  [...audioCatalog, { id: "upload", title: "Upload audio", kind: "upload" }].forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = item.title;
+    select.appendChild(option);
+  });
+}
+
+function audioSourceTitle(sourceId, role = "foreground") {
+  if (sourceId === "upload") {
+    const file = role === "background" ? backgroundUploadFile : foregroundUploadFile;
+    return file?.name || "Uploaded audio";
+  }
+  return audioCatalog.find((item) => item.id === sourceId)?.title || String(sourceId || "Audio");
+}
+
 function applyMaterialAvailability() {
   activeBoundaryMaterialControls.forEach(([, semantic, id]) => {
     const select = document.getElementById(id);
@@ -498,6 +557,13 @@ function applyMultiRoomScene(scene, customPayload = null) {
     receiverRoom: scene.receiver_room || scene.selected_room || null,
     roomMetadata: scene.room.metadata || null,
   };
+  const sourceRoomCorners = floorplanRoomCorners(state.floorplan.roomId) || state.floorplan.corners;
+  const sourceRoomBounds = getBounds(sourceRoomCorners);
+  state.audio.background_source = safeRoomPoint([
+    sourceRoomBounds.x0 + sourceRoomBounds.w * 0.72,
+    sourceRoomBounds.y0 + sourceRoomBounds.h * 0.28,
+    Math.min(1.35, state.size[2] - 0.15),
+  ], sourceRoomCorners);
   if (customPayload) {
     state.custom.spec = customPayload.spec || state.custom.spec;
     state.custom.validation = customPayload.validation || state.custom.validation;
@@ -823,7 +889,9 @@ function drawFloorplanOverview() {
       ctx.globalAlpha = 1;
     });
   }
-  [[state.source, "#ef476f", "S"], [state.receiver, "#0f7f9f", "M"]].forEach(([point, color, label]) => {
+  const overviewMarkers = [[state.source, "#ef476f", "S"], [state.receiver, "#0f7f9f", "M"]];
+  if (state.audio.background_enabled) overviewMarkers.push([state.audio.background_source, "#d58a22", "B"]);
+  overviewMarkers.forEach(([point, color, label]) => {
     const [x, y] = toSimulationCanvas(point);
     ctx.beginPath();
     ctx.arc(x, y, 6, 0, Math.PI * 2);
@@ -976,7 +1044,7 @@ function bindEvents() {
     : customMode
       ? ["materialSeed", ...activeBoundaryMaterialControls.map(([, , id]) => id)]
     : ["shape", "sizeX", "sizeY", "height", "materialSeed", ...activeBoundaryMaterialControls.map(([, , id]) => id)];
-  const ids = [...roomIds, "qualitySelect", "intersectionBackend", "rirDuration", "sourceX", "sourceY", "sourceZ", "receiverX", "receiverY", "receiverZ", "motionMode", "motionMoving", "motionDistance", "motionFrameSpacing", "micOrientation", "micCount", "micSpacing", "sourceOrientation", "sourceElevation", "sourcePower", "fs"];
+  const ids = [...roomIds, "qualitySelect", "intersectionBackend", "rirDuration", "sourceX", "sourceY", "sourceZ", "receiverX", "receiverY", "receiverZ", "backgroundX", "backgroundY", "backgroundZ", "motionMode", "motionMoving", "motionDistance", "motionFrameSpacing", "micOrientation", "micCount", "micSpacing", "sourceOrientation", "sourceElevation", "sourcePower", "fs"];
   ids.forEach((id) => document.getElementById(id)?.addEventListener("input", () => {
     if (floorplanMode && id === "height") {
       state.size[2] = clamp(number("height"), 2.0, 6.0);
@@ -988,7 +1056,7 @@ function bindEvents() {
     if (id === "shape" && oldShape !== state.shape) {
       renderGeometryParams();
       applyPresetPoints();
-    } else if (["sizeX", "sizeY", "height", "sourceX", "sourceY", "sourceZ", "receiverX", "receiverY", "receiverZ"].includes(id)) {
+    } else if (["sizeX", "sizeY", "height", "sourceX", "sourceY", "sourceZ", "receiverX", "receiverY", "receiverZ", "backgroundX", "backgroundY", "backgroundZ"].includes(id)) {
       clampScenePointsToRoom();
       syncPositionControls();
     }
@@ -1021,7 +1089,35 @@ function bindEvents() {
   });
   wetAudioEl?.addEventListener("pause", updateMotionPlaybackControls);
   wetAudioEl?.addEventListener("ended", () => setMotionDisplayPhase(1, true));
+  document.getElementById("backgroundEnabled")?.addEventListener("change", () => {
+    readAudioControls();
+    clampScenePointsToRoom();
+    syncAudioControls();
+    markSimulationPending(state.audio.background_enabled
+      ? "Background source enabled · run simulation for its RIR."
+      : "Background source disabled · run simulation to update the result.");
+  });
+  ["foregroundAudio", "backgroundAudio", "audioPreviewDuration", "backgroundSnr"].forEach((id) => {
+    document.getElementById(id)?.addEventListener("input", () => {
+      readAudioControls();
+      syncAudioControls();
+      refreshAuralizationOnly();
+    });
+  });
+  foregroundAudioFileEl?.addEventListener("change", () => {
+    foregroundUploadFile = foregroundAudioFileEl.files?.[0] || null;
+    state.audio.foreground_id = "upload";
+    syncAudioControls();
+    refreshAuralizationOnly();
+  });
+  backgroundAudioFileEl?.addEventListener("change", () => {
+    backgroundUploadFile = backgroundAudioFileEl.files?.[0] || null;
+    state.audio.background_id = "upload";
+    syncAudioControls();
+    refreshAuralizationOnly();
+  });
   document.getElementById("randomPositions").addEventListener("click", randomizePositions);
+  document.getElementById("randomBackgroundPosition")?.addEventListener("click", randomizeBackgroundPosition);
   document.getElementById("resampleMotionPath")?.addEventListener("click", resampleRandomMotionPath);
   document.getElementById("reset").addEventListener("click", async () => {
     const floorplanSelection = multiRoomMode ? {
@@ -1030,6 +1126,10 @@ function bindEvents() {
       receiverRoomId: state.floorplan.receiverRoomId,
     } : null;
     state = structuredClone(defaultState);
+    foregroundUploadFile = null;
+    backgroundUploadFile = null;
+    if (foregroundAudioFileEl) foregroundAudioFileEl.value = "";
+    if (backgroundAudioFileEl) backgroundAudioFileEl.value = "";
     selectedObjectId = null;
     pendingObjectId = null;
     dirtyObjectId = null;
@@ -1301,6 +1401,7 @@ function readControls() {
   applyQualityPreset(false);
   state.source = [number("sourceX"), number("sourceY"), number("sourceZ")];
   state.receiver = [number("receiverX"), number("receiverY"), number("receiverZ")];
+  readAudioControls();
   if (state.sourceDirectivity.type !== "omni") {
     state.sourceDirectivity.orientation_deg = clamp(number("sourceOrientation"), -180, 180);
     state.sourceDirectivity.elevation_deg = clamp(number("sourceElevation"), -90, 90);
@@ -1355,6 +1456,7 @@ function updateControls() {
   syncMotionControls();
   syncMicControls();
   syncSourceDirectivityControls();
+  syncAudioControls();
   syncSelectedObjectControls(sceneObjectById(selectedObjectId));
   setValue("fs", state.config.fs);
   updatePanels();
@@ -1368,6 +1470,45 @@ function syncPositionControls() {
   setValue("receiverX", state.receiver[0]);
   setValue("receiverY", state.receiver[1]);
   setValue("receiverZ", state.receiver[2]);
+  setValue("backgroundX", state.audio.background_source[0]);
+  setValue("backgroundY", state.audio.background_source[1]);
+  setValue("backgroundZ", state.audio.background_source[2]);
+}
+
+function readAudioControls() {
+  state.audio = { ...defaultState.audio, ...(state.audio || {}) };
+  state.audio.foreground_id = value("foregroundAudio") || state.audio.foreground_id;
+  state.audio.background_enabled = Boolean(document.getElementById("backgroundEnabled")?.checked);
+  state.audio.background_id = value("backgroundAudio") || state.audio.background_id;
+  state.audio.background_snr_db = clamp(controlNumber("backgroundSnr", state.audio.background_snr_db), -10, 30);
+  state.audio.preview_duration_s = clamp(controlNumber("audioPreviewDuration", state.audio.preview_duration_s), 0.5, 30);
+  state.audio.background_source = [
+    controlNumber("backgroundX", state.audio.background_source[0]),
+    controlNumber("backgroundY", state.audio.background_source[1]),
+    controlNumber("backgroundZ", state.audio.background_source[2]),
+  ];
+}
+
+function syncAudioControls() {
+  state.audio = { ...defaultState.audio, ...(state.audio || {}) };
+  setValue("foregroundAudio", state.audio.foreground_id);
+  setValue("backgroundAudio", state.audio.background_id);
+  setValue("audioPreviewDuration", state.audio.preview_duration_s);
+  setValue("backgroundSnr", state.audio.background_snr_db);
+  const enabled = Boolean(state.audio.background_enabled);
+  const toggle = document.getElementById("backgroundEnabled");
+  if (toggle) toggle.checked = enabled;
+  const backgroundControls = document.getElementById("backgroundAudioControls");
+  const backgroundPosition = document.getElementById("backgroundPositionSet");
+  if (backgroundControls) backgroundControls.hidden = !enabled;
+  if (backgroundPosition) backgroundPosition.hidden = !enabled;
+  const foregroundUpload = document.getElementById("foregroundUploadLabel");
+  const backgroundUpload = document.getElementById("backgroundUploadLabel");
+  if (foregroundUpload) foregroundUpload.hidden = state.audio.foreground_id !== "upload";
+  if (backgroundUpload) backgroundUpload.hidden = !enabled || state.audio.background_id !== "upload";
+  const snrOutput = document.getElementById("backgroundSnrValue");
+  if (snrOutput) snrOutput.textContent = `${Number(state.audio.background_snr_db).toFixed(0)} dB`;
+  syncPositionControls();
 }
 
 function syncMotionControls() {
@@ -1510,7 +1651,7 @@ async function requestSimulation() {
   updateRunControls();
   updateResultStatus();
   setStatus(dynamic ? `Computing motion RIR 0/${payload.motion.frames.length}...` : "Computing indoor RIR paths...");
-  clearCalibrationAudio("reading.wav · waiting for RIR");
+  clearCalibrationAudio("Audio · waiting for RIR");
   try {
     const nextSimData = dynamic
       ? await requestMotionSimulation(payload, requestSeq)
@@ -1554,17 +1695,27 @@ async function requestMotionSimulation(payload, requestSeq) {
   delete basePayload.motion;
   const computedFrames = [];
   let referenceScene = null;
+  let reusableBackground = null;
   for (let index = 0; index < plannedFrames.length; index += 1) {
     if (requestSeq !== simulationRequestSeq) throw new Error("simulation superseded");
     const planned = plannedFrames[index];
     setStatus(`Computing motion RIR ${index + 1}/${plannedFrames.length}...`);
     const frameMetadata = motionRoomMetadata(basePayload.room_metadata, planned.source, planned.receiver);
-    const frameScene = await requestWorkbenchFrame({
+    const framePayload = {
       ...basePayload,
       source: planned.source,
       receiver: planned.receiver,
       room_metadata: frameMetadata,
-    });
+    };
+    if (reusableBackground && motion.moving === "source" && framePayload.auralization?.background) {
+      framePayload.auralization.background.enabled = false;
+    }
+    const frameScene = await requestWorkbenchFrame(framePayload);
+    if (reusableBackground && !frameScene.auralization?.background?.enabled) {
+      frameScene.auralization.background = reusableBackground;
+    } else if (frameScene.auralization?.background?.enabled && motion.moving === "source") {
+      reusableBackground = frameScene.auralization.background;
+    }
     if (requestSeq !== simulationRequestSeq) throw new Error("simulation superseded");
     referenceScene ||= frameScene;
     computedFrames.push({
@@ -1576,6 +1727,7 @@ async function requestMotionSimulation(payload, requestSeq) {
       rir: frameScene.rir,
       rt60: frameScene.rt60,
       paths: frameScene.paths,
+      auralization: frameScene.auralization,
     });
     referenceScene.dynamic = {
       mode: motion.mode,
@@ -1671,7 +1823,7 @@ function markSimulationPending(message = "Changes ready · run simulation to upd
   motionDisplayPhase = 0;
   lastSimulationPayload = null;
   simData = makeClientScene(state);
-  clearCalibrationAudio("reading.wav · waiting for simulation");
+  clearCalibrationAudio("Audio · waiting for simulation");
   rebuildThreeScene();
   updatePanels();
   setStatus(message);
@@ -1707,6 +1859,21 @@ function apiPayload() {
       elevation_deg: state.sourceDirectivity.elevation_deg,
       dipole_weight: state.sourceDirectivity.dipole_weight,
       dipole_power: state.sourceDirectivity.dipole_power
+    },
+    auralization: {
+      preview_duration_s: Number(state.audio.preview_duration_s),
+      noise_seed: Number(state.audio.noise_seed),
+      foreground: {
+        audio_id: state.audio.foreground_id,
+        gain_db: Number(state.audio.foreground_gain_db || 0),
+      },
+      background: {
+        enabled: Boolean(state.audio.background_enabled),
+        audio_id: state.audio.background_id,
+        snr_db: Number(state.audio.background_snr_db),
+        source: state.audio.background_source.map(Number),
+        source_model: { type: "omni" },
+      },
     },
     motion,
   };
@@ -2098,6 +2265,7 @@ function pathHitMarker(point, color, radius) {
 function addMarkers3D() {
   markerGroup.add(sourcePoint3D());
   addSourceDirection3D();
+  if (state.audio.background_enabled) markerGroup.add(backgroundSourcePoint3D());
   markerGroup.add(receiverDevice3D());
   updateMotionMarkerAtPhase(0);
 }
@@ -2317,6 +2485,28 @@ function sourcePoint3D() {
   }
   group.add(markerHalo3D(0xef476f, 0.18, -0.155));
   markDeviceGroup(group, "source");
+  return group;
+}
+
+function backgroundSourcePoint3D() {
+  const group = new THREE.Group();
+  group.name = "background-source-point";
+  group.position.copy(toVector3(state.audio.background_source));
+  const core = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.12, 1),
+    new THREE.MeshStandardMaterial({ color: 0xd58a22, roughness: 0.48, metalness: 0.08 })
+  );
+  group.add(core);
+  for (const radius of [0.17, 0.215]) {
+    const wave = new THREE.Mesh(
+      new THREE.TorusGeometry(radius, 0.008, 8, 40),
+      new THREE.MeshBasicMaterial({ color: 0xf2a541, transparent: true, opacity: 0.52, depthWrite: false })
+    );
+    wave.rotation.x = Math.PI / 2;
+    group.add(wave);
+  }
+  group.add(markerHalo3D(0xd58a22, 0.18, -0.155));
+  markDeviceGroup(group, "background");
   return group;
 }
 
@@ -3526,6 +3716,9 @@ function drawAcousticMiniMap(ctx, width, height) {
   drawMiniSourceDirectivity(ctx, toCanvas(displayedFrame.source));
   drawMiniMarker(ctx, toCanvas(displayedFrame.source), "#ef476f", "SRC", 1);
   drawMiniMarker(ctx, toCanvas(displayedFrame.receiver), "#0f7f9f", "MIC", -1);
+  if (state.audio.background_enabled) {
+    drawMiniMarker(ctx, toCanvas(state.audio.background_source), "#d58a22", "BKG", 1);
+  }
 
   const routeIsPortal = selection.routeType === "portal";
   const stateLabel = routeIsPortal ? "PORTAL" : selection.nlos ? "NLOS / UTD" : "LOS";
@@ -4118,37 +4311,62 @@ async function updateCalibrationAudio(scene, requestSeq) {
   const dynamicFrames = Array.isArray(scene?.dynamic?.frames) ? scene.dynamic.frames : [];
   try {
     if (!rirInfo.wav_url || !Array.isArray(rirInfo.shape)) throw new Error("exact RIR is unavailable");
-    const rirUrls = dynamicFrames.length > 1
-      ? dynamicFrames.map((frame) => frame.rir?.wav_url).filter(Boolean)
-      : [rirInfo.wav_url];
-    if (dynamicFrames.length > 1 && rirUrls.length !== dynamicFrames.length) throw new Error("dynamic RIR frames are incomplete");
-    setCalibrationAudioMeta(dynamicFrames.length > 1
-      ? `reading.wav · rendering ${dynamicFrames.length} motion frames`
-      : `reading.wav · 44.1 → ${formatSampleRate(fs)}`);
-    const [dryResponse, ...rirResponses] = await Promise.all([
-      fetch(`/api/calibration-audio?fs=${encodeURIComponent(fs)}`, { cache: "no-store" }),
-      ...rirUrls.map((url) => fetch(url, { cache: "no-store" })),
-    ]);
-    if (!dryResponse.ok) throw new Error(await dryResponse.text());
-    const failedRir = rirResponses.find((response) => !response.ok);
-    if (failedRir) throw new Error(await failedRir.text());
-    const dry = decodePcm16Wav(await dryResponse.arrayBuffer());
-    if (dry.fs !== fs) throw new Error(`dry sample rate is ${dry.fs} Hz`);
-    if (token !== calibrationAudioSeq || requestSeq !== simulationRequestSeq) return;
-    const rirs = [];
-    for (const response of rirResponses) {
-      const rir = decodeFloat32WavChannels(await response.arrayBuffer());
-      if (rir.fs !== fs) throw new Error(`RIR sample rate is ${rir.fs} Hz`);
-      rirs.push(monitorRirChannels(rir.channels));
+    const foregroundInfos = dynamicFrames.length > 1
+      ? dynamicFrames.map((frame) => frame.rir)
+      : [rirInfo];
+    if (foregroundInfos.some((info) => !info?.wav_url)) throw new Error("dynamic foreground RIR frames are incomplete");
+    const backgroundEnabled = Boolean(state.audio.background_enabled);
+    const backgroundInfos = backgroundEnabled
+      ? dynamicFrames.length > 1
+        ? dynamicFrames.map((frame) => frame.auralization?.background?.rir || scene.auralization?.background?.rir)
+        : [scene.auralization?.background?.rir]
+      : [];
+    if (backgroundEnabled && backgroundInfos.some((info) => !info?.wav_url)) {
+      throw new Error("background RIR is unavailable; run simulation again");
     }
-    const wetChannels = rirs.length > 1
-      ? await convolveDynamicChannels(dry.samples, rirs, dynamicFrames.map((frame) => Number(frame.phase)), fs)
-      : await convolveChannels(dry.samples, rirs[0], fs);
+    const sourceCount = backgroundEnabled ? 2 : 1;
+    setCalibrationAudioMeta(dynamicFrames.length > 1
+      ? `${sourceCount} source${sourceCount === 1 ? "" : "s"} · rendering ${dynamicFrames.length} motion frames`
+      : `${sourceCount} source${sourceCount === 1 ? "" : "s"} · rendering`);
+    const previewSeconds = Number(state.audio.preview_duration_s || 12);
+    const [foregroundDry, backgroundDry, foregroundRirs, backgroundRirs] = await Promise.all([
+      loadProgramAudio("foreground", state.audio.foreground_id, fs, previewSeconds),
+      backgroundEnabled ? loadProgramAudio("background", state.audio.background_id, fs, previewSeconds) : null,
+      loadRirSequence(foregroundInfos, fs),
+      backgroundEnabled ? loadRirSequence(backgroundInfos, fs) : [],
+    ]);
     if (token !== calibrationAudioSeq || requestSeq !== simulationRequestSeq) return;
 
-    const sharedGain = 0.98 / Math.max(1.0, maxAbs(dry.samples), maxAbsChannels(wetChannels));
+    const previewSamples = Math.max(1, Math.round(previewSeconds * fs));
+    const programLength = Math.min(previewSamples, foregroundDry.samples.length);
+    const foregroundGain = 10 ** (Number(state.audio.foreground_gain_db || 0) / 20);
+    const foregroundSamples = scaledSamples(fitAudioLength(foregroundDry.samples, programLength, false), foregroundGain);
+    const phases = dynamicFrames.map((frame) => Number(frame.phase));
+    const foregroundWet = foregroundRirs.length > 1
+      ? await convolveDynamicChannels(foregroundSamples, foregroundRirs, phases, fs)
+      : await convolveChannels(foregroundSamples, foregroundRirs[0], fs);
+    const dryTracks = [foregroundSamples];
+    const wetTracks = [foregroundWet];
+    if (backgroundEnabled && backgroundDry) {
+      const rawBackgroundSamples = fitAudioLength(backgroundDry.samples, programLength, true);
+      const rawBackgroundWet = backgroundRirs.length > 1
+        ? await convolveDynamicChannels(rawBackgroundSamples, backgroundRirs, phases, fs)
+        : await convolveChannels(rawBackgroundSamples, backgroundRirs[0], fs);
+      const backgroundGain = receiverSnrBackgroundGain(
+        foregroundWet,
+        rawBackgroundWet,
+        Number(state.audio.background_snr_db ?? 10),
+      );
+      dryTracks.push(scaledSamples(rawBackgroundSamples, backgroundGain));
+      wetTracks.push(scaledChannels(rawBackgroundWet, backgroundGain));
+    }
+    if (token !== calibrationAudioSeq || requestSeq !== simulationRequestSeq) return;
+
+    const dryMix = mixMonoTracks(dryTracks);
+    const wetChannels = mixRenderedTracks(wetTracks);
+    const sharedGain = 0.98 / Math.max(1.0, maxAbs(dryMix), maxAbsChannels(wetChannels));
     const nextUrls = [
-      URL.createObjectURL(encodePcm16WavChannels([scaledSamples(dry.samples, sharedGain)], fs)),
+      URL.createObjectURL(encodePcm16WavChannels([scaledSamples(dryMix, sharedGain)], fs)),
       URL.createObjectURL(encodePcm16WavChannels(scaledChannels(wetChannels, sharedGain), fs)),
     ];
     replaceCalibrationAudioUrls(nextUrls);
@@ -4156,16 +4374,132 @@ async function updateCalibrationAudio(scene, requestSeq) {
     wetAudioEl.src = nextUrls[1];
     dryAudioEl.load();
     wetAudioEl.load();
+    const foregroundTitle = audioSourceTitle(state.audio.foreground_id, "foreground");
+    const backgroundTitle = backgroundEnabled ? audioSourceTitle(state.audio.background_id, "background") : "";
+    const programTitle = backgroundTitle ? `${foregroundTitle} + ${backgroundTitle}` : foregroundTitle;
+    const dryTitle = document.getElementById("dryAudioTitle");
+    const wetTitle = document.getElementById("wetAudioTitle");
+    const dryDetail = document.getElementById("dryAudioDetail");
+    const wetDetail = document.getElementById("wetAudioDetail");
+    if (dryTitle) dryTitle.textContent = `Dry · ${programTitle}`;
+    if (wetTitle) wetTitle.textContent = `Rendered · ${programTitle}`;
+    if (dryDetail) dryDetail.textContent = backgroundEnabled ? "Two source signals before propagation" : "Source signal before propagation";
+    if (wetDetail) wetDetail.textContent = backgroundEnabled
+      ? `Two independent RIRs · target SNR ${Number(state.audio.background_snr_db).toFixed(0)} dB`
+      : "Source convolved with the receiver RIR";
     setCalibrationAudioMeta(dynamicFrames.length > 1
-      ? `reading.wav · ${dynamicFrames.length} moving RIR frames · ready`
-      : `reading.wav · 44.1 → ${formatSampleRate(fs)} · ready`);
+      ? `${sourceCount} sources · ${dynamicFrames.length} moving RIR frames · ready`
+      : `${programLength / fs < 10 ? (programLength / fs).toFixed(1) : Math.round(programLength / fs)} s · ${formatSampleRate(fs)} · ready`);
   } catch (error) {
     if (token !== calibrationAudioSeq || requestSeq !== simulationRequestSeq) return;
     clearCalibrationAudio(`Audio unavailable · ${String(error?.message || error).slice(0, 42)}`);
   }
 }
 
-function clearCalibrationAudio(label = "reading.wav · waiting") {
+function refreshAuralizationOnly() {
+  if (!simData?.rir?.wav_url) {
+    clearCalibrationAudio("Audio · waiting for simulation");
+    return;
+  }
+  void updateCalibrationAudio(simData, simulationRequestSeq);
+}
+
+async function loadProgramAudio(role, sourceId, fs, durationS) {
+  let buffer;
+  if (sourceId === "upload") {
+    const file = role === "background" ? backgroundUploadFile : foregroundUploadFile;
+    if (!file) throw new Error(`${role} audio file is not selected`);
+    buffer = await file.arrayBuffer();
+  } else {
+    const query = new URLSearchParams({
+      id: sourceId,
+      fs: String(fs),
+      duration_s: String(durationS),
+      seed: String(state.audio.noise_seed || 42),
+    });
+    const response = await fetch(`/api/v1/audio/source?${query.toString()}`, { cache: "no-store" });
+    if (!response.ok) throw new Error(await response.text());
+    buffer = await response.arrayBuffer();
+  }
+  return decodeBrowserAudioMono(buffer, fs);
+}
+
+async function decodeBrowserAudioMono(buffer, fs) {
+  const OfflineContext = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  if (!OfflineContext) throw new Error("browser audio decoding is unsupported");
+  const context = new OfflineContext(1, 1, fs);
+  let decoded;
+  try {
+    decoded = await context.decodeAudioData(buffer.slice(0));
+  } catch (error) {
+    try {
+      return decodePcm16Wav(buffer);
+    } catch {
+      throw error;
+    }
+  }
+  const samples = new Float32Array(decoded.length);
+  for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+    const values = decoded.getChannelData(channel);
+    for (let index = 0; index < values.length; index += 1) samples[index] += values[index] / decoded.numberOfChannels;
+  }
+  return { samples, fs: decoded.sampleRate };
+}
+
+async function loadRirSequence(infos, fs) {
+  const cache = new Map();
+  const output = [];
+  for (const info of infos) {
+    const url = String(info.wav_url);
+    if (!cache.has(url)) {
+      cache.set(url, (async () => {
+        const response = await fetch(url, { cache: "no-store" });
+        if (!response.ok) throw new Error(await response.text());
+        const rir = decodeFloat32WavChannels(await response.arrayBuffer());
+        if (rir.fs !== fs) throw new Error(`RIR sample rate is ${rir.fs} Hz`);
+        return monitorRirChannels(rir.channels);
+      })());
+    }
+    output.push(await cache.get(url));
+  }
+  return output;
+}
+
+function fitAudioLength(samples, length, loop) {
+  const output = new Float32Array(length);
+  if (!samples.length) return output;
+  if (!loop) {
+    output.set(samples.subarray(0, length));
+    return output;
+  }
+  for (let index = 0; index < length; index += 1) output[index] = samples[index % samples.length];
+  return output;
+}
+
+function mixMonoTracks(tracks) {
+  const length = Math.max(...tracks.map((samples) => samples.length));
+  const output = new Float32Array(length);
+  tracks.forEach((samples) => {
+    for (let index = 0; index < samples.length; index += 1) output[index] += samples[index];
+  });
+  return output;
+}
+
+function mixRenderedTracks(tracks) {
+  const channelCount = Math.max(...tracks.map((channels) => channels.length));
+  const length = Math.max(...tracks.flat().map((samples) => samples.length));
+  const output = Array.from({ length: channelCount }, () => new Float32Array(length));
+  tracks.forEach((channels) => {
+    for (let channel = 0; channel < channelCount; channel += 1) {
+      const samples = channels[channel] || (channels.length === 1 ? channels[0] : null);
+      if (!samples) throw new Error("rendered audio channel counts do not match");
+      for (let index = 0; index < samples.length; index += 1) output[channel][index] += samples[index];
+    }
+  });
+  return output;
+}
+
+function clearCalibrationAudio(label = "Audio · waiting") {
   calibrationAudioSeq += 1;
   [dryAudioEl, wetAudioEl].forEach((audio) => {
     if (!audio) return;
@@ -4175,6 +4509,14 @@ function clearCalibrationAudio(label = "reading.wav · waiting") {
   });
   replaceCalibrationAudioUrls([]);
   setCalibrationAudioMeta(label);
+  const dryTitle = document.getElementById("dryAudioTitle");
+  const wetTitle = document.getElementById("wetAudioTitle");
+  const dryDetail = document.getElementById("dryAudioDetail");
+  const wetDetail = document.getElementById("wetAudioDetail");
+  if (dryTitle) dryTitle.textContent = "Dry program";
+  if (wetTitle) wetTitle.textContent = "Rendered room mix";
+  if (dryDetail) dryDetail.textContent = "Source signals before propagation";
+  if (wetDetail) wetDetail.textContent = "Each source convolved with its own RIR";
 }
 
 function replaceCalibrationAudioUrls(nextUrls) {
@@ -4331,6 +4673,27 @@ function maxAbsChannels(channels) {
   return Math.max(0, ...channels.map((samples) => maxAbs(samples)));
 }
 
+function rmsChannels(channels) {
+  let energy = 0;
+  let count = 0;
+  channels.forEach((samples) => {
+    for (let index = 0; index < samples.length; index += 1) {
+      energy += samples[index] * samples[index];
+    }
+    count += samples.length;
+  });
+  return count > 0 ? Math.sqrt(energy / count) : 0;
+}
+
+function receiverSnrBackgroundGain(foregroundChannels, backgroundChannels, snrDb) {
+  const foregroundRms = rmsChannels(foregroundChannels);
+  const backgroundRms = rmsChannels(backgroundChannels);
+  if (!(foregroundRms > 1e-12) || !(backgroundRms > 1e-12)) {
+    throw new Error("cannot set SNR for silent rendered audio");
+  }
+  return foregroundRms / (backgroundRms * 10 ** (Number(snrDb) / 20));
+}
+
 function scaledSamples(samples, gain) {
   const output = new Float32Array(samples.length);
   for (let index = 0; index < samples.length; index += 1) output[index] = samples[index] * gain;
@@ -4460,9 +4823,44 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
     keyframe_spacing_m: Number(state.motion?.keyframe_spacing_m || 0.25),
     ...(motion.mode === "random" ? { seed: Number(motion.random_seed ?? state.motion?.random_seed ?? 42) } : {}),
   } : null;
-  const runLines = dynamicMotion
-    ? [`result = agent.run(motion=${pythonLiteral(motionConfig)})`, "rir_frames = result.rirs"]
-    : ["rir = agent.run().rir"];
+  const backgroundConfig = payload.auralization?.background || {};
+  const backgroundEnabled = Boolean(backgroundConfig.enabled);
+  const runLinesFor = (sourcePosition, receiverPosition) => {
+    if (!backgroundEnabled) {
+      return dynamicMotion
+        ? [`result = agent.run(motion=${pythonLiteral(motionConfig)})`, "rir_frames = result.rirs"]
+        : ["rir = agent.run().rir"];
+    }
+    const backgroundPosition = (backgroundConfig.source || state.audio.background_source).map(Number);
+    if (!dynamicMotion) {
+      return [
+        "results = agent.run_sources({",
+        `    "foreground": {"position": ${pythonLiteral(sourcePosition)}, "source_model": ${pythonLiteral(sourceModel)}},`,
+        `    "background": {"position": ${pythonLiteral(backgroundPosition)}, "source_model": {"type": "omni"}},`,
+        "})",
+        "foreground_rir = results[\"foreground\"].rir",
+        "background_rir = results[\"background\"].rir",
+      ];
+    }
+    const lines = [
+      `motion = agent.sample_motion(source=${pythonLiteral(sourcePosition)}, receiver=${pythonLiteral(receiverPosition)}, **${pythonLiteral(motionConfig)})`,
+      "foreground = agent.run_dynamic(motion)",
+      "foreground_rir_frames = foreground.rirs",
+    ];
+    if (String(motionConfig.moving) === "receiver") {
+      lines.push(
+        `background_source = ${pythonLiteral(backgroundPosition)}`,
+        "background_motion = {**motion, \"frames\": [",
+        "    {**frame, \"source\": background_source} for frame in motion[\"frames\"]",
+        "]}",
+        "background = agent.run_dynamic(background_motion)",
+        "background_rir_frames = background.rirs",
+      );
+    } else {
+      lines.push(`background_rir = agent.run(source=${pythonLiteral(backgroundPosition)}).rir`);
+    }
+    return lines;
+  };
   const acousticGeometry = (payload.objects || []).map((object) => ({
     type: String(object.type || "sofa"),
     semantic: String(object.semantic || furnitureCatalog[object.type]?.semantic || object.type || "furniture"),
@@ -4497,7 +4895,7 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
         ["duration_s", rirLength],
         ["fs", sampleRate],
       ]),
-      ...runLines,
+      ...runLinesFor(sourcePosition, receiverPosition),
     ].join("\n");
   }
 
@@ -4526,7 +4924,7 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
         ["duration_s", rirLength],
         ["fs", sampleRate],
       ]),
-      ...runLines,
+      ...runLinesFor(sourcePosition, receiverPosition),
     ].join("\n");
   }
 
@@ -4589,7 +4987,7 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
       ["duration_s", rirLength],
       ["fs", sampleRate],
     ]),
-    ...runLines,
+    ...runLinesFor(source, mic),
   ].join("\n");
 }
 
@@ -4630,6 +5028,11 @@ function applyPresetPoints() {
   const corners = cornersFor(state.shape, state.size, state.geometry);
   state.source = safeRoomPoint(pair[0], corners);
   state.receiver = safeRoomPoint(pair[1], corners);
+  state.audio.background_source = safeRoomPoint([
+    x * 0.72,
+    y * 0.72,
+    Math.min(1.35, z - 0.15),
+  ], corners);
 }
 
 function clampScenePointsToRoom() {
@@ -4638,8 +5041,14 @@ function clampScenePointsToRoom() {
   const receiverCorners = floorplanRoomCorners(state.floorplan.receiverRoomId) || corners;
   state.source = safeRoomPoint(state.source, sourceCorners);
   state.receiver = safeRoomPoint(state.receiver, receiverCorners);
+  const backgroundRoomId = multiRoomMode
+    ? roomIdForMotionPoint(state.audio.background_source, state.floorplan.roomMetadata?.multi_room?.rooms || [], state.floorplan.roomId)
+    : null;
+  const backgroundCorners = floorplanRoomCorners(backgroundRoomId) || corners;
+  state.audio.background_source = safeRoomPoint(state.audio.background_source, backgroundCorners);
   state.source[2] = clamp(state.source[2], 0.05, Math.max(0.05, state.size[2] - 0.05));
   state.receiver[2] = clamp(state.receiver[2], 0.05, Math.max(0.05, state.size[2] - 0.05));
+  state.audio.background_source[2] = clamp(state.audio.background_source[2], 0.05, Math.max(0.05, state.size[2] - 0.05));
   normalizeAllObjectPlacements();
 }
 
@@ -4656,8 +5065,25 @@ function randomizePositions() {
   }
   state.source = source;
   state.receiver = receiver;
+  if (state.audio.background_enabled) state.audio.background_source = randomBackgroundPoint();
   updateControls();
   markSimulationPending();
+}
+
+function randomizeBackgroundPosition() {
+  state.audio.background_source = randomBackgroundPoint();
+  syncPositionControls();
+  rebuildThreeScene({ forceFitCamera: true });
+  markSimulationPending("Background source moved · run simulation for its RIR.");
+}
+
+function randomBackgroundPoint() {
+  const rooms = state.floorplan.roomMetadata?.multi_room?.rooms || [];
+  if (multiRoomMode && rooms.length) {
+    const room = rooms[Math.floor(Math.random() * rooms.length)] || rooms[0];
+    if (Array.isArray(room?.corners)) return randomRoomPoint(room.corners, state.size[2]);
+  }
+  return randomRoomPoint(cornersFor(state.shape, state.size, state.geometry), state.size[2]);
 }
 
 function resampleRandomMotionPath() {
@@ -5196,7 +5622,11 @@ async function autoPlaceFurniture() {
         room_metadata: state.floorplan.roomMetadata,
         compactness,
         seed,
-        exclude_points: [state.source, state.receiver],
+        exclude_points: [
+          state.source,
+          state.receiver,
+          ...(state.audio.background_enabled ? [state.audio.background_source] : []),
+        ],
         existing_objects: manualObjects,
       }),
     });
@@ -5716,6 +6146,7 @@ function sceneDisplayPoints() {
   });
   append(state.source);
   append(state.receiver);
+  if (state.audio.background_enabled) append(state.audio.background_source);
   if (state.motion?.mode !== "static") {
     motionFramesForDisplay().forEach((frame) => {
       append(frame.source);

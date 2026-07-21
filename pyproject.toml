@@ -66,6 +66,7 @@ acoustic_agent = [
   "resources/manifest.json",
   "resources/floorplan/*",
   "resources/benchmark/*",
+  "resources/audio/*",
   "web/*",
 ]
 

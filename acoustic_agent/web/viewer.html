@@ -9,7 +9,7 @@
       window.location.replace("http://127.0.0.1:8765/");
     }
   </script>
-  <link rel="stylesheet" href="./styles.css?v=106-auto-furniture">
+  <link rel="stylesheet" href="./styles.css?v=125-bundled-audio-snr">
 </head>
 <body>
   <main id="app" data-scene-source="geometry">
@@ -41,6 +41,7 @@
             <a href="#receiverPane" data-section-link="receiverPane">Mic</a>
             <a href="#sourceDirectivityPane" data-section-link="sourceDirectivityPane">Source</a>
             <a href="#objectsSection" data-section-link="objectsSection">Objects</a>
+            <a href="#audioSection" data-section-link="audioSection">Audio</a>
             <a href="#solverSection" data-section-link="solverSection">Solver</a>
           </nav>
         </div>
@@ -119,6 +120,18 @@
             <label>X<input id="receiverX" type="number" min="-100" max="100" step="0.05"></label>
             <label>Y<input id="receiverY" type="number" min="-100" max="100" step="0.05"></label>
             <label>Z<input id="receiverZ" type="number" min="0" max="20" step="0.05"></label>
+          </div>
+        </div>
+        <div id="backgroundPositionSet" class="positionSet backgroundSet" hidden>
+          <div class="positionSetHeader">
+            <span class="dot background"></span>
+            <h3>Background source</h3>
+            <button id="randomBackgroundPosition" type="button">Random</button>
+          </div>
+          <div class="propertyGrid">
+            <label>X<input id="backgroundX" type="number" min="-100" max="100" step="0.05"></label>
+            <label>Y<input id="backgroundY" type="number" min="-100" max="100" step="0.05"></label>
+            <label>Z<input id="backgroundZ" type="number" min="0" max="20" step="0.05"></label>
           </div>
         </div>
         <div class="positionSet motionSet">
@@ -233,6 +246,44 @@
             <button id="confirmFurniture" class="confirm" type="button" hidden>Confirm object</button>
           </div>
           <p id="objectEditHint">Choose a furniture card, add it, then place it in the scene.</p>
+        </div>
+      </section>
+
+      <section id="audioSection" class="panelBlock audioSetupBlock setupSection">
+        <div class="inspectorHeader">
+          <h2>Auralization</h2>
+          <span>Speech + noise</span>
+        </div>
+        <div class="audioProgramGrid">
+          <label>Foreground
+            <select id="foregroundAudio"></select>
+          </label>
+          <label>Preview
+            <select id="audioPreviewDuration">
+              <option value="6">6 s</option>
+              <option value="12" selected>12 s</option>
+              <option value="20">20 s</option>
+              <option value="30">30 s</option>
+            </select>
+          </label>
+        </div>
+        <label id="foregroundUploadLabel" class="audioUpload" hidden>Foreground file
+          <input id="foregroundAudioFile" type="file" accept="audio/*">
+        </label>
+        <label class="backgroundToggle">
+          <span><strong>Background source</strong><small>Independent position and RIR</small></span>
+          <input id="backgroundEnabled" type="checkbox">
+        </label>
+        <div id="backgroundAudioControls" class="backgroundAudioControls" hidden>
+          <label>Sound
+            <select id="backgroundAudio"></select>
+          </label>
+          <label title="Broadband foreground-to-background RMS ratio at the receiver">SNR <output id="backgroundSnrValue">10 dB</output>
+            <input id="backgroundSnr" type="range" min="-10" max="30" step="1" value="10" aria-label="Receiver signal-to-noise ratio">
+          </label>
+          <label id="backgroundUploadLabel" class="audioUpload" hidden>Background file
+            <input id="backgroundAudioFile" type="file" accept="audio/*">
+          </label>
         </div>
       </section>
 
@@ -356,16 +407,16 @@
         </section>
         <section id="calibrationInspector" class="inspector resultSection">
           <div class="inspectorHeader">
-            <h2>Calibration audio</h2>
-            <span id="calibrationAudioMeta">reading.wav · waiting</span>
+            <h2>Auralization</h2>
+            <span id="calibrationAudioMeta">Audio · waiting</span>
           </div>
           <div class="audioCompare">
             <article class="audioTrack">
-              <div><strong>Original dry voice</strong><small>Resampled input</small></div>
+              <div><strong id="dryAudioTitle">Dry program</strong><small id="dryAudioDetail">Source signals before propagation</small></div>
               <audio id="dryAudio" controls preload="metadata"></audio>
             </article>
             <article class="audioTrack wet">
-              <div><strong>Rendered wet voice</strong><small>Dry voice x monitor RIR</small></div>
+              <div><strong id="wetAudioTitle">Rendered room mix</strong><small id="wetAudioDetail">Each source convolved with its own RIR</small></div>
               <audio id="wetAudio" controls preload="metadata"></audio>
             </article>
           </div>
@@ -388,6 +439,6 @@
       }
     }
   </script>
-  <script type="module" src="app.js?v=123-bvh"></script>
+  <script type="module" src="app.js?v=125-bundled-audio-snr"></script>
 </body>
 </html>

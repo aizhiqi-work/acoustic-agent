@@ -35,6 +35,22 @@ class DynamicSimulationResult:
         return tuple(frame.rir for frame in self.frames)
 
 
+@dataclass(frozen=True)
+class MultiSourceSimulationResult:
+    """Independent source-to-receiver RIRs for one shared acoustic scene."""
+
+    items: Mapping[str, SimulationResult]
+    receiver: tuple[float, float, float]
+    metadata: Mapping[str, Any]
+
+    @property
+    def rirs(self) -> dict[str, Any]:
+        return {source_id: result.rir for source_id, result in self.items.items()}
+
+    def __getitem__(self, source_id: str) -> SimulationResult:
+        return self.items[source_id]
+
+
 def quality_preset(quality: str) -> dict[str, int | float]:
     key = str(quality).lower()
     if key == "offline_reference":
@@ -52,6 +68,37 @@ def _floorplan_position(value: Sequence[float], label: str) -> list[float]:
     if not all(math.isfinite(item) for item in point):
         raise ValueError(f"{label} contains a non-finite value")
     return point
+
+
+def _source_jobs(
+    sources: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+) -> tuple[tuple[str, tuple[float, float, float], Any], ...]:
+    if isinstance(sources, Mapping):
+        raw_items = [(str(source_id), value) for source_id, value in sources.items()]
+    elif isinstance(sources, Sequence) and not isinstance(sources, (str, bytes)):
+        raw_items = []
+        for index, value in enumerate(sources):
+            if not isinstance(value, Mapping):
+                raise TypeError(f"sources[{index}] must be an object")
+            raw_items.append((str(value.get("id", f"source_{index}")), value))
+    else:
+        raise TypeError("sources must be a mapping or a sequence of source objects")
+
+    jobs: list[tuple[str, tuple[float, float, float], Any]] = []
+    seen: set[str] = set()
+    for index, (source_id, value) in enumerate(raw_items):
+        if not source_id or source_id in seen:
+            raise ValueError(f"sources[{index}].id must be unique and non-empty")
+        seen.add(source_id)
+        if isinstance(value, Mapping):
+            position_value = value.get("position", value.get("source"))
+            emitter = value.get("source_model", value.get("directivity"))
+        else:
+            position_value = value
+            emitter = None
+        position = tuple(_floorplan_position(position_value, f"sources[{source_id!r}].position"))
+        jobs.append((source_id, position, emitter))
+    return tuple(jobs)
 
 
 class AcousticAgent:
@@ -472,6 +519,63 @@ class AcousticAgent:
                 "count": len(items),
                 "workers": worker_count,
                 "sample_rate": int(base_config.fs),
+            },
+        )
+
+    def run_sources(
+        self,
+        sources: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+        receiver: Sequence[float] | None = None,
+        *,
+        workers: int = 1,
+        config: SimConfig | None = None,
+        receiver_model: str | Mapping[str, Any] | None = None,
+    ) -> MultiSourceSimulationResult:
+        """Simulate several independent emitters at one receiver.
+
+        A mapping can use compact ``id: [x, y, z]`` entries or detailed values
+        containing ``position`` and an optional ``source_model``. Sequence
+        entries require an ``id`` plus ``position`` or ``source``.
+        """
+        actual_receiver = receiver if receiver is not None else self.default_receiver
+        if actual_receiver is None:
+            raise ValueError("receiver is required; pass it to create() or run_sources()")
+        receiver_point = _floorplan_position(actual_receiver, "receiver")
+        jobs = _source_jobs(sources)
+        if not jobs:
+            raise ValueError("sources must contain at least one source")
+        base_config = config or self.config
+        model = self.receiver_model if receiver_model is None else _microphone_model(receiver_model)
+
+        def solve(index_job: tuple[int, tuple[str, tuple[float, float, float], Any]]) -> tuple[str, SimulationResult]:
+            index, (source_id, position, emitter_value) = index_job
+            item_config = replace(base_config, seed=int(base_config.seed + index))
+            emitter = self.source_model if emitter_value is None else source_directivity(emitter_value)
+            return source_id, self.run(
+                source=position,
+                receiver=receiver_point,
+                config=item_config,
+                receiver_model=model,
+                source_model=emitter,
+            )
+
+        indexed = tuple(enumerate(jobs))
+        worker_count = max(1, int(workers))
+        if worker_count == 1:
+            solved = tuple(solve(item) for item in indexed)
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="acoustic-agent-sources") as pool:
+                solved = tuple(pool.map(solve, indexed))
+        return MultiSourceSimulationResult(
+            items=dict(solved),
+            receiver=tuple(receiver_point),
+            metadata={
+                "model": "independent_point_sources_v1",
+                "scene": self.scene_type,
+                "source_count": len(solved),
+                "workers": worker_count,
+                "sample_rate": int(base_config.fs),
+                "mixing": "convolve_each_source_then_sum",
             },
         )
 

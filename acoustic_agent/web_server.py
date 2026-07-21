@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import struct
 import wave
 from collections import OrderedDict
@@ -29,7 +30,7 @@ from .web_export import scene_payload
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
-CALIBRATION_AUDIO_PATH = Path(__file__).resolve().parents[2] / "reading.wav"
+AUDIO_ROOT = Path(__file__).resolve().parent / "resources" / "audio"
 _SIMULATION_LOCK = Lock()
 _RESULT_LOCK = Lock()
 _RESULT_LIMIT = 64
@@ -144,6 +145,23 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/v1/materials/semantics":
             library = MaterialLibrary.load()
             self._send_json({"stats": library.stats(), "semantics": library.catalog()})
+            return
+        if parsed.path == "/api/v1/audio/catalog":
+            self._send_json({"sources": _audio_catalog()})
+            return
+        if parsed.path == "/api/v1/audio/source":
+            try:
+                query = parse_qs(parsed.query)
+                source_id = str(query.get("id", ["voice"])[0])
+                fs = int(query.get("fs", ["16000"])[0])
+                duration_s = float(query.get("duration_s", ["12"])[0])
+                seed = int(query.get("seed", ["42"])[0])
+                data, content_type, filename = _audio_source_bytes(source_id, fs, duration_s, seed)
+                self._send_binary(data, content_type, filename)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as exc:
+                self.send_error(400, str(exc))
             return
         if parsed.path == "/api/calibration-audio":
             try:
@@ -343,11 +361,109 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
             self.send_error(404, "result artifact not found")
 
 
-@lru_cache(maxsize=8)
-def _calibration_audio_wav(fs: int) -> bytes:
-    samples, source_fs = _read_wav_mono(CALIBRATION_AUDIO_PATH)
-    resampled = _resample_linear(samples, source_fs, int(fs))
-    pcm = np.rint(np.clip(resampled, -1.0, 1.0) * 32767.0).astype("<i2")
+def _audio_catalog() -> list[dict[str, Any]]:
+    recordings = [
+        ("voice", "Main voice", "main_voice.wav", "foreground"),
+        ("background_speech", "Background speech", "background_speech.wav", "background"),
+        ("piano_1", "Piano 1", "piano_1.mp3", "background"),
+        ("piano_2", "Piano 2", "piano_2.mp3", "background"),
+        ("pink_noise_bed", "Pink-noise bed", "pink_noise_bed.wav", "background"),
+    ]
+    catalog = [
+        {
+            "id": source_id,
+            "title": title,
+            "kind": "recording",
+            "available": _audio_file_path(source_id) is not None,
+            "filename": filename,
+            "recommended_role": role,
+            "bundled": True,
+        }
+        for source_id, title, filename, role in recordings
+    ]
+    catalog.extend([
+        {"id": "pink_noise", "title": "Pink noise", "kind": "generated_noise", "available": True},
+        {"id": "white_noise", "title": "White noise", "kind": "generated_noise", "available": True},
+        {"id": "brown_noise", "title": "Brown noise", "kind": "generated_noise", "available": True},
+    ])
+    return catalog
+
+
+def _audio_file_path(source_id: str) -> Path | None:
+    key = str(source_id).strip().lower()
+    key = {"piano": "piano_1"}.get(key, key)
+    filenames = {
+        "voice": "main_voice.wav",
+        "background_speech": "background_speech.wav",
+        "piano_1": "piano_1.mp3",
+        "piano_2": "piano_2.mp3",
+        "pink_noise_bed": "pink_noise_bed.wav",
+    }
+    if key == "voice":
+        configured = os.environ.get("ACOUSTIC_AGENT_VOICE_AUDIO")
+    elif key == "piano_1":
+        configured = os.environ.get("ACOUSTIC_AGENT_PIANO_AUDIO")
+    else:
+        configured = None
+    filename = filenames.get(key)
+    if filename is None:
+        return None
+    candidates = [Path(configured).expanduser()] if configured else []
+    candidates.append(AUDIO_ROOT / filename)
+    return next((path.resolve() for path in candidates if path.is_file()), None)
+
+
+def _audio_source_bytes(
+    source_id: str,
+    fs: int,
+    duration_s: float,
+    seed: int,
+) -> tuple[bytes, str, str]:
+    key = str(source_id).strip().lower()
+    sample_rate = int(fs)
+    if sample_rate < 8000 or sample_rate > 192000:
+        raise ValueError("sample rate must be between 8000 and 192000 Hz")
+    duration = float(duration_s)
+    if not 0.5 <= duration <= 30.0:
+        raise ValueError("audio preview duration must be between 0.5 and 30 seconds")
+    if key in {"white_noise", "pink_noise", "brown_noise"}:
+        return _generated_noise_wav(key, sample_rate, duration, int(seed)), "audio/wav", f"{key}.wav"
+    path = _audio_file_path(key)
+    if path is None:
+        raise FileNotFoundError(f"audio source is unavailable: {key}")
+    content_type = "audio/mpeg" if path.suffix.lower() == ".mp3" else "audio/wav"
+    return path.read_bytes(), content_type, path.name
+
+
+@lru_cache(maxsize=24)
+def _generated_noise_wav(source_id: str, fs: int, duration_s: float, seed: int) -> bytes:
+    sample_count = max(1, int(round(float(duration_s) * int(fs))))
+    rng = np.random.default_rng(int(seed))
+    white = rng.normal(0.0, 1.0, sample_count)
+    if source_id == "white_noise":
+        samples = white
+    else:
+        spectrum = np.fft.rfft(white)
+        frequencies = np.fft.rfftfreq(sample_count, d=1.0 / int(fs))
+        safe_frequency = np.maximum(frequencies, 20.0)
+        exponent = 0.5 if source_id == "pink_noise" else 1.0
+        spectrum *= safe_frequency ** (-exponent)
+        spectrum[0] = 0.0
+        samples = np.fft.irfft(spectrum, sample_count)
+    samples = np.asarray(samples, dtype=np.float64)
+    samples -= float(np.mean(samples))
+    rms = float(np.sqrt(np.mean(samples * samples)))
+    if rms > 1e-12:
+        samples *= 0.12 / rms
+    fade_samples = min(sample_count // 2, max(1, int(round(0.02 * int(fs)))))
+    fade = np.linspace(0.0, 1.0, fade_samples, endpoint=True)
+    samples[:fade_samples] *= fade
+    samples[-fade_samples:] *= fade[::-1]
+    return _pcm16_wav(samples, int(fs))
+
+
+def _pcm16_wav(samples: np.ndarray, fs: int) -> bytes:
+    pcm = np.rint(np.clip(np.asarray(samples), -1.0, 1.0) * 32767.0).astype("<i2")
     output = io.BytesIO()
     with wave.open(output, "wb") as wav_file:
         wav_file.setnchannels(1)
@@ -355,6 +471,16 @@ def _calibration_audio_wav(fs: int) -> bytes:
         wav_file.setframerate(int(fs))
         wav_file.writeframes(pcm.tobytes())
     return output.getvalue()
+
+
+@lru_cache(maxsize=8)
+def _calibration_audio_wav(fs: int) -> bytes:
+    path = _audio_file_path("voice")
+    if path is None:
+        raise FileNotFoundError("voice calibration audio is unavailable")
+    samples, source_fs = _read_wav_mono(path)
+    resampled = _resample_linear(samples, source_fs, int(fs))
+    return _pcm16_wav(resampled, int(fs))
 
 
 def _read_wav_mono(path: Path) -> tuple[np.ndarray, int]:
@@ -437,6 +563,7 @@ def simulate_workbench_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "wav_url": result_metadata["files"]["wav"],
         "npy_url": result_metadata["files"]["npy"],
     })
+    out["auralization"] = _auralization_response(payload, simulation, result_metadata)
     return out
 
 
@@ -470,7 +597,7 @@ def simulate_dynamic_workbench_from_payload(payload: dict[str, Any]) -> dict[str
         simulation = _simulate_payload(frame_payload, visualization=True)
         simulations.append(simulation)
         result_id, result_metadata = _store_result(simulation.result)
-        frame_results.append({
+        frame_result = {
             "index": index,
             "phase": round(phase, 6),
             "source": [float(value) for value in simulation.source],
@@ -484,7 +611,9 @@ def simulate_dynamic_workbench_from_payload(payload: dict[str, Any]) -> dict[str
                 "npy_url": result_metadata["files"]["npy"],
             },
             "rt60": dict(simulation.result.rt60),
-        })
+        }
+        frame_result["auralization"] = _auralization_response(frame_payload, simulation, result_metadata)
+        frame_results.append(frame_result)
 
     reference = simulations[0]
     reference_result = frame_results[0]
@@ -496,6 +625,7 @@ def simulate_dynamic_workbench_from_payload(payload: dict[str, Any]) -> dict[str
         "wav_url": reference_result["rir"]["wav_url"],
         "npy_url": reference_result["rir"]["npy_url"],
     })
+    out["auralization"] = dict(reference_result["auralization"])
     out["dynamic"] = {
         "mode": str(motion.get("mode", "approach")),
         "moving": str(motion.get("moving", "source")),
@@ -508,6 +638,72 @@ def simulate_dynamic_workbench_from_payload(payload: dict[str, Any]) -> dict[str
         "renderer": "time_varying_rir_snapshot_interpolation",
     }
     return out
+
+
+def _auralization_response(
+    payload: dict[str, Any],
+    foreground: PayloadSimulation,
+    foreground_metadata: dict[str, Any],
+) -> dict[str, Any]:
+    raw = payload.get("auralization") if isinstance(payload.get("auralization"), dict) else {}
+    foreground_raw = raw.get("foreground") if isinstance(raw.get("foreground"), dict) else {}
+    response: dict[str, Any] = {
+        "model": "independent_source_rirs_then_sum",
+        "foreground": {
+            "audio_id": str(foreground_raw.get("audio_id", "voice")),
+            "gain_db": float(foreground_raw.get("gain_db", 0.0)),
+            "source": [float(value) for value in foreground.source],
+            "result_id": str(foreground_metadata["id"]),
+            "rir": _stored_rir_descriptor(foreground_metadata),
+        },
+        "background": {"enabled": False},
+    }
+    background_raw = raw.get("background") if isinstance(raw.get("background"), dict) else {}
+    if not bool(background_raw.get("enabled", False)):
+        return response
+
+    position = tuple(_float_list(background_raw.get("source"), 3))
+    background_payload = dict(payload)
+    background_payload.pop("motion", None)
+    background_payload.pop("auralization", None)
+    background_payload["source"] = list(position)
+    background_payload["source_model"] = background_raw.get("source_model", {"type": "omni"})
+    room_metadata = payload.get("room_metadata")
+    if isinstance(room_metadata, dict):
+        background_payload["room_metadata"] = motion_room_metadata(
+            room_metadata,
+            position,
+            foreground.receiver,
+        )
+    background = _simulate_payload(background_payload, visualization=False)
+    _, background_metadata = _store_result(background.result)
+    snr_value = background_raw.get("snr_db")
+    if snr_value is None:
+        snr_value = -float(background_raw.get("gain_db", -10.0))
+    snr_value = float(snr_value)
+    if not np.isfinite(snr_value) or not -60.0 <= snr_value <= 60.0:
+        raise ValueError("background snr_db must be between -60 and 60 dB")
+    response["background"] = {
+        "enabled": True,
+        "audio_id": str(background_raw.get("audio_id", "pink_noise")),
+        "snr_db": snr_value,
+        "source": [float(value) for value in position],
+        "source_model": dict(background.source_model),
+        "result_id": str(background_metadata["id"]),
+        "rir": _stored_rir_descriptor(background_metadata),
+    }
+    return response
+
+
+def _stored_rir_descriptor(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "fs": int(metadata["sample_rate"]),
+        "shape": list(metadata["shape"]),
+        "duration_s": float(metadata["duration_s"]),
+        "encoding": "float32-wav",
+        "wav_url": str(metadata["files"]["wav"]),
+        "npy_url": str(metadata["files"]["npy"]),
+    }
 
 
 def _simulate_payload(payload: dict[str, Any], *, visualization: bool) -> PayloadSimulation:

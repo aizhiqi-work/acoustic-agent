@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip the small startup JIT warmup; the first simulation will compile kernels.",
     )
 
-    verify = commands.add_parser("verify-resources", help="Validate bundled SOFA and SQLite files.")
+    verify = commands.add_parser("verify-resources", help="Validate all bundled runtime resources.")
     verify.add_argument(
         "--hashes",
         action="store_true",

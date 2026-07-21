@@ -15,3 +15,7 @@ Floorplan V1 is adapted from the ResPlan dataset by Mohamed Abouagour and
 Eleftherios Garyfallidis (2025), https://doi.org/10.48550/arXiv.2508.14006. The
 adapted resource is distributed under CC BY-NC-SA 4.0; see its packaged
 DATA_LICENSE.md for attribution, change notice, and use conditions.
+
+The package also contains project-supplied demonstration audio for local
+auralization. Its provenance is marked NOASSERTION; confirm redistribution
+rights before a public release. See resources/audio/DATA_LICENSE.md.
