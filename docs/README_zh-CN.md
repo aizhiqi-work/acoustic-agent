@@ -139,9 +139,10 @@ agent = AcousticAgent.from_floorplan_spec(
 rir = agent.run().rir
 ```
 
-上传图片只会在浏览器本地显示，不会上传到服务器。点击 “Copy Codex prompt”，把
-提示词和图片交给 Codex，再将它输出的 JSON 粘贴回页面并点击 “Apply floor plan”。
-Width 与 Depth 始终等比例校准，Height 独立设置。完整格式与测试方式见
+Custom 页面支持两种输入：户型图模式把所选图片和 “Copy ChatGPT prompt” 得到的
+提示词一起交给 ChatGPT；文本模式会把住宅描述直接写入提示词。两种方式都只需将
+ChatGPT 输出的 JSON 粘贴回页面并点击 “Apply floor plan”。图片只在浏览器本地预览，
+不会上传到服务器。Width 与 Depth 始终等比例校准，Height 独立设置。完整格式与测试方式见
 [`CUSTOM_FLOORPLAN.md`](CUSTOM_FLOORPLAN.md)。
 
 ## 档位

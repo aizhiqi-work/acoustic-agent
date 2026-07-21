@@ -111,9 +111,10 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/v1/custom/capabilities":
             self._send_json({
                 "local_text_generation": True,
-                "image_overlay": True,
+                "image_overlay": False,
                 "json_editing": True,
-                "codex_handoff": True,
+                "chatgpt_handoff": True,
+                "input_modes": ["image", "text"],
                 "vlm": {
                     "available": False,
                     "provider": None,
@@ -122,9 +123,20 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
             })
             return
         if parsed.path == "/api/v1/custom/prompt":
-            from .custom_floorplan import floorplan_vlm_prompt
+            from .custom_floorplan import floorplan_text_prompt, floorplan_vlm_prompt
 
-            self._send_json({"prompt": floorplan_vlm_prompt(), "schema_version": 1})
+            try:
+                query = parse_qs(parsed.query)
+                mode = str(query.get("mode", ["image"])[0]).strip().lower()
+                if mode == "text":
+                    prompt = floorplan_text_prompt(query.get("description", [""])[0])
+                elif mode == "image":
+                    prompt = floorplan_vlm_prompt()
+                else:
+                    raise ValueError("mode must be image or text")
+                self._send_json({"prompt": prompt, "mode": mode, "schema_version": 1})
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=400)
             return
         if parsed.path.startswith("/api/v1/results/"):
             self._send_stored_result(parsed.path)

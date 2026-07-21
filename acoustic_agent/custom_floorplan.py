@@ -815,23 +815,19 @@ def _short_title(text: str) -> str:
     return compact[:72] + ("..." if len(compact) > 72 else "")
 
 
-def floorplan_vlm_prompt() -> str:
-    """Return the provider-independent image-to-floor-plan extraction contract."""
-    return """You are converting an attached residential floor-plan image into Acoustic Agent Floorplan JSON.
-
-Return exactly one JSON object and no Markdown. Follow these rules:
-1. Use meters and preserve the attached image orientation exactly. Set the top-left of outer_boundary to [0, 0], x to the right, and y downward. Do not rotate, mirror, or vertically flip the plan.
-2. If a printed scale or dimensions exist, use them. Otherwise set the outer width to 10 m, preserve the image aspect ratio, and record that assumption in provenance.scale_assumption.
-3. Trace the indoor outer boundary and every indoor room polygon. Room polygons must not overlap, must remain inside outer_boundary, and together must cover the indoor boundary.
-4. Supported room types are living, kitchen, bedroom, bathroom, storage, and balcony. Give every room a unique id such as bedroom_0.
-5. Represent each door, window, or wall-free opening as a two-point segment lying exactly on the relevant room boundary.
-6. An interior connection references exactly two room_ids and uses connection=\"interior_room\". An entry door references one room and uses connection=\"outdoor_entry\". An exterior window references one room and uses connection=\"outdoor_facade\".
-7. Set interior doors and wall-free openings to open=true. Set exterior entry doors and windows to open=false. Do not invent an opening that is not visible.
-8. Use confidence between 0 and 1. Use sill_height_m=0 for doors/openings and approximately 0.9 for windows unless the drawing specifies otherwise.
-9. Preserve uncertain geometry conservatively and describe uncertainties in provenance.notes.
+def _floorplan_json_contract(provenance_source: str) -> str:
+    return f"""Return exactly one JSON object and no Markdown. Follow these rules:
+1. Use meters. Set the top-left of outer_boundary to [0, 0], x to the right, and y downward.
+2. Room polygons must not overlap, must remain inside outer_boundary, and together must cover the indoor boundary.
+3. Supported room types are living, kitchen, bedroom, bathroom, storage, and balcony. Give every room a unique id such as bedroom_0.
+4. Represent each door, window, or wall-free opening as a two-point segment lying exactly on the relevant room boundary.
+5. An interior connection references exactly two room_ids and uses connection=\"interior_room\". An entry door references one room and uses connection=\"outdoor_entry\". An exterior window references one room and uses connection=\"outdoor_facade\".
+6. Set interior doors and wall-free openings to open=true. Set exterior entry doors and windows to open=false.
+7. Use confidence between 0 and 1. Use sill_height_m=0 for doors/openings and approximately 0.9 for windows unless otherwise specified.
+8. Preserve uncertain geometry conservatively and describe assumptions in provenance.notes.
 
 Required JSON shape:
-{
+{{
   \"schema_version\": 1,
   \"title\": \"...\",
   \"units\": \"m\",
@@ -840,15 +836,39 @@ Required JSON shape:
   \"wall_depth_m\": 0.12,
   \"outer_boundary\": [[x, y], ...],
   \"rooms\": [
-    {\"id\": \"living_0\", \"type\": \"living\", \"corners\": [[x, y], ...]}
+    {{\"id\": \"living_0\", \"type\": \"living\", \"corners\": [[x, y], ...]}}
   ],
   \"openings\": [
-    {\"id\": \"door_0\", \"type\": \"door\", \"room_ids\": [\"living_0\", \"bedroom_0\"], \"segment\": [[x1, y1], [x2, y2]], \"height_m\": 2.1, \"sill_height_m\": 0.0, \"connection\": \"interior_room\", \"open\": true, \"confidence\": 0.9}
+    {{\"id\": \"door_0\", \"type\": \"door\", \"room_ids\": [\"living_0\", \"bedroom_0\"], \"segment\": [[x1, y1], [x2, y2]], \"height_m\": 2.1, \"sill_height_m\": 0.0, \"connection\": \"interior_room\", \"open\": true, \"confidence\": 0.9}}
   ],
-  \"provenance\": {\"source\": \"vlm_image\", \"scale_assumption\": null, \"notes\": []}
-}
+  \"provenance\": {{\"source\": \"{provenance_source}\", \"scale_assumption\": null, \"notes\": []}}
+}}
 
 Before returning, check polygon coverage, overlap, boundary alignment, room references, and open-door connectivity."""
+
+
+def floorplan_vlm_prompt() -> str:
+    """Return the provider-independent image-to-floor-plan extraction contract."""
+    return """You are converting an attached residential floor-plan image into Acoustic Agent Floorplan JSON.
+
+Preserve the attached image orientation exactly. Do not rotate, mirror, or vertically flip the plan. Trace the indoor outer boundary and every indoor room polygon. If a printed scale or dimensions exist, use them. Otherwise set the outer width to 10 m, preserve the image aspect ratio, and record that assumption in provenance.scale_assumption. Do not invent an opening that is not visible.
+
+""" + _floorplan_json_contract("vlm_image")
+
+
+def floorplan_text_prompt(description: str) -> str:
+    """Return a text-to-floor-plan generation contract containing the user brief."""
+    brief = re.sub(r"\s+", " ", str(description)).strip()
+    if not brief:
+        raise ValueError("A floor-plan description is required")
+    return f"""You are designing a residential floor plan for Acoustic Agent from a user's description.
+
+User request:
+{brief}
+
+Create a practical, compact, axis-aligned layout that satisfies the requested room counts and dimensions. If dimensions are missing, choose reasonable residential dimensions and record them in provenance.scale_assumption. Connect every indoor room to the living/circulation space through an open interior door or wall-free opening. Put plausible closed windows on exterior walls and use an outdoor entry door. Do not add rooms that contradict the request.
+
+""" + _floorplan_json_contract("vlm_text")
 
 
 class FloorplanBuilder:
@@ -858,3 +878,4 @@ class FloorplanBuilder:
     validate = staticmethod(validate_floorplan_spec)
     compile = staticmethod(compile_floorplan_spec)
     vlm_prompt = staticmethod(floorplan_vlm_prompt)
+    text_prompt = staticmethod(floorplan_text_prompt)

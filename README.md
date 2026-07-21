@@ -243,10 +243,11 @@ agent = AcousticAgent.from_floorplan_spec(
 rir = agent.run().rir
 ```
 
-The `/custom` workbench also accepts an uploaded floor-plan image as a local
-overlay. With no VLM API, use **Copy Codex prompt**, attach the image to Codex,
-then paste the returned JSON into the built-in editor. No image is uploaded by
-the workbench. See [`docs/CUSTOM_FLOORPLAN.md`](docs/CUSTOM_FLOORPLAN.md).
+The `/custom` workbench accepts either a floor-plan image or a natural-language
+home description. Use **Copy ChatGPT prompt**, send the prompt with the image
+when applicable, then paste ChatGPT's JSON into the built-in editor. No image is
+uploaded by the workbench. See
+[`docs/CUSTOM_FLOORPLAN.md`](docs/CUSTOM_FLOORPLAN.md).
 
 ## Semantic Furniture And Materials
 

@@ -126,3 +126,12 @@ def test_codex_handoff_prompt_describes_the_validated_schema() -> None:
     assert "Do not rotate, mirror, or vertically flip" in prompt
     assert 'connection="interior_room"' in prompt
     assert "check polygon coverage" in prompt
+
+
+def test_chatgpt_text_prompt_includes_the_user_brief_and_same_schema() -> None:
+    prompt = FloorplanBuilder.text_prompt("A 9 m x 7 m home with two bedrooms and one bathroom")
+
+    assert "A 9 m x 7 m home with two bedrooms and one bathroom" in prompt
+    assert '"coordinate_system": "image_top_left"' in prompt
+    assert '"source": "vlm_text"' in prompt
+    assert "Return exactly one JSON object" in prompt
