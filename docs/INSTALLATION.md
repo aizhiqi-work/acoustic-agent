@@ -82,7 +82,7 @@ python -m twine check dist/*
 Before publishing, verify the files in the wheel:
 
 ```bash
-python -m zipfile -l dist/acoustic_agent-0.1.0-py3-none-any.whl
+python -m zipfile -l dist/acoustic_agent-0.1.1-py3-none-any.whl
 ```
 
 The wheel is large because it is deliberately resource-complete. Do not create
@@ -93,7 +93,7 @@ optional-resource contract.
 ## Install A Built Wheel
 
 ```bash
-python -m pip install dist/acoustic_agent-0.1.0-py3-none-any.whl
+python -m pip install dist/acoustic_agent-0.1.1-py3-none-any.whl
 acoustic-agent verify-resources --hashes
 acoustic-agent web
 ```

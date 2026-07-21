@@ -1,6 +1,6 @@
 """Acoustic Agent: compact indoor sound-field simulation primitives."""
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .api import AcousticAgent, DynamicSimulationResult, MultiSourceSimulationResult
 from .audio import mix_audio, mix_audio_at_snr, render_audio, resample_audio
