@@ -32,6 +32,46 @@
       "size_bytes": 63741952,
       "sha256": "c6c472c206835dfca69bd25c932ae7175adabe160e5d0b252296d4da5f104e06",
       "license": "CC-BY-NC-SA-4.0; adapted from ResPlan; see floorplan/DATA_LICENSE.md"
+    },
+    {
+      "id": "audio_main_voice",
+      "path": "audio/main_voice.wav",
+      "kind": "demo_audio",
+      "size_bytes": 1401750,
+      "sha256": "530e0794868ca5cd0d28d4c371abb2b40a953032e5cb17878739fcc2578b9e4c",
+      "license": "NOASSERTION; see audio/DATA_LICENSE.md"
+    },
+    {
+      "id": "audio_background_speech",
+      "path": "audio/background_speech.wav",
+      "kind": "demo_audio",
+      "size_bytes": 1162832,
+      "sha256": "8d42efd055da764f2e8059867c7869be94e06907450baae6c0761eeda886b1a3",
+      "license": "NOASSERTION; see audio/DATA_LICENSE.md"
+    },
+    {
+      "id": "audio_piano_1",
+      "path": "audio/piano_1.mp3",
+      "kind": "demo_audio",
+      "size_bytes": 340218,
+      "sha256": "011e4092d3f422e36688b7da15693709e64ffa9e649b519c3bb7e9406be58c0e",
+      "license": "NOASSERTION; see audio/DATA_LICENSE.md"
+    },
+    {
+      "id": "audio_piano_2",
+      "path": "audio/piano_2.mp3",
+      "kind": "demo_audio",
+      "size_bytes": 1748577,
+      "sha256": "b9a7251a7525a7297dcfe3a6e576e9c0e4146d72a8294eca39821464f94912d3",
+      "license": "NOASSERTION; see audio/DATA_LICENSE.md"
+    },
+    {
+      "id": "audio_pink_noise_bed",
+      "path": "audio/pink_noise_bed.wav",
+      "kind": "demo_audio",
+      "size_bytes": 1764080,
+      "sha256": "661061e89b29924091e879a28da9109285508fb819f440f1d5e5175f2c3bba20",
+      "license": "NOASSERTION; see audio/DATA_LICENSE.md"
     }
   ]
 }

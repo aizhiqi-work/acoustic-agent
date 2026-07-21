@@ -165,3 +165,14 @@ requires attribution, noncommercial use, identification of changes, and
 ShareAlike licensing of adaptations. Apache-2.0 applies to Acoustic Agent code;
 it does not relicense this dataset-derived resource. See the packaged
 `floorplan/DATA_LICENSE.md` and `floorplan/source.json`.
+
+## Demo Audio
+
+Files: `acoustic_agent/resources/audio/*`
+
+The project bundles a narration recording, a background-speech recording, two
+piano recordings, and a pink-noise bed for reproducible auralization. These
+assets were supplied directly to the project and renamed without content
+changes. Their external provenance and redistribution terms are currently
+`NOASSERTION`. Confirm the necessary rights before publishing a release that
+contains them. See the packaged `audio/DATA_LICENSE.md`.

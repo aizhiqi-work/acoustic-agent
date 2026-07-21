@@ -3,7 +3,7 @@ import wave
 
 import numpy as np
 
-from acoustic_agent import AcousticAgent, mix_audio, render_audio
+from acoustic_agent import AcousticAgent, mix_audio_at_snr, render_audio
 
 
 OUT = Path(__file__).resolve().parent / "output" / "multi_source_mix.wav"
@@ -32,8 +32,8 @@ def main() -> None:
     background = rng.normal(0.0, 0.08, time.size).astype(np.float32)
 
     foreground_wet = render_audio(foreground, sources["foreground"].rir)
-    background_wet = render_audio(background, sources["background"].rir, gain_db=-18.0)
-    room_mix = mix_audio([foreground_wet, background_wet], normalize=True)
+    background_wet = render_audio(background, sources["background"].rir)
+    room_mix = mix_audio_at_snr(foreground_wet, background_wet, snr_db=10.0, normalize=True)
     write_pcm16_wav(OUT, room_mix, fs)
     print(OUT)
 

@@ -10,6 +10,11 @@ def test_required_binary_resources_are_packaged_and_readable() -> None:
         "sadie_h12",
         "acoustic_materials_v3",
         "floorplan_v1",
+        "audio_main_voice",
+        "audio_background_speech",
+        "audio_piano_1",
+        "audio_piano_2",
+        "audio_pink_noise_bed",
     }
 
 

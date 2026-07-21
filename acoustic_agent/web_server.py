@@ -30,9 +30,7 @@ from .web_export import scene_payload
 
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
-WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
-CALIBRATION_AUDIO_PATH = WORKSPACE_ROOT / "reading.wav"
-PIANO_AUDIO_PATH = WORKSPACE_ROOT / "traces-of-stillness.mp3"
+AUDIO_ROOT = Path(__file__).resolve().parent / "resources" / "audio"
 _SIMULATION_LOCK = Lock()
 _RESULT_LOCK = Lock()
 _RESULT_LIMIT = 64
@@ -364,43 +362,54 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
 
 
 def _audio_catalog() -> list[dict[str, Any]]:
-    voice = _audio_file_path("voice")
-    piano = _audio_file_path("piano")
-    return [
+    recordings = [
+        ("voice", "Main voice", "main_voice.wav", "foreground"),
+        ("background_speech", "Background speech", "background_speech.wav", "background"),
+        ("piano_1", "Piano 1", "piano_1.mp3", "background"),
+        ("piano_2", "Piano 2", "piano_2.mp3", "background"),
+        ("pink_noise_bed", "Pink-noise bed", "pink_noise_bed.wav", "background"),
+    ]
+    catalog = [
         {
-            "id": "voice",
-            "title": "Voice",
+            "id": source_id,
+            "title": title,
             "kind": "recording",
-            "available": voice is not None,
-            "filename": voice.name if voice else "reading.wav",
-            "local_only": True,
-        },
-        {
-            "id": "piano",
-            "title": "Piano",
-            "kind": "recording",
-            "available": piano is not None,
-            "filename": piano.name if piano else "traces-of-stillness.mp3",
-            "local_only": True,
-        },
+            "available": _audio_file_path(source_id) is not None,
+            "filename": filename,
+            "recommended_role": role,
+            "bundled": True,
+        }
+        for source_id, title, filename, role in recordings
+    ]
+    catalog.extend([
         {"id": "pink_noise", "title": "Pink noise", "kind": "generated_noise", "available": True},
         {"id": "white_noise", "title": "White noise", "kind": "generated_noise", "available": True},
         {"id": "brown_noise", "title": "Brown noise", "kind": "generated_noise", "available": True},
-    ]
+    ])
+    return catalog
 
 
 def _audio_file_path(source_id: str) -> Path | None:
     key = str(source_id).strip().lower()
+    key = {"piano": "piano_1"}.get(key, key)
+    filenames = {
+        "voice": "main_voice.wav",
+        "background_speech": "background_speech.wav",
+        "piano_1": "piano_1.mp3",
+        "piano_2": "piano_2.mp3",
+        "pink_noise_bed": "pink_noise_bed.wav",
+    }
     if key == "voice":
         configured = os.environ.get("ACOUSTIC_AGENT_VOICE_AUDIO")
-        candidates = [Path(configured).expanduser()] if configured else []
-        candidates.append(CALIBRATION_AUDIO_PATH)
-    elif key == "piano":
+    elif key == "piano_1":
         configured = os.environ.get("ACOUSTIC_AGENT_PIANO_AUDIO")
-        candidates = [Path(configured).expanduser()] if configured else []
-        candidates.append(PIANO_AUDIO_PATH)
     else:
+        configured = None
+    filename = filenames.get(key)
+    if filename is None:
         return None
+    candidates = [Path(configured).expanduser()] if configured else []
+    candidates.append(AUDIO_ROOT / filename)
     return next((path.resolve() for path in candidates if path.is_file()), None)
 
 
@@ -668,10 +677,16 @@ def _auralization_response(
         )
     background = _simulate_payload(background_payload, visualization=False)
     _, background_metadata = _store_result(background.result)
+    snr_value = background_raw.get("snr_db")
+    if snr_value is None:
+        snr_value = -float(background_raw.get("gain_db", -10.0))
+    snr_value = float(snr_value)
+    if not np.isfinite(snr_value) or not -60.0 <= snr_value <= 60.0:
+        raise ValueError("background snr_db must be between -60 and 60 dB")
     response["background"] = {
         "enabled": True,
         "audio_id": str(background_raw.get("audio_id", "pink_noise")),
-        "gain_db": float(background_raw.get("gain_db", -18.0)),
+        "snr_db": snr_value,
         "source": [float(value) for value in position],
         "source_model": dict(background.source_model),
         "result_id": str(background_metadata["id"]),

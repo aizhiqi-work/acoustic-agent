@@ -63,6 +63,8 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
         assert 'id="foregroundAudio"' in html
         assert 'id="backgroundEnabled"' in html
         assert 'id="backgroundAudio"' in html
+        assert 'id="backgroundSnr"' in html
+        assert 'id="backgroundGain"' not in html
         assert 'id="backgroundX"' in html
         assert 'id="foregroundAudioFile"' in html
         assert 'id="backgroundAudioFile"' in html
@@ -120,6 +122,7 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
     assert "loadAudioCatalog" in app_js
     assert "loadProgramAudio" in app_js
     assert "mixRenderedTracks" in app_js
+    assert "receiverSnrBackgroundGain" in app_js
     assert "backgroundSourcePoint3D" in app_js
     assert "agent.run_sources" in app_js
     assert "decodeFloat32WavFirstChannel" not in app_js
@@ -164,7 +167,7 @@ def test_workbench_background_source_returns_an_independent_rir():
             "background": {
                 "enabled": True,
                 "audio_id": "pink_noise",
-                "gain_db": -18.0,
+                "snr_db": 10.0,
                 "source": [2.8, 2.2, 1.2],
                 "source_model": {"type": "omni"},
             },
@@ -176,6 +179,7 @@ def test_workbench_background_source_returns_an_independent_rir():
     assert auralization["foreground"]["result_id"] == response["result_id"]
     assert auralization["background"]["enabled"] is True
     assert auralization["background"]["audio_id"] == "pink_noise"
+    assert auralization["background"]["snr_db"] == 10.0
     assert auralization["background"]["source"] == [2.8, 2.2, 1.2]
     assert auralization["background"]["result_id"] != response["result_id"]
     assert auralization["background"]["rir"]["wav_url"].endswith("/rir.wav")

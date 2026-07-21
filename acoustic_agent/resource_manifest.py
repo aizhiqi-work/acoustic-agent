@@ -90,6 +90,8 @@ def _verify_file(
         check["summary"] = _verify_sqlite(path, {"metadata", "materials", "semantic_materials"})
     elif kind == "scene_database":
         check["summary"] = _verify_sqlite(path, {"metadata", "scenes"})
+    elif kind == "demo_audio":
+        check["summary"] = _verify_audio(path)
     else:
         check["summary"] = f"{size} bytes"
 
@@ -121,6 +123,19 @@ def _verify_sqlite(path: Path, required_tables: set[str]) -> str:
             return f"{count} compiled scenes"
         count = int(connection.execute("SELECT COUNT(*) FROM materials").fetchone()[0])
         return f"{count} acoustic material records"
+
+
+def _verify_audio(path: Path) -> str:
+    with path.open("rb") as handle:
+        header = handle.read(12)
+    suffix = path.suffix.lower()
+    if suffix == ".wav" and not (header[:4] == b"RIFF" and header[8:12] == b"WAVE"):
+        raise ValueError("invalid RIFF/WAVE header")
+    if suffix == ".mp3" and not (header[:3] == b"ID3" or header[:1] == b"\xff"):
+        raise ValueError("invalid MP3 header")
+    if suffix not in {".wav", ".mp3"}:
+        raise ValueError(f"unsupported demo-audio extension: {suffix}")
+    return f"{suffix[1:].upper()} demo audio, {path.stat().st_size} bytes"
 
 
 def _sha256(path: Path) -> str:

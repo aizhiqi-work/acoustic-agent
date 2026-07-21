@@ -185,7 +185,7 @@ the same point reuse the same RIR. A background signal at a different position
 needs its own source-to-receiver RIR:
 
 ```python
-from acoustic_agent import mix_audio, render_audio
+from acoustic_agent import mix_audio_at_snr, render_audio
 
 sources = agent.run_sources({
     "voice": [1.2, 1.1, 1.5],
@@ -193,21 +193,23 @@ sources = agent.run_sources({
 })
 
 voice_wet = render_audio(voice_samples, sources["voice"].rir)
-noise_wet = render_audio(noise_samples, sources["background"].rir, gain_db=-18)
-room_mix = mix_audio([voice_wet, noise_wet], normalize=True)
+noise_wet = render_audio(noise_samples, sources["background"].rir)
+room_mix = mix_audio_at_snr(voice_wet, noise_wet, snr_db=10, normalize=True)
 ```
 
 Input arrays must use the simulation sample rate; `resample_audio` provides a
-dependency-free conversion helper. The Web workbench can audition Voice,
-Piano, deterministic white/pink/brown noise, or an uploaded browser-supported
-audio file. Its optional background source has an independent position, level,
+dependency-free conversion helper. The Web workbench bundles Project
+narration, Background speech, Piano 1, Piano 2, and a Pink-noise bed. It also
+generates deterministic white, pink, and brown noise and accepts uploaded
+browser-supported audio. Each background source has an independent position
 and RIR, including receiver-motion updates.
 
-For this development workspace the server discovers `reading.wav` and
-`traces-of-stillness.mp3` from the parent directory. Equivalent paths can be
-set with `ACOUSTIC_AGENT_VOICE_AUDIO` and `ACOUSTIC_AGENT_PIANO_AUDIO`. These
-local recordings are not included in the open-source distribution unless their
-redistribution terms are documented; uploaded audio uses the same workflow.
+The SNR control is receiver-domain broadband SNR, not source gain. Both signals
+are first propagated through their own RIR; the rendered background is then
+scaled to the target RMS ratio. For example, `10 dB` makes the rendered
+foreground RMS approximately 10 dB higher than the rendered background RMS.
+See the packaged [audio release note](acoustic_agent/resources/audio/DATA_LICENSE.md)
+before redistributing the demo recordings.
 
 ## Motion And Batch Production
 
@@ -364,7 +366,7 @@ Current branch verification:
 
 | Check | Result |
 | --- | ---: |
-| Unit and integration tests | 131 passed |
+| Unit and integration tests | 132 passed |
 | Quick accuracy profile | 9/9 passed |
 | Full accuracy profile | 9/9 passed |
 | Source distribution and wheel | Passed `twine check` |

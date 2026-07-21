@@ -154,8 +154,8 @@ const defaultState = {
     foreground_id: "voice",
     foreground_gain_db: 0,
     background_enabled: false,
-    background_id: "piano",
-    background_gain_db: -18,
+    background_id: "piano_1",
+    background_snr_db: 10,
     background_source: [3.6, 1.2, 1.35],
     preview_duration_s: 12,
     noise_seed: 42,
@@ -481,7 +481,7 @@ async function loadAudioCatalog() {
   setAudioSelectOptions(backgroundAudioEl);
   const available = new Set(audioCatalog.map((item) => item.id));
   if (!available.has(state.audio.foreground_id)) state.audio.foreground_id = available.has("voice") ? "voice" : "pink_noise";
-  if (!available.has(state.audio.background_id)) state.audio.background_id = available.has("piano") ? "piano" : "pink_noise";
+  if (!available.has(state.audio.background_id)) state.audio.background_id = available.has("piano_1") ? "piano_1" : "pink_noise";
   syncAudioControls();
 }
 
@@ -1097,7 +1097,7 @@ function bindEvents() {
       ? "Background source enabled · run simulation for its RIR."
       : "Background source disabled · run simulation to update the result.");
   });
-  ["foregroundAudio", "backgroundAudio", "audioPreviewDuration", "backgroundGain"].forEach((id) => {
+  ["foregroundAudio", "backgroundAudio", "audioPreviewDuration", "backgroundSnr"].forEach((id) => {
     document.getElementById(id)?.addEventListener("input", () => {
       readAudioControls();
       syncAudioControls();
@@ -1480,7 +1480,7 @@ function readAudioControls() {
   state.audio.foreground_id = value("foregroundAudio") || state.audio.foreground_id;
   state.audio.background_enabled = Boolean(document.getElementById("backgroundEnabled")?.checked);
   state.audio.background_id = value("backgroundAudio") || state.audio.background_id;
-  state.audio.background_gain_db = clamp(controlNumber("backgroundGain", state.audio.background_gain_db), -40, 0);
+  state.audio.background_snr_db = clamp(controlNumber("backgroundSnr", state.audio.background_snr_db), -10, 30);
   state.audio.preview_duration_s = clamp(controlNumber("audioPreviewDuration", state.audio.preview_duration_s), 0.5, 30);
   state.audio.background_source = [
     controlNumber("backgroundX", state.audio.background_source[0]),
@@ -1494,7 +1494,7 @@ function syncAudioControls() {
   setValue("foregroundAudio", state.audio.foreground_id);
   setValue("backgroundAudio", state.audio.background_id);
   setValue("audioPreviewDuration", state.audio.preview_duration_s);
-  setValue("backgroundGain", state.audio.background_gain_db);
+  setValue("backgroundSnr", state.audio.background_snr_db);
   const enabled = Boolean(state.audio.background_enabled);
   const toggle = document.getElementById("backgroundEnabled");
   if (toggle) toggle.checked = enabled;
@@ -1506,8 +1506,8 @@ function syncAudioControls() {
   const backgroundUpload = document.getElementById("backgroundUploadLabel");
   if (foregroundUpload) foregroundUpload.hidden = state.audio.foreground_id !== "upload";
   if (backgroundUpload) backgroundUpload.hidden = !enabled || state.audio.background_id !== "upload";
-  const gainOutput = document.getElementById("backgroundGainValue");
-  if (gainOutput) gainOutput.textContent = `${Number(state.audio.background_gain_db).toFixed(0)} dB`;
+  const snrOutput = document.getElementById("backgroundSnrValue");
+  if (snrOutput) snrOutput.textContent = `${Number(state.audio.background_snr_db).toFixed(0)} dB`;
   syncPositionControls();
 }
 
@@ -1870,7 +1870,7 @@ function apiPayload() {
       background: {
         enabled: Boolean(state.audio.background_enabled),
         audio_id: state.audio.background_id,
-        gain_db: Number(state.audio.background_gain_db),
+        snr_db: Number(state.audio.background_snr_db),
         source: state.audio.background_source.map(Number),
         source_model: { type: "omni" },
       },
@@ -4348,13 +4348,17 @@ async function updateCalibrationAudio(scene, requestSeq) {
     const dryTracks = [foregroundSamples];
     const wetTracks = [foregroundWet];
     if (backgroundEnabled && backgroundDry) {
-      const backgroundGain = 10 ** (Number(state.audio.background_gain_db || -18) / 20);
-      const backgroundSamples = scaledSamples(fitAudioLength(backgroundDry.samples, programLength, true), backgroundGain);
-      const backgroundWet = backgroundRirs.length > 1
-        ? await convolveDynamicChannels(backgroundSamples, backgroundRirs, phases, fs)
-        : await convolveChannels(backgroundSamples, backgroundRirs[0], fs);
-      dryTracks.push(backgroundSamples);
-      wetTracks.push(backgroundWet);
+      const rawBackgroundSamples = fitAudioLength(backgroundDry.samples, programLength, true);
+      const rawBackgroundWet = backgroundRirs.length > 1
+        ? await convolveDynamicChannels(rawBackgroundSamples, backgroundRirs, phases, fs)
+        : await convolveChannels(rawBackgroundSamples, backgroundRirs[0], fs);
+      const backgroundGain = receiverSnrBackgroundGain(
+        foregroundWet,
+        rawBackgroundWet,
+        Number(state.audio.background_snr_db ?? 10),
+      );
+      dryTracks.push(scaledSamples(rawBackgroundSamples, backgroundGain));
+      wetTracks.push(scaledChannels(rawBackgroundWet, backgroundGain));
     }
     if (token !== calibrationAudioSeq || requestSeq !== simulationRequestSeq) return;
 
@@ -4380,7 +4384,9 @@ async function updateCalibrationAudio(scene, requestSeq) {
     if (dryTitle) dryTitle.textContent = `Dry · ${programTitle}`;
     if (wetTitle) wetTitle.textContent = `Rendered · ${programTitle}`;
     if (dryDetail) dryDetail.textContent = backgroundEnabled ? "Two source signals before propagation" : "Source signal before propagation";
-    if (wetDetail) wetDetail.textContent = backgroundEnabled ? "Two independent RIRs mixed at the receiver" : "Source convolved with the receiver RIR";
+    if (wetDetail) wetDetail.textContent = backgroundEnabled
+      ? `Two independent RIRs · target SNR ${Number(state.audio.background_snr_db).toFixed(0)} dB`
+      : "Source convolved with the receiver RIR";
     setCalibrationAudioMeta(dynamicFrames.length > 1
       ? `${sourceCount} sources · ${dynamicFrames.length} moving RIR frames · ready`
       : `${programLength / fs < 10 ? (programLength / fs).toFixed(1) : Math.round(programLength / fs)} s · ${formatSampleRate(fs)} · ready`);
@@ -4665,6 +4671,27 @@ function maxAbs(samples) {
 
 function maxAbsChannels(channels) {
   return Math.max(0, ...channels.map((samples) => maxAbs(samples)));
+}
+
+function rmsChannels(channels) {
+  let energy = 0;
+  let count = 0;
+  channels.forEach((samples) => {
+    for (let index = 0; index < samples.length; index += 1) {
+      energy += samples[index] * samples[index];
+    }
+    count += samples.length;
+  });
+  return count > 0 ? Math.sqrt(energy / count) : 0;
+}
+
+function receiverSnrBackgroundGain(foregroundChannels, backgroundChannels, snrDb) {
+  const foregroundRms = rmsChannels(foregroundChannels);
+  const backgroundRms = rmsChannels(backgroundChannels);
+  if (!(foregroundRms > 1e-12) || !(backgroundRms > 1e-12)) {
+    throw new Error("cannot set SNR for silent rendered audio");
+  }
+  return foregroundRms / (backgroundRms * 10 ** (Number(snrDb) / 20));
 }
 
 function scaledSamples(samples, gain) {

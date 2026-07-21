@@ -68,6 +68,39 @@ def mix_audio(
     return np.asarray(output, dtype=np.float32)
 
 
+def mix_audio_at_snr(
+    foreground: np.ndarray | Sequence[float],
+    background: np.ndarray | Sequence[float],
+    *,
+    snr_db: float = 10.0,
+    normalize: bool = False,
+    peak: float = 0.98,
+) -> np.ndarray:
+    """Mix rendered signals at a receiver-domain broadband SNR.
+
+    Both inputs should already be convolved with their own RIR. The background
+    is scaled so ``20 * log10(foreground_rms / background_rms)`` equals
+    ``snr_db`` before optional final peak normalization.
+    """
+    signal = _channel_first(foreground, "foreground")
+    noise = _channel_first(background, "background")
+    channel_count = max(signal.shape[0], noise.shape[0])
+    signal = _expand_channels(signal, channel_count, "foreground")
+    noise = _expand_channels(noise, channel_count, "background")
+
+    target_snr = float(snr_db)
+    if not math.isfinite(target_snr):
+        raise ValueError("snr_db must be finite")
+    signal_rms = float(np.sqrt(np.mean(np.square(signal, dtype=np.float64))))
+    noise_rms = float(np.sqrt(np.mean(np.square(noise, dtype=np.float64))))
+    if signal_rms <= 1e-12:
+        raise ValueError("foreground RMS must be greater than zero")
+    if noise_rms <= 1e-12:
+        raise ValueError("background RMS must be greater than zero")
+    noise_gain = signal_rms / (noise_rms * 10.0 ** (target_snr / 20.0))
+    return mix_audio([signal, noise * noise_gain], normalize=normalize, peak=peak)
+
+
 def resample_audio(
     samples: np.ndarray | Sequence[float],
     source_fs: int,
@@ -105,3 +138,11 @@ def _channel_first(value: np.ndarray | Sequence[float], label: str) -> np.ndarra
     if not np.all(np.isfinite(values)):
         raise ValueError(f"{label} must contain only finite samples")
     return values
+
+
+def _expand_channels(values: np.ndarray, channel_count: int, label: str) -> np.ndarray:
+    if values.shape[0] == channel_count:
+        return values
+    if values.shape[0] == 1:
+        return np.repeat(values, channel_count, axis=0)
+    raise ValueError(f"{label} has {values.shape[0]} channels; expected 1 or {channel_count}")

@@ -12,6 +12,11 @@ distributions, archives, or Git LFS checkouts.
 | `sadie_h12` | `resources/hrtf/sadie_h12.sofa` | 8,753,320 | `44306dad84af6976597ec0ed1d7dbbbc13e0696a41515a9a00ce39bfb6202bd0` |
 | `acoustic_materials_v3` | `resources/acoustic_materials/acoustic_materials_v3.sqlite3` | 1,912,832 | `5f905021fad8f9352b6a761bb3ac2e80651957d0a66ae67c5ecce5e0f53bd555` |
 | `floorplan_v1` | `resources/floorplan/floorplan_v1.sqlite3` | 63,741,952 | `c6c472c206835dfca69bd25c932ae7175adabe160e5d0b252296d4da5f104e06` |
+| `audio_main_voice` | `resources/audio/main_voice.wav` | 1,401,750 | `530e0794868ca5cd0d28d4c371abb2b40a953032e5cb17878739fcc2578b9e4c` |
+| `audio_background_speech` | `resources/audio/background_speech.wav` | 1,162,832 | `8d42efd055da764f2e8059867c7869be94e06907450baae6c0761eeda886b1a3` |
+| `audio_piano_1` | `resources/audio/piano_1.mp3` | 340,218 | `011e4092d3f422e36688b7da15693709e64ffa9e649b519c3bb7e9406be58c0e` |
+| `audio_piano_2` | `resources/audio/piano_2.mp3` | 1,748,577 | `b9a7251a7525a7297dcfe3a6e576e9c0e4146d72a8294eca39821464f94912d3` |
+| `audio_pink_noise_bed` | `resources/audio/pink_noise_bed.wav` | 1,764,080 | `661061e89b29924091e879a28da9109285508fb819f440f1d5e5175f2c3bba20` |
 
 The machine-readable copy is `acoustic_agent/resources/manifest.json`.
 
@@ -30,8 +35,9 @@ acoustic-agent verify-resources --hashes
 ```
 
 The verifier opens each SOFA file with h5py, checks required datasets, opens
-each SQLite database in read-only mode, checks required tables, and validates
-record counts. `--hashes` also reads every byte and compares SHA-256 values.
+each SQLite database in read-only mode, checks required tables, validates audio
+container headers, and validates record counts. `--hashes` also reads every
+byte and compares SHA-256 values.
 
 ## HRTF Resources
 
@@ -87,6 +93,13 @@ python scripts/build_floorplan_resource.py \
 The raw pickle is not required at runtime. The compiled SQLite database is.
 The adapted resource is CC BY-NC-SA 4.0; see `floorplan/DATA_LICENSE.md`.
 
+## Demo Audio
+
+Five source programs are packaged for reproducible listening tests: project
+narration, background speech, two piano recordings, and a stationary
+pink-noise bed. They are convolved at runtime and are not part of the RIR
+itself. See `resources/audio/README.md` and `resources/audio/DATA_LICENSE.md`.
+
 ## Git LFS
 
 `.gitattributes` assigns `.sqlite3` and `.pkl` files to Git LFS. The smaller
@@ -101,7 +114,7 @@ When adding or replacing a runtime resource:
 3. Update `manifest.json` size and SHA-256.
 4. Run `acoustic-agent verify-resources --hashes`.
 5. Run `pytest` and build wheel/sdist.
-6. Inspect both archives for all four required runtime resources.
+6. Inspect both archives for all required runtime resources.
 
 ## Public Release Gate
 
@@ -111,4 +124,5 @@ manufacturer and Acoustic Supplies subsets still require written redistribution
 permission or exclusion from a reviewed public build. Floorplan V1 carries
 ResPlan attribution and CC BY-NC-SA 4.0 data terms. These are release
 requirements, not reasons to silently omit runtime resources from an advertised
-complete build.
+complete build. The demo recordings are currently marked `NOASSERTION`; verify
+their redistribution rights before publishing a release artifact.

@@ -151,20 +151,22 @@ RIR 描述的是声源位置到接收器之间的传播，与输入是人声、�
 位置只替换音频时可以复用 RIR；背景声位于另一位置时，应单独计算一条 RIR：
 
 ```python
-from acoustic_agent import mix_audio, render_audio
+from acoustic_agent import mix_audio_at_snr, render_audio
 
 sources = agent.run_sources({
     "voice": [1.2, 1.1, 1.5],
-    "piano": [4.8, 1.0, 1.2],
+    "piano_1": [4.8, 1.0, 1.2],
 })
 voice_wet = render_audio(voice_samples, sources["voice"].rir)
-piano_wet = render_audio(piano_samples, sources["piano"].rir, gain_db=-18)
-room_mix = mix_audio([voice_wet, piano_wet], normalize=True)
+piano_wet = render_audio(piano_samples, sources["piano_1"].rir)
+room_mix = mix_audio_at_snr(voice_wet, piano_wet, snr_db=10, normalize=True)
 ```
 
-Web 工作台支持人声、钢琴、固定 seed 的白噪声/粉红噪声/棕噪声和用户上传音频。
+Web 工作台内置项目口播、背景人声、两段钢琴、粉红噪声底声，也支持固定 seed 的
+白噪声/粉红噪声/棕噪声和用户上传音频。SNR 是两路信号分别经过 RIR 后在接收端的
+宽带 RMS 比值，并不是简单的背景音量。
 启用 Background source 后会出现独立坐标和 3D 标记，并在麦克风运动时逐帧更新背景
-RIR。修改音频或混合音量不需要重算；修改背景位置需要重新运行仿真。
+RIR。修改音频或 SNR 不需要重算；修改背景位置需要重新运行仿真。
 
 ## 动态与批量生产
 

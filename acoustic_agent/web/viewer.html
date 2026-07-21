@@ -9,7 +9,7 @@
       window.location.replace("http://127.0.0.1:8765/");
     }
   </script>
-  <link rel="stylesheet" href="./styles.css?v=124-multisource-audio">
+  <link rel="stylesheet" href="./styles.css?v=125-bundled-audio-snr">
 </head>
 <body>
   <main id="app" data-scene-source="geometry">
@@ -252,7 +252,7 @@
       <section id="audioSection" class="panelBlock audioSetupBlock setupSection">
         <div class="inspectorHeader">
           <h2>Auralization</h2>
-          <span>Program</span>
+          <span>Speech + noise</span>
         </div>
         <div class="audioProgramGrid">
           <label>Foreground
@@ -278,8 +278,8 @@
           <label>Sound
             <select id="backgroundAudio"></select>
           </label>
-          <label>Level <output id="backgroundGainValue">-18 dB</output>
-            <input id="backgroundGain" type="range" min="-40" max="0" step="1" value="-18">
+          <label title="Broadband foreground-to-background RMS ratio at the receiver">SNR <output id="backgroundSnrValue">10 dB</output>
+            <input id="backgroundSnr" type="range" min="-10" max="30" step="1" value="10" aria-label="Receiver signal-to-noise ratio">
           </label>
           <label id="backgroundUploadLabel" class="audioUpload" hidden>Background file
             <input id="backgroundAudioFile" type="file" accept="audio/*">
@@ -439,6 +439,6 @@
       }
     }
   </script>
-  <script type="module" src="app.js?v=124-multisource-audio"></script>
+  <script type="module" src="app.js?v=125-bundled-audio-snr"></script>
 </body>
 </html>

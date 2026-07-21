@@ -15,13 +15,17 @@ semantic versioning after the initial `0.x` research releases.
 - NPZ production manifests and optional per-job failure collection.
 - Independent multi-source RIR simulation through `agent.run_sources()`.
 - NumPy audio rendering, gain-preserving source mixing, and resampling helpers.
-- Web auralization with Voice, local Piano, deterministic white/pink/brown
-  noise, uploaded audio, and a separately positioned background source.
+- Web auralization with bundled narration, background speech, two piano
+  programs, a pink-noise bed, deterministic white/pink/brown noise, uploaded
+  audio, and a separately positioned background source.
+- Receiver-domain SNR mixing for independently propagated foreground and
+  background signals.
 
 ### Changed
 
 - Web workbench Python examples now use the compact unified API and emit valid
   Python literals for custom scene JSON.
+- The background `Level` control is now a target broadband receiver SNR.
 
 ## 0.1.0 - 2026-07-20
 

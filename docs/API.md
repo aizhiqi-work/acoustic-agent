@@ -118,7 +118,7 @@ same position. Simulate one RIR per source when signals originate at different
 positions:
 
 ```python
-from acoustic_agent import AcousticAgent, mix_audio, render_audio
+from acoustic_agent import AcousticAgent, mix_audio_at_snr, render_audio
 
 agent = AcousticAgent.create(
     scene="geometry",
@@ -130,25 +130,26 @@ agent = AcousticAgent.create(
 
 sources = agent.run_sources({
     "voice": {"position": [1.2, 1.1, 1.5], "source_model": "cardioid"},
-    "piano": {"position": [4.8, 1.0, 1.2], "source_model": "omni"},
+    "piano_1": {"position": [4.8, 1.0, 1.2], "source_model": "omni"},
 })
 
 # These decoded arrays must use agent.config.fs.
 voice_wet = render_audio(voice_samples, sources["voice"].rir)
-piano_wet = render_audio(piano_samples, sources["piano"].rir, gain_db=-18.0)
-room_mix = mix_audio([voice_wet, piano_wet], normalize=True)
+piano_wet = render_audio(piano_samples, sources["piano_1"].rir)
+room_mix = mix_audio_at_snr(voice_wet, piano_wet, snr_db=10.0, normalize=True)
 ```
 
 `render_audio` downmixes a source recording to one emitting point and preserves
-all receiver channels. `mix_audio` sums already rendered tracks; normalization
-is optional and occurs only after summation so relative source level and room
-attenuation remain intact. Use `resample_audio` when a decoded array does not
-match the simulation sample rate.
+all receiver channels. `mix_audio_at_snr` scales the rendered background to a
+receiver-domain broadband RMS target before summation. Optional final
+normalization preserves that ratio. Use `resample_audio` when a decoded array
+does not match the simulation sample rate.
 
-The Web workbench performs browser-side WAV/MP3 decoding and supports Voice,
-Piano, deterministic white/pink/brown noise, and uploaded audio. Enabling its
-background source adds a second position and RIR. Changing the recording or
-gain reuses existing RIRs; changing source position requires a new simulation.
+The Web workbench performs browser-side WAV/MP3 decoding and includes Project
+narration, Background speech, two Piano programs, a Pink-noise bed,
+deterministic generated noise, and uploaded audio. Enabling its background
+source adds a second position and RIR. Changing the program or SNR reuses
+existing RIRs; changing source position requires a new simulation.
 
 ## Motion
 
