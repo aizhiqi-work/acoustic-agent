@@ -91,12 +91,15 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
     assert 'const RIR_DECAY_DB_TICKS = ["0", "-20", "-40", "-60"];' in app_js
     assert 'keyframe_spacing_m: 0.25' in app_js
     assert 'keyframes=${Number(motion.keyframes' not in app_js
-    assert 'keyframe_spacing_m=${Number(state.motion?.keyframe_spacing_m || 0.25)}' in app_js
+    assert "keyframe_spacing_m: Number(state.motion?.keyframe_spacing_m || 0.25)" in app_js
+    assert '"agent = AcousticAgent.create("' in app_js
+    assert "agent.run(motion=" in app_js
     assert 'path_model: "room_shortest_path"' in app_js
     assert 'path_model: "random_room_route"' in app_js
     assert 'randomOption.textContent = "Random"' in app_js
     assert "const metadataRoute = metadataPortalMotionRoute();" in app_js
-    assert '"    source=source, receiver=mic,"' in app_js
+    assert '["source", source]' in app_js
+    assert '["receiver", mic]' in app_js
     assert '"    placement=placement,"' not in app_js
 
 

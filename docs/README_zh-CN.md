@@ -70,20 +70,19 @@ room = {
     "material_seed": 42,
 }
 
-agent = AcousticAgent(
+agent = AcousticAgent.create(
+    scene="geometry",
     room=room,
+    source=[1.2, 1.1, 1.5],
+    receiver=[4.7, 2.8, 1.4],
     receiver_model={"type": "mono"},
     source_model={"type": "omni"},
-    furnishing={"mode": "auto", "compactness": "balanced", "seed": 42},
     quality="simulation",
     duration_s=2.0,
     fs=16000,
 )
 
-result = agent.run(
-    source=[1.2, 1.1, 1.5],
-    receiver=[4.7, 2.8, 1.4],
-)
+result = agent.run()
 rir = result.rir
 ```
 
@@ -97,7 +96,8 @@ https://www.kaggle.com/datasets/resplan/resplan。
 ```python
 from acoustic_agent import AcousticAgent
 
-agent = AcousticAgent.from_floorplan(
+agent = AcousticAgent.create(
+    scene="floorplan",
     idx=0,
     placement="same_room",  # random / same_room / cross_room
     seed=42,
@@ -133,8 +133,9 @@ spec = FloorplanBuilder.from_text(
     "12m x 9m，三室两厅一厨两卫，一个储物间",
     seed=42,
 )
-agent = AcousticAgent.from_floorplan_spec(
-    spec,
+agent = AcousticAgent.create(
+    scene="custom",
+    spec=spec,
     source_room="living_0",
     receiver_room="bedroom_2",
     quality="preview",
@@ -143,6 +144,25 @@ agent = AcousticAgent.from_floorplan_spec(
 )
 rir = agent.run().rir
 ```
+
+## 动态与批量生产
+
+静态与动态统一使用 `run`：
+
+```python
+dynamic = agent.run(motion={
+    "mode": "approach",
+    "moving": "receiver",
+    "distance_m": 1.0,
+    "keyframe_spacing_m": 0.25,
+})
+rir_frames = dynamic.rirs
+```
+
+同一场景的大量坐标对使用 `agent.run_batch(pairs, workers=4)`；大量不同户型、
+不同档位或不同运动模式使用 `AcousticAgent.run_many(jobs, workers=4)`。两种结果均可
+调用 `save_npz(...)`，跨场景归档还会写入 JSON manifest。完整说明见
+[`API.md`](API.md)。
 
 Custom 页面支持两种输入：户型图模式把所选图片和 “Copy ChatGPT prompt” 得到的
 提示词一起交给 ChatGPT；文本模式会把住宅描述直接写入提示词。两种方式都只需将
@@ -172,6 +192,7 @@ python -m twine check dist/*
 
 详细安装、配置和资源说明见：
 
+- [`API.md`](API.md)
 - [`INSTALLATION.md`](INSTALLATION.md)
 - [`CONFIGURATION.md`](CONFIGURATION.md)
 - [`FLOORPLAN.md`](FLOORPLAN.md)

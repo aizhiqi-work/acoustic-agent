@@ -13,8 +13,9 @@ def main() -> None:
         "12m x 9m，三室两厅一厨两卫，一个储物间",
         seed=42,
     )
-    agent = AcousticAgent.from_floorplan_spec(
-        spec,
+    agent = AcousticAgent.create(
+        scene="custom",
+        spec=spec,
         source_room="living_0",
         receiver_room="bedroom_2",
         seed=42,

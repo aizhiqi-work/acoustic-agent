@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
@@ -65,6 +66,7 @@ class AcousticAgent:
         materials: Mapping[str, str | Material] | None = None,
         material_profile: str | Mapping[str, Any] | None = None,
         material_seed: int = 0,
+        seed: int | None = None,
         fs: int = 16000,
         duration_s: float = 2.0,
         config: SimConfig | None = None,
@@ -88,6 +90,7 @@ class AcousticAgent:
             rt_num_rays=int(preset["rt_num_rays"]),
             rt_num_bounces=int(preset["rt_num_bounces"]),
             rt_duration_s=float(preset["rt_duration_s"]),
+            seed=SimConfig.seed if seed is None else int(seed),
         )
         self.receiver_model = _microphone_model(receiver_model)
         self.source_model = source_directivity(source_model)
@@ -97,6 +100,58 @@ class AcousticAgent:
         self.placement: dict[str, Any] | None = None
         self.floorplan: dict[str, Any] | None = None
         self.furnishing: dict[str, Any] | None = None
+        self.scene_type = "geometry"
+
+    @classmethod
+    def create(cls, scene: str = "geometry", **options: Any) -> "AcousticAgent":
+        """Create any supported scene through one compact public entry point."""
+        kind = str(scene).strip().lower().replace("-", "_")
+        aliases = {
+            "sample_rate": "fs",
+            "rir_length": "duration_s",
+            "mic": "receiver",
+            "microphone": "receiver_model",
+            "directivity": "source_model",
+            "objects": "acoustic_geometry",
+            "floorplan_spec": "spec",
+        }
+        values = dict(options)
+        for alias, canonical in aliases.items():
+            if alias not in values:
+                continue
+            if canonical in values:
+                raise TypeError(f"use either {alias!r} or {canonical!r}, not both")
+            values[canonical] = values.pop(alias)
+
+        if kind in {"geometry", "room", "geometric"}:
+            source = values.pop("source", None)
+            receiver = values.pop("receiver", None)
+            if values.get("seed") is not None and "material_seed" not in values:
+                values["material_seed"] = int(values["seed"])
+            agent = cls(**values)
+            agent.default_source = _optional_position(source, "source")
+            agent.default_receiver = _optional_position(receiver, "receiver")
+            return agent
+
+        if kind in {"floorplan", "floor_plan", "resplan"}:
+            if "idx" not in values:
+                raise TypeError("floorplan scenes require idx")
+            idx = int(values.pop("idx"))
+            agent = cls.from_floorplan(idx=idx, **values)
+            agent.scene_type = "floorplan"
+            return agent
+
+        if kind in {"custom", "custom_floorplan", "custom_floor_plan"}:
+            if "spec" not in values:
+                raise TypeError("custom scenes require spec")
+            spec = values.pop("spec")
+            if not isinstance(spec, Mapping):
+                raise TypeError("spec must be a floorplan mapping")
+            agent = cls.from_floorplan_spec(spec, **values)
+            agent.scene_type = "custom"
+            return agent
+
+        raise ValueError("scene must be geometry, floorplan, or custom")
 
     @classmethod
     def from_floorplan(
@@ -185,6 +240,7 @@ class AcousticAgent:
         }
         agent.floorplan = dict(scene["dataset"])
         agent.furnishing = furnishing_layout
+        agent.scene_type = "floorplan"
         return agent
 
     @classmethod
@@ -258,6 +314,7 @@ class AcousticAgent:
         }
         agent.floorplan = dict(scene["dataset"])
         agent.furnishing = furnishing_layout
+        agent.scene_type = "custom"
         return agent
 
     # Compatibility alias for releases before the public scene name became Floorplan.
@@ -279,11 +336,41 @@ class AcousticAgent:
         config: SimConfig | None = None,
         receiver_model: str | Mapping[str, Any] | None = None,
         source_model: str | Mapping[str, Any] | None = None,
-    ) -> SimulationResult:
+        motion: str | Mapping[str, Any] | None = None,
+    ) -> SimulationResult | DynamicSimulationResult:
         actual_source = source if source is not None else self.default_source
         actual_receiver = receiver if receiver is not None else self.default_receiver
         if actual_source is None or actual_receiver is None:
-            raise ValueError("source and receiver are required unless the agent was created with from_floorplan()")
+            raise ValueError("source and receiver are required; pass them to create() or run()")
+        if motion is not None:
+            motion_spec = {"mode": motion} if isinstance(motion, str) else dict(motion)
+            mode = str(motion_spec.get("mode", "approach")).strip().lower()
+            if mode not in {"", "static", "none", "off"}:
+                if "frames" in motion_spec:
+                    sampled_motion = motion_spec
+                else:
+                    supported = {
+                        "mode",
+                        "moving",
+                        "distance_m",
+                        "keyframes",
+                        "keyframe_spacing_m",
+                        "seed",
+                    }
+                    unknown = sorted(set(motion_spec) - supported)
+                    if unknown:
+                        raise TypeError(f"unknown motion option(s): {', '.join(unknown)}")
+                    sampled_motion = self.sample_motion(
+                        source=actual_source,
+                        receiver=actual_receiver,
+                        **motion_spec,
+                    )
+                return self.run_dynamic(
+                    sampled_motion,
+                    config=config,
+                    receiver_model=receiver_model,
+                    source_model=source_model,
+                )
         model = self.receiver_model
         if receiver_model is not None:
             model = _microphone_model(receiver_model)
@@ -311,6 +398,113 @@ class AcousticAgent:
             {**dict(result.metadata), "placement": placement, "floorplan": dict(self.floorplan or {})},
             result.ambisonic_rir,
             result.source_model,
+        )
+
+    def run_batch(
+        self,
+        pairs: Sequence[Any],
+        *,
+        workers: int = 1,
+        config: SimConfig | None = None,
+        receiver_model: str | Mapping[str, Any] | None = None,
+        source_model: str | Mapping[str, Any] | None = None,
+    ) -> Any:
+        """Simulate many source/receiver pairs in this already-built scene."""
+        from .batch import BatchResult, SimulationPair
+
+        jobs = tuple(SimulationPair.from_value(pair, index) for index, pair in enumerate(pairs))
+        base_config = config or self.config
+        model = self.receiver_model if receiver_model is None else _microphone_model(receiver_model)
+        emitter = self.source_model if source_model is None else source_directivity(source_model)
+
+        def solve(index_pair: tuple[int, SimulationPair]) -> SimulationResult:
+            index, pair = index_pair
+            seed = pair.seed if pair.seed is not None else int(base_config.seed + index)
+            item_config = SimConfig(**{**base_config.__dict__, "seed": int(seed)})
+            return self.run(
+                source=pair.source,
+                receiver=pair.receiver,
+                config=item_config,
+                receiver_model=model,
+                source_model=emitter,
+            )
+
+        indexed = tuple(enumerate(jobs))
+        worker_count = max(1, int(workers))
+        if worker_count == 1:
+            items = tuple(solve(item) for item in indexed)
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="acoustic-agent-pairs") as pool:
+                items = tuple(pool.map(solve, indexed))
+        return BatchResult(
+            items=items,
+            pairs=jobs,
+            metadata={
+                "model": "acoustic_agent_batch_v2",
+                "scene": self.scene_type,
+                "count": len(items),
+                "workers": worker_count,
+                "sample_rate": int(base_config.fs),
+            },
+        )
+
+    @classmethod
+    def run_many(
+        cls,
+        jobs: Sequence[Mapping[str, Any]],
+        *,
+        workers: int = 1,
+        on_error: str = "raise",
+    ) -> Any:
+        """Run independent mixed-scene jobs for reproducible dataset production."""
+        from .batch import ProductionResult
+
+        error_mode = str(on_error).strip().lower()
+        if error_mode not in {"raise", "skip"}:
+            raise ValueError("on_error must be 'raise' or 'skip'")
+        normalized = []
+        for index, job in enumerate(jobs):
+            if not isinstance(job, Mapping):
+                raise TypeError(f"jobs[{index}] must be a mapping")
+            normalized.append(dict(job))
+
+        def solve(index_job: tuple[int, Mapping[str, Any]]) -> tuple[int, Any, Mapping[str, Any] | None]:
+            index, job = index_job
+            options = dict(job)
+            options.pop("id", None)
+            motion = options.pop("motion", None)
+            try:
+                return index, cls.create(**options).run(motion=motion), None
+            except Exception as error:
+                if error_mode == "raise":
+                    raise RuntimeError(f"jobs[{index}] failed: {error}") from error
+                return index, None, {
+                    "index": index,
+                    "id": str(job.get("id", index)),
+                    "type": type(error).__name__,
+                    "message": str(error),
+                }
+
+        indexed = tuple(enumerate(normalized))
+        worker_count = max(1, int(workers))
+        if worker_count == 1:
+            outcomes = tuple(solve(item) for item in indexed)
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="acoustic-agent-scenes") as pool:
+                outcomes = tuple(pool.map(solve, indexed))
+        successful = tuple((index, item) for index, item, error in outcomes if error is None)
+        errors = tuple(error for _, _, error in outcomes if error is not None)
+        return ProductionResult(
+            items=tuple(item for _, item in successful),
+            jobs=tuple(normalized[index] for index, _ in successful),
+            metadata={
+                "model": "acoustic_agent_production_v1",
+                "requested": len(normalized),
+                "count": len(successful),
+                "failed": len(errors),
+                "workers": worker_count,
+            },
+            errors=errors,
         )
 
     def sample_motion(
@@ -398,6 +592,12 @@ def _microphone_model(value: str | Mapping[str, Any]) -> dict[str, Any]:
         return model
     kind = str(model.pop("type", "mono"))
     return microphone_array(kind, **model)
+
+
+def _optional_position(value: Sequence[float] | None, label: str) -> tuple[float, float, float] | None:
+    if value is None:
+        return None
+    return tuple(_floorplan_position(value, label))
 
 
 def _make_agent_room(

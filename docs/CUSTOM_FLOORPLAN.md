@@ -56,8 +56,9 @@ spec = FloorplanBuilder.from_text(
 report = FloorplanBuilder.validate(spec)
 assert report["valid"], report["errors"]
 
-agent = AcousticAgent.from_floorplan_spec(
-    spec,
+agent = AcousticAgent.create(
+    scene="custom",
+    spec=spec,
     source_room="living_0",
     receiver_room="bedroom_1",
     quality="preview",

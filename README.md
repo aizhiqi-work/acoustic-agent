@@ -146,20 +146,19 @@ room = {
     "opening_offset": 0.5,
 }
 
-agent = AcousticAgent(
+agent = AcousticAgent.create(
+    scene="geometry",
     room=room,
+    source=[5.766, 2.587, 1.231],
+    receiver=[1.079, 6.252, 1.348],
     source_model={"type": "omni"},
     receiver_model={"type": "mono"},
-    furnishing={"mode": "auto", "compactness": "balanced", "seed": 42},
     quality="simulation",
     duration_s=2.0,
     fs=16000,
 )
 
-result = agent.run(
-    source=[5.766, 2.587, 1.231],
-    receiver=[1.079, 6.252, 1.348],
-)
+result = agent.run()
 
 rir = result.rir                 # float32 [channel, sample]
 rt60 = result.rt60               # per-band and broadband EDC/solver estimates
@@ -182,7 +181,8 @@ See the [paper](https://arxiv.org/abs/2508.14006),
 ```python
 from acoustic_agent import AcousticAgent
 
-agent = AcousticAgent.from_floorplan(
+agent = AcousticAgent.create(
+    scene="floorplan",
     idx=0,
     placement="same_room",       # random / same_room / cross_room
     seed=42,
@@ -235,8 +235,9 @@ spec = FloorplanBuilder.from_text(
     seed=42,
 )
 
-agent = AcousticAgent.from_floorplan_spec(
-    spec,
+agent = AcousticAgent.create(
+    scene="custom",
+    spec=spec,
     source_room="living_0",
     receiver_room="bedroom_2",
     seed=42,
@@ -288,7 +289,8 @@ flags describe the normalization and mapping decisions. `material_seed` makes
 the full selection reproducible.
 
 ```python
-agent = AcousticAgent.from_floorplan(
+agent = AcousticAgent.create(
+    scene="floorplan",
     idx=12,
     seed=42,
     material_seed=2026,
@@ -323,21 +325,54 @@ intended engineering use.
 ## Motion
 
 ```python
-motion = agent.sample_motion(
-    mode="approach",              # approach / random
-    moving="receiver",           # source / receiver
-    distance_m=2.0,
-    keyframe_spacing_m=0.25,
-    seed=42,
-)
-
-dynamic = agent.run_dynamic(motion)
+dynamic = agent.run(motion={
+    "mode": "approach",          # approach / random / through_portal
+    "moving": "receiver",       # source / receiver
+    "distance_m": 2.0,
+    "keyframe_spacing_m": 0.25,
+    "seed": 42,
+})
 rir_frames = dynamic.rirs
 ```
 
 Floorplan trajectories route through verified openings when they cross rooms.
 Each frame is solved against its updated source/receiver position and contains
 its own RIR and metrics.
+
+## Batch Production
+
+Use `run_batch` when one built scene has many source/receiver pairs:
+
+```python
+batch = agent.run_batch([
+    ([1.0, 1.0, 1.4], [4.0, 2.0, 1.4]),
+    {"id": "pair_b", "source": [2.0, 1.0, 1.4], "receiver": [5.0, 3.0, 1.4]},
+], workers=4)
+batch.save_npz("room_rirs.npz")
+```
+
+Use `run_many` when scene type, Floorplan index, placement, or motion changes:
+
+```python
+jobs = [
+    {
+        "id": f"floorplan_{idx}_{take}",
+        "scene": "floorplan",
+        "idx": idx,
+        "placement": "random",
+        "seed": 1000 + idx * 10 + take,
+        "quality": "preview",
+    }
+    for idx in range(100)
+    for take in range(4)
+]
+dataset = AcousticAgent.run_many(jobs, workers=4)
+dataset.save_npz("floorplan_rirs.npz")
+```
+
+The archive includes float32 RIR arrays and a JSON job manifest. See the full
+[`Python API guide`](docs/API.md) and
+[`batch production example`](examples/batch_production.py).
 
 ## Quality Presets
 
@@ -441,8 +476,8 @@ python -m twine check dist/*
 
 CI checks out Git LFS resources, validates their schemas, runs the test suite,
 and builds both wheel and source distribution. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md), [`CHANGELOG.md`](CHANGELOG.md), and
-[`docs/RESOURCES.md`](docs/RESOURCES.md).
+[`docs/API.md`](docs/API.md), [`CONTRIBUTING.md`](CONTRIBUTING.md),
+[`CHANGELOG.md`](CHANGELOG.md), and [`docs/RESOURCES.md`](docs/RESOURCES.md).
 
 ## Repository Layout
 

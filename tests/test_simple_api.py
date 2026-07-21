@@ -1,6 +1,9 @@
 import math
+import json
 
-from acoustic_agent import AcousticAgent, SimConfig
+import numpy as np
+
+from acoustic_agent import AcousticAgent, FloorplanBuilder, SimConfig
 from acoustic_agent.geometry import point_in_polygon
 from acoustic_agent.motion import room_for_motion_frame
 
@@ -21,6 +24,128 @@ def test_acoustic_agent_runs_the_common_workflow_directly():
     result = agent.run(source=[0.7, 0.8, 1.2], receiver=[2.2, 1.7, 1.2])
 
     assert result.rir.shape == (1, 320)
+
+
+def test_create_unifies_geometry_floorplan_and_custom_scene_inputs():
+    geometry = AcousticAgent.create(
+        scene="geometry",
+        room=[3.0, 2.5, 2.4],
+        source=[0.7, 0.8, 1.2],
+        mic=[2.2, 1.7, 1.2],
+        microphone="mono",
+        directivity="omni",
+        sample_rate=8000,
+        rir_length=0.04,
+        seed=7,
+    )
+    floorplan = AcousticAgent.create(
+        scene="floorplan",
+        idx=0,
+        placement="same_room",
+        seed=7,
+        config=SimConfig(fs=8000, duration_s=0.02, reflections_enabled=False, diffraction_enabled=False),
+    )
+    spec = FloorplanBuilder.from_text("6m x 5m, one bedroom and one living room", seed=7)
+    custom = AcousticAgent.create(
+        scene="custom",
+        floorplan_spec=spec,
+        seed=7,
+        config=SimConfig(fs=8000, duration_s=0.02, reflections_enabled=False, diffraction_enabled=False),
+    )
+
+    assert geometry.scene_type == "geometry"
+    assert geometry.default_source == (0.7, 0.8, 1.2)
+    assert geometry.default_receiver == (2.2, 1.7, 1.2)
+    assert geometry.config.seed == 7
+    assert geometry.config.fs == 8000
+    assert floorplan.scene_type == "floorplan"
+    assert custom.scene_type == "custom"
+
+
+def test_run_accepts_a_compact_motion_description():
+    agent = AcousticAgent.create(
+        room=[4.0, 3.0, 2.8],
+        source=[0.6, 1.5, 1.4],
+        receiver=[3.2, 1.5, 1.4],
+        config=SimConfig(fs=8000, duration_s=0.02, reflections_enabled=False, diffraction_enabled=False),
+    )
+
+    result = agent.run(motion={"mode": "approach", "moving": "receiver", "distance_m": 0.5, "keyframes": 3})
+
+    assert len(result.frames) == 3
+    assert result.motion["mode"] == "approach"
+    assert all(frame.rir.shape == (1, 160) for frame in result.frames)
+
+
+def test_agent_batch_accepts_plain_coordinate_pairs():
+    agent = AcousticAgent.create(
+        room=[4.0, 3.0, 2.8],
+        source=[0.6, 1.5, 1.4],
+        receiver=[3.2, 1.5, 1.4],
+        config=SimConfig(fs=8000, duration_s=0.02, reflections_enabled=False, diffraction_enabled=False),
+    )
+    batch = agent.run_batch([
+        ([0.6, 1.5, 1.4], [3.2, 1.5, 1.4]),
+        {"id": "second", "source": [0.8, 1.0, 1.4], "mic": [2.8, 2.0, 1.4], "seed": 9},
+    ])
+
+    assert len(batch.items) == 2
+    assert batch.pairs[1].id == "second"
+    assert all(rir.shape == (1, 160) for rir in batch.rirs)
+
+
+def test_run_many_supports_mixed_static_dynamic_jobs_and_saves_manifest(tmp_path):
+    lightweight = SimConfig(fs=8000, duration_s=0.02, reflections_enabled=False, diffraction_enabled=False)
+    batch = AcousticAgent.run_many([
+        {
+            "id": "geometry_static",
+            "scene": "geometry",
+            "room": [4.0, 3.0, 2.8],
+            "source": [0.6, 1.5, 1.4],
+            "receiver": [3.2, 1.5, 1.4],
+            "config": lightweight,
+        },
+        {
+            "id": "floorplan_dynamic",
+            "scene": "floorplan",
+            "idx": 0,
+            "placement": "same_room",
+            "seed": 7,
+            "config": lightweight,
+            "motion": {"mode": "approach", "distance_m": 0.25, "keyframes": 2},
+        },
+    ])
+    destination = batch.save_npz(tmp_path / "dataset.npz")
+
+    assert len(batch.items) == 2
+    assert batch.items[0].rir.shape == (1, 160)
+    assert len(batch.items[1].rirs) == 3
+    with np.load(destination) as archive:
+        manifest = json.loads(str(archive["manifest"]))
+        assert manifest["results"][0]["id"] == "geometry_static"
+        assert manifest["results"][1]["dynamic"] is True
+        assert manifest["jobs"][0]["config"]["fs"] == 8000
+        assert "rir_000001_frame_0002" in archive
+
+
+def test_run_many_can_keep_successful_jobs_when_one_job_is_invalid():
+    lightweight = SimConfig(fs=8000, duration_s=0.02, reflections_enabled=False, diffraction_enabled=False)
+    batch = AcousticAgent.run_many([
+        {
+            "id": "valid",
+            "room": [4.0, 3.0, 2.8],
+            "source": [0.6, 1.5, 1.4],
+            "receiver": [3.2, 1.5, 1.4],
+            "config": lightweight,
+        },
+        {"id": "invalid", "scene": "floorplan"},
+    ], on_error="skip")
+
+    assert batch.succeeded == 1
+    assert batch.failed == 1
+    assert batch.jobs[0]["id"] == "valid"
+    assert batch.errors[0]["id"] == "invalid"
+    assert batch.errors[0]["type"] == "TypeError"
 
 
 def test_acoustic_agent_quality_names_select_the_expected_tiers():
