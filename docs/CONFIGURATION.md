@@ -67,6 +67,7 @@ agent = AcousticAgent.from_floorplan(
     material_seed=2026,
     room_height_m=2.8,
     position_height_m=1.4,
+    furnishing={"mode": "auto", "compactness": "balanced", "seed": 42},
 )
 ```
 
@@ -75,6 +76,11 @@ agent = AcousticAgent.from_floorplan(
 - `random`: sample either same-room or connected cross-room placement.
 - `same_room`: sample both endpoints in one candidate room.
 - `cross_room`: sample endpoints in distinct connected rooms.
+
+`furnishing.compactness` accepts `sparse`, `balanced`, or `compact`. Generated
+objects are deterministic for the same scene and furnishing seed. Explicit
+`acoustic_geometry` is preserved and treated as occupied space during automatic
+placement.
 
 The scene index remains the original audited dataset index. Use
 `FloorplanResource.resolve_index()` or the Web index endpoint when an unavailable
@@ -173,6 +179,7 @@ fields. Record the complete resolved config with generated data.
 | `GET` | `/custom` | Local custom-floorplan workbench |
 | `GET` | `/api/v1/custom/capabilities` | Available local/provider features |
 | `GET` | `/api/v1/custom/prompt?mode=image|text` | ChatGPT image/text JSON prompt |
+| `POST` | `/api/v1/furniture/auto-layout` | Semantic furniture auto-placement |
 | `GET` | `/api/v1/floorplan/stats` | Compiled-scene audit stats |
 | `GET` | `/api/v1/floorplan/index` | Resolve eligible scene index |
 | `GET` | `/api/v1/floorplan/scene` | Read an indexed scene |

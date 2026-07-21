@@ -196,11 +196,25 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path not in {"/api/simulate", "/api/v1/simulate", "/api/v1/workbench", "/api/v1/dynamic-workbench", "/api/v1/custom/generate", "/api/v1/custom/compile", "/api/v1/custom/validate", "/api/rir.wav", "/api/rir.npy"}:
+        if parsed.path not in {"/api/simulate", "/api/v1/simulate", "/api/v1/workbench", "/api/v1/dynamic-workbench", "/api/v1/custom/generate", "/api/v1/custom/compile", "/api/v1/custom/validate", "/api/v1/furniture/auto-layout", "/api/rir.wav", "/api/rir.npy"}:
             self.send_error(404, "unknown API endpoint")
             return
         try:
             payload = self._read_json()
+            if parsed.path == "/api/v1/furniture/auto-layout":
+                from .furnishing import generate_floorplan_furniture
+
+                room_metadata = payload.get("room_metadata")
+                if not isinstance(room_metadata, dict):
+                    raise ValueError("room_metadata must be a JSON object")
+                self._send_json(generate_floorplan_furniture(
+                    room_metadata,
+                    compactness=str(payload.get("compactness", "balanced")),
+                    seed=int(payload.get("seed", 42)),
+                    exclude_points=payload.get("exclude_points", ()),
+                    existing_objects=payload.get("existing_objects", ()),
+                ))
+                return
             if parsed.path.startswith("/api/v1/custom/"):
                 from .custom_floorplan import compile_floorplan_spec, generate_floorplan_from_text, validate_floorplan_spec
 

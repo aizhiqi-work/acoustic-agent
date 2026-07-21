@@ -1098,6 +1098,9 @@ function bindEvents() {
     markSimulationPending();
   });
   document.getElementById("addAsset").addEventListener("click", handlePaletteSelection);
+  document.getElementById("autoPlaceFurniture")?.addEventListener("click", () => {
+    autoPlaceFurniture().catch((error) => setStatus(String(error.message || error), true));
+  });
   const confirmButton = document.getElementById("confirmFurniture");
   confirmButton.addEventListener("pointerdown", (event) => {
     event.stopPropagation();
@@ -4779,6 +4782,7 @@ function sampleMotionState() {
   });
   const isSafe = (distance) => positionsFor(distance).every((position) => {
     if (!pointIsSafelyInsideRoom(position, corners)) return false;
+    if (!pointClearOfFurniture(position, 0.22)) return false;
     const dynamicSource = movingSource ? position : source;
     const dynamicReceiver = movingSource ? receiver : position;
     return distance2D(dynamicSource, dynamicReceiver) >= 0.3;
@@ -4832,6 +4836,7 @@ function randomGeometryRoute(anchor, corners, requestedDistance, seed) {
     corners: corners.map((point) => point.slice(0, 2).map((value) => Number(value).toFixed(4))),
     requestedDistance: Number(requestedDistance).toFixed(4),
     seed: Math.max(0, Math.round(Number(seed) || 0)),
+    furniture: (state.objects || []).map((object) => [object.position, object.size, object.rotation]),
   });
   if (randomMotionRouteCache.signature === signature && randomMotionRouteCache.value) {
     return randomMotionRouteCache.value;
@@ -4849,11 +4854,13 @@ function randomGeometryRoute(anchor, corners, requestedDistance, seed) {
       Number(anchor[2]),
     ];
     if (!pointInPolygon2D(candidate, domain)) continue;
+    if (!pointClearOfFurniture(candidate)) continue;
     const route = visibilityPath2D(anchor, candidate, domain).map((point) => [
       Number(point[0]),
       Number(point[1]),
       Number(anchor[2]),
     ]);
+    if (!polylineClearOfFurniture(route)) continue;
     const routeLength = polylineLength3D(route);
     if (routeLength > bestLength) {
       bestRoute = route;
@@ -5092,6 +5099,7 @@ function randomRoomPoint(corners, height) {
     const x = bounds.x0 + Math.random() * bounds.w;
     const y = bounds.y0 + Math.random() * bounds.h;
     if (!pointIsSafelyInsideRoom([x, y], corners)) continue;
+    if (!pointClearOfFurniture([x, y])) continue;
     return [Number(x.toFixed(3)), Number(y.toFixed(3)), randomHeight(height)];
   }
   const centroid = polygonCentroid(corners);
@@ -5107,6 +5115,37 @@ function randomHeight(height) {
 
 function distance2D(a, b) {
   return Math.hypot(Number(a[0]) - Number(b[0]), Number(a[1]) - Number(b[1]));
+}
+
+function pointClearOfFurniture(point, clearance = 0.32) {
+  return (state.objects || []).every((object) => {
+    const spec = furnitureCatalog[object.type] || furnitureCatalog.cuboid;
+    const [width, depth] = object.size || spec.size;
+    const dx = Number(point[0]) - Number(object.position?.[0] || 0);
+    const dy = Number(point[1]) - Number(object.position?.[1] || 0);
+    const angle = -Number(object.rotation || 0) * Math.PI / 180;
+    const localX = dx * Math.cos(angle) - dy * Math.sin(angle);
+    const localY = dx * Math.sin(angle) + dy * Math.cos(angle);
+    return Math.abs(localX) > Number(width) * 0.5 + clearance
+      || Math.abs(localY) > Number(depth) * 0.5 + clearance;
+  });
+}
+
+function polylineClearOfFurniture(points, clearance = 0.22) {
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    const distance = distance2D(start, end);
+    const steps = Math.max(1, Math.ceil(distance / 0.12));
+    for (let step = 0; step <= steps; step += 1) {
+      const mix = step / steps;
+      if (!pointClearOfFurniture([
+        Number(start[0]) + (Number(end[0]) - Number(start[0])) * mix,
+        Number(start[1]) + (Number(end[1]) - Number(start[1])) * mix,
+      ], clearance)) return false;
+    }
+  }
+  return true;
 }
 
 function safeRoomPoint(point, corners) {
@@ -5127,6 +5166,46 @@ function safeRoomPoint(point, corners) {
   }
   const centroid = polygonCentroid(corners);
   return nearestSafeRoomPoint([centroid[0], centroid[1], z], corners, z) || [centroid[0], centroid[1], z];
+}
+
+async function autoPlaceFurniture() {
+  if (!multiRoomMode || !state.floorplan.roomMetadata?.multi_room) {
+    throw new Error("Auto placement is available for Floorplan and Custom scenes");
+  }
+  if (hasUnconfirmedObjectChange()) {
+    throw new Error("Confirm or delete the current furniture edit before auto placement");
+  }
+  const button = document.getElementById("autoPlaceFurniture");
+  const compactness = value("furnitureCompactness") || "balanced";
+  const seed = Math.max(0, Math.round(controlNumber("furnitureSeed", 42)));
+  const manualObjects = (state.objects || []).filter((object) => object.placement?.source !== "semantic_auto");
+  if (button) button.disabled = true;
+  setStatus("Finding semantic furniture layout...");
+  try {
+    const response = await fetch("/api/v1/furniture/auto-layout", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        room_metadata: state.floorplan.roomMetadata,
+        compactness,
+        seed,
+        exclude_points: [state.source, state.receiver],
+        existing_objects: manualObjects,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Unable to place semantic furniture");
+    state.objects = [...manualObjects, ...(result.objects || [])];
+    selectedObjectId = null;
+    pendingObjectId = null;
+    dirtyObjectId = null;
+    randomMotionRouteCache = { signature: "", value: null };
+    normalizeAllObjectPlacements();
+    const count = Number(result.summary?.object_count || 0);
+    markSimulationPending(`${count} semantic furniture objects placed · edit freely or run simulation.`);
+  } finally {
+    if (button) button.disabled = !multiRoomMode;
+  }
 }
 
 function addSceneObject(type) {
@@ -5275,6 +5354,13 @@ function syncSelectedObjectControls(object = sceneObjectById(selectedObjectId)) 
   const commandRow = document.querySelector(".objectCommandRow");
   const addButton = document.getElementById("addAsset");
   const countLabel = document.getElementById("sceneObjectCount");
+  const autoButton = document.getElementById("autoPlaceFurniture");
+  if (autoButton) {
+    autoButton.disabled = !multiRoomMode || hasUnconfirmedObjectChange();
+    autoButton.title = multiRoomMode
+      ? "Replace automatic furniture while preserving manual objects"
+      : "Available for Floorplan and Custom scenes";
+  }
   if (countLabel) {
     const count = (state.objects || []).length;
     countLabel.textContent = `${count} object${count === 1 ? "" : "s"}`;
@@ -5357,6 +5443,9 @@ function applyObjectEdit() {
 function markObjectEditForConfirmation(objectId) {
   const object = sceneObjectById(objectId);
   if (!object) return;
+  if (object.placement?.source === "semantic_auto") {
+    object.placement = { ...object.placement, source: "manual_edit" };
+  }
   clearTimeout(simulateTimer);
   simulationRequestSeq += 1;
   const isPending = object.id === pendingObjectId;
@@ -5415,6 +5504,7 @@ function duplicateSelectedObject() {
   delete copy.pending;
   delete copy.dirty;
   copy.pending = true;
+  copy.placement = { ...(copy.placement || {}), source: "manual_copy" };
   const corners = cornersFor(state.shape, state.size, state.geometry);
   const shifted = nearestSafeRoomPoint([object.position[0] + 0.35, object.position[1] + 0.28, copy.z ?? 0.5], corners, copy.z ?? 0.5);
   copy.position = shifted ? [Number(shifted[0].toFixed(3)), Number(shifted[1].toFixed(3))] : [...object.position];

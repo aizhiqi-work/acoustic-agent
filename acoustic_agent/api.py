@@ -13,6 +13,7 @@ from .mic import microphone_array
 from .models import Material, Room, SimConfig
 from .motion import room_for_motion_frame, sample_motion
 from .floorplan_resource import DEFAULT_FLOORPLAN_RESOURCE, FloorplanResource
+from .furnishing import generate_floorplan_furniture
 
 
 QUALITY_PRESETS: dict[str, dict[str, int | float]] = {
@@ -95,6 +96,7 @@ class AcousticAgent:
         self.rooms: list[dict[str, Any]] = []
         self.placement: dict[str, Any] | None = None
         self.floorplan: dict[str, Any] | None = None
+        self.furnishing: dict[str, Any] | None = None
 
     @classmethod
     def from_floorplan(
@@ -117,6 +119,7 @@ class AcousticAgent:
         receiver_model: str | Mapping[str, Any] = "mono",
         source_model: str | Mapping[str, Any] = "omni",
         acoustic_geometry: Sequence[Mapping[str, Any]] | None = None,
+        furnishing: str | Mapping[str, Any] | None = None,
         mic_type: str | None = None,
         source_directivity: str | None = None,
         room_height_m: float = 2.8,
@@ -145,6 +148,14 @@ class AcousticAgent:
             receiver=sampled["receiver"],
         )
         actual_material_seed = int(seed if material_seed is None and seed is not None else material_seed or 0)
+        furnishing_layout = _resolve_furnishing(
+            scene["room"]["metadata"],
+            furnishing,
+            default_seed=int(seed or 0),
+            exclude_points=(scene["source"], scene["receiver"]),
+            existing_objects=acoustic_geometry or (),
+        )
+        resolved_geometry = list(acoustic_geometry or ()) + list(furnishing_layout.get("objects", ()) if furnishing_layout else ())
         agent = cls(
             room=scene["room"],
             quality=quality,
@@ -156,7 +167,7 @@ class AcousticAgent:
             config=config,
             receiver_model=mic_type or receiver_model,
             source_model=source_directivity or source_model,
-            acoustic_geometry=acoustic_geometry,
+            acoustic_geometry=resolved_geometry or None,
         )
         agent.default_source = tuple(float(value) for value in scene["source"])
         agent.default_receiver = tuple(float(value) for value in scene["receiver"])
@@ -173,6 +184,7 @@ class AcousticAgent:
             "receiver": list(agent.default_receiver),
         }
         agent.floorplan = dict(scene["dataset"])
+        agent.furnishing = furnishing_layout
         return agent
 
     @classmethod
@@ -195,6 +207,7 @@ class AcousticAgent:
         receiver_model: str | Mapping[str, Any] = "mono",
         source_model: str | Mapping[str, Any] = "omni",
         acoustic_geometry: Sequence[Mapping[str, Any]] | None = None,
+        furnishing: str | Mapping[str, Any] | None = None,
     ) -> "AcousticAgent":
         from .custom_floorplan import compile_floorplan_spec
 
@@ -207,6 +220,14 @@ class AcousticAgent:
         actual_source = _floorplan_position(source, "source") if source is not None else list(scene["source"])
         actual_receiver = _floorplan_position(receiver, "receiver") if receiver is not None else list(scene["receiver"])
         actual_material_seed = int(seed if material_seed is None else material_seed)
+        furnishing_layout = _resolve_furnishing(
+            scene["room"]["metadata"],
+            furnishing,
+            default_seed=int(seed),
+            exclude_points=(actual_source, actual_receiver),
+            existing_objects=acoustic_geometry or (),
+        )
+        resolved_geometry = list(acoustic_geometry or ()) + list(furnishing_layout.get("objects", ()) if furnishing_layout else ())
         agent = cls(
             room=scene["room"],
             quality=quality,
@@ -218,7 +239,7 @@ class AcousticAgent:
             config=config,
             receiver_model=receiver_model,
             source_model=source_model,
-            acoustic_geometry=acoustic_geometry,
+            acoustic_geometry=resolved_geometry or None,
         )
         agent.default_source = tuple(float(value) for value in actual_source)
         agent.default_receiver = tuple(float(value) for value in actual_receiver)
@@ -236,6 +257,7 @@ class AcousticAgent:
             "receiver": list(agent.default_receiver),
         }
         agent.floorplan = dict(scene["dataset"])
+        agent.furnishing = furnishing_layout
         return agent
 
     # Compatibility alias for releases before the public scene name became Floorplan.
@@ -445,6 +467,36 @@ def _room_with_acoustic_geometry(
     )
 
 
+def _resolve_furnishing(
+    room_metadata: Mapping[str, Any],
+    furnishing: str | Mapping[str, Any] | None,
+    *,
+    default_seed: int,
+    exclude_points: Sequence[Sequence[float]],
+    existing_objects: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    if furnishing is None or furnishing is False:
+        return None
+    if isinstance(furnishing, str):
+        config: Mapping[str, Any] = {"compactness": furnishing}
+    elif isinstance(furnishing, Mapping):
+        config = furnishing
+    else:
+        raise TypeError("furnishing must be a compactness string or an object")
+    mode = str(config.get("mode", "auto")).strip().lower()
+    if mode in {"none", "off", "manual"}:
+        return None
+    if mode != "auto":
+        raise ValueError("furnishing.mode must be auto, manual, or none")
+    return generate_floorplan_furniture(
+        room_metadata,
+        compactness=str(config.get("compactness", config.get("density", "balanced"))),
+        seed=int(config.get("seed", default_seed)),
+        exclude_points=exclude_points,
+        existing_objects=existing_objects,
+    )
+
+
 def _acoustic_object(item: Mapping[str, Any], index: int) -> dict[str, Any]:
     if not isinstance(item, Mapping):
         raise TypeError(f"acoustic_geometry[{index}] must be an object")
@@ -478,6 +530,8 @@ def _acoustic_object(item: Mapping[str, Any], index: int) -> dict[str, Any]:
         output["material"] = str(item.get("material") or item.get("material_id"))
     if item.get("material_type"):
         output["material_type"] = str(item["material_type"])
+    if isinstance(item.get("placement"), Mapping):
+        output["placement"] = dict(item["placement"])
     return output
 
 

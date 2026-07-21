@@ -83,6 +83,7 @@ agent = AcousticAgent.from_floorplan(
     material_seed=2026,
     receiver_model={"type": "mono"},
     source_model={"type": "omni"},
+    furnishing={"mode": "auto", "compactness": "balanced", "seed": 42},
     quality="simulation",
     duration_s=2.0,
     fs=16000,
@@ -95,6 +96,30 @@ rir = agent.run().rir
 
 `from_resplan()` remains a compatibility alias for v0.1 code. New code should
 use `from_floorplan()`.
+
+## Semantic furniture
+
+Floorplan and Custom scenes can generate deterministic, editable furniture from
+room semantics:
+
+```python
+agent = AcousticAgent.from_floorplan(
+    idx=0,
+    furnishing={
+        "mode": "auto",
+        "compactness": "balanced",  # sparse / balanced / compact
+        "seed": 42,
+    },
+)
+print(agent.furnishing["summary"])
+```
+
+Large objects are aligned to usable wall segments, free-standing objects are
+sampled from valid room interiors, and door/portal clearances plus source and
+receiver positions are protected. Visual objects use the existing editable
+furniture representation and enter the solver through simplified acoustic
+proxies. In the Web workbench, **Auto place** replaces only previous automatic
+objects; manually added or edited furniture remains untouched.
 
 ## Web workbench
 

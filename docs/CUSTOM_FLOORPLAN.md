@@ -40,6 +40,10 @@ For either input with no API key:
 The JSON remains the review boundary: a generated or VLM-derived plan must pass
 the same geometry checks before it can reach the solver.
 
+After applying JSON, choose a furnishing compactness and press **Auto place**.
+The layout uses room semantics and verified door/window geometry, remains
+deterministic for the selected seed, and can still be edited manually.
+
 ## Python API
 
 ```python

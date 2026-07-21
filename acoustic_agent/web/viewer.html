@@ -9,7 +9,7 @@
       window.location.replace("http://127.0.0.1:8765/");
     }
   </script>
-  <link rel="stylesheet" href="./styles.css?v=105-custom-inputs">
+  <link rel="stylesheet" href="./styles.css?v=106-auto-furniture">
 </head>
 <body>
   <main id="app" data-scene-source="geometry">
@@ -197,6 +197,17 @@
             </div>
             <span id="sceneObjectCount">0 objects</span>
           </div>
+          <div class="autoFurnitureControls">
+            <label>Compactness
+              <select id="furnitureCompactness">
+                <option value="sparse">Sparse</option>
+                <option value="balanced" selected>Balanced</option>
+                <option value="compact">Compact</option>
+              </select>
+            </label>
+            <label>Seed<input id="furnitureSeed" type="number" min="0" max="2147483647" step="1" value="42"></label>
+            <button id="autoPlaceFurniture" type="button" title="Automatically place semantic furniture">Auto place</button>
+          </div>
           <div id="objectThumbs" class="objectThumbStrip" aria-label="Acoustic object type"></div>
           <div id="objectSettings" class="objectSettings">
             <label>X<input id="objectX" type="number" min="-100" max="100" step="0.05"></label>
@@ -370,6 +381,6 @@
       }
     }
   </script>
-  <script type="module" src="app.js?v=121-custom-inputs"></script>
+  <script type="module" src="app.js?v=122-auto-furniture"></script>
 </body>
 </html>

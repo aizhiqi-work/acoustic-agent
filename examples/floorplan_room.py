@@ -23,6 +23,7 @@ def main() -> None:
         },
         source_model={"type": "omni"},
         receiver_model={"type": "mono"},
+        furnishing={"mode": "auto", "compactness": "balanced", "seed": 42},
         quality="preview",
         duration_s=1.0,
         fs=16000,
