@@ -43,6 +43,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     info = commands.add_parser("info", help="Print version, quality presets, and resource inventory.")
     info.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+
+    benchmark = commands.add_parser("benchmark", help="Run the acoustic-accuracy benchmark suite.")
+    benchmark.add_argument(
+        "--profile",
+        choices=("quick", "full"),
+        default="quick",
+        help="quick is suitable for CI; full uses the reference ray budget.",
+    )
+    benchmark.add_argument(
+        "--output",
+        type=Path,
+        default=Path("benchmark-results"),
+        help="Directory for JSON, Markdown, and self-contained HTML reports.",
+    )
+    benchmark.add_argument(
+        "--steam-audio-root",
+        type=Path,
+        default=None,
+        help="Optional Steam Audio repository/SDK root for the native same-scene comparison.",
+    )
+    benchmark.add_argument(
+        "--case",
+        action="append",
+        dest="cases",
+        help="Run one case id; repeat to select multiple cases.",
+    )
+    benchmark.add_argument(
+        "--allow-failures",
+        action="store_true",
+        help="Always exit with status 0 after writing the report.",
+    )
     return parser
 
 
@@ -82,6 +113,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             print(f"Bundled resources: {len(payload['resources'])}")
         return 0
+    if args.command == "benchmark":
+        from .benchmark import run_accuracy_benchmark
+
+        report = run_accuracy_benchmark(
+            profile=args.profile,
+            output_dir=args.output,
+            steam_audio_root=args.steam_audio_root,
+            case_ids=args.cases,
+        )
+        paths = {
+            "json": args.output.resolve() / "accuracy-benchmark.json",
+            "markdown": args.output.resolve() / "accuracy-benchmark.md",
+            "html": args.output.resolve() / "accuracy-benchmark.html",
+        }
+        summary = report.summary
+        print(
+            f"Accuracy benchmark: {summary['pass']} passed, {summary['fail']} failed, "
+            f"{summary['error']} errors, {summary['skip']} skipped ({summary['duration_s']:.2f} s)"
+        )
+        for case in report.cases:
+            print(f"  {case.status.upper():5s} {case.id:24s} {case.summary}")
+        print(f"HTML: {paths['html']}")
+        print(f"Markdown: {paths['markdown']}")
+        print(f"JSON: {paths['json']}")
+        return 0 if args.allow_failures or summary["required_passed"] else 1
     return 2
 
 

@@ -65,6 +65,7 @@ acoustic_agent = [
   "resources/hrtf/*.sofa",
   "resources/manifest.json",
   "resources/floorplan/*",
+  "resources/benchmark/*",
   "web/*",
 ]
 

@@ -18,6 +18,7 @@ sources or receivers.
 - [Python API](#python-api)
 - [Motion And Batch Production](#motion-and-batch-production)
 - [Resources And Data Terms](#resources-and-data-terms)
+- [Accuracy Benchmark](#accuracy-benchmark)
 - [Documentation](#documentation)
 - [Development](#development)
 
@@ -255,6 +256,20 @@ Read [Third-Party Notices](THIRD_PARTY_NOTICES.md) and the packaged data notices
 before redistributing the repository or its databases. Attribution does not
 replace an upstream license or permission.
 
+## Accuracy Benchmark
+
+Run the fixed physical-accuracy suite and generate JSON, Markdown, and
+self-contained HTML evidence:
+
+```bash
+acoustic-agent benchmark --profile quick --output benchmark-results
+```
+
+The suite checks direct arrival and attenuation, shoebox RT60, first-order
+reflections, FDN isolation, portal coupling, HRTF behavior, dynamic continuity,
+and an optional native Steam Audio same-scene comparison. See the
+[benchmark guide](docs/BENCHMARKS.md) for profiles and thresholds.
+
 ## Documentation
 
 | Guide | Purpose |
@@ -265,6 +280,7 @@ replace an upstream license or permission.
 | [Custom Floorplan](docs/CUSTOM_FLOORPLAN.md) | Text/image handoff and JSON schema |
 | [Material Database](docs/MATERIAL_DATABASE.md) | Semantic mapping, provenance, and sampling |
 | [Runtime Resources](docs/RESOURCES.md) | Packaged SQL/SOFA files and verification |
+| [Accuracy Benchmark](docs/BENCHMARKS.md) | Fixed scenes, thresholds, reports, and Steam Audio reference |
 | [中文说明](docs/README_zh-CN.md) | Chinese project guide |
 
 ## Development
