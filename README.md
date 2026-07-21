@@ -189,7 +189,9 @@ rir_frames = dynamic.rirs
 ```
 
 Use `run_batch()` when geometry and materials stay fixed but endpoint positions
-change:
+change. Mono production runs omit viewer-only reflection paths and FOA buffers
+by default; create the agent with `visualization=True` only when those paths are
+needed by a custom viewer:
 
 ```python
 batch = agent.run_batch([

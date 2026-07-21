@@ -428,3 +428,31 @@ def test_cross_room_through_portal_crosses_next_door_in_both_directions():
     )
     assert rerun.metadata["multi_room"]["source_room_id"] == "bedroom_0"
     assert rerun.metadata["multi_room"]["route_room_ids"][0] == "bedroom_0"
+
+
+def test_agent_mono_defaults_to_headless_fast_path_and_can_enable_visualization():
+    config = SimConfig(
+        duration_s=0.08,
+        rt_duration_s=0.08,
+        rt_num_rays=256,
+        rt_num_bounces=2,
+        late_tail=False,
+    )
+    common = {
+        "room": [4.0, 3.0, 2.8],
+        "receiver_model": "mono",
+        "config": config,
+    }
+    fast = AcousticAgent(**common)
+    visual = AcousticAgent(**common, visualization=True)
+
+    assert fast.config.collect_visual_paths is False
+    assert fast.config.render_ambisonics is False
+    assert visual.config.collect_visual_paths is True
+    fast_result = fast.run(source=[1.0, 1.0, 1.4], receiver=[3.0, 2.0, 1.4])
+    visual_result = visual.run(source=[1.0, 1.0, 1.4], receiver=[3.0, 2.0, 1.4])
+
+    np.testing.assert_array_equal(fast_result.rir, visual_result.rir)
+    assert fast_result.ambisonic_rir is None
+    assert not any(path.kind == "rt_reflection" for path in fast_result.paths)
+    assert any(path.kind == "rt_reflection" for path in visual_result.paths)

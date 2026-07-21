@@ -44,7 +44,7 @@ def simulate_rir(
     emitter = source_directivity(source_model)
     kind = str(model.get("type", "mono"))
     if kind == "hrtf":
-        mono = _simulate_mono(room, src, rcv, cfg, emitter)
+        mono = _simulate_mono(room, src, rcv, cfg, emitter, render_ambisonics=True)
         rendered, hrtf_meta = render_binaural_sofa(
             mono.rir,
             source=src,
@@ -62,13 +62,16 @@ def simulate_rir(
         merged_model = {**model, "render_metadata": hrtf_meta}
         return SimulationResult(rendered, mono.paths, mono.rt60, merged_model, mono.metadata, mono.ambisonic_rir, emitter)
     if kind in {"linear_array", "circular_array"}:
-        channel_results = [_simulate_mono(room, src, position, cfg, emitter) for position in channel_positions(rcv, model)]
+        channel_results = [
+            _simulate_mono(room, src, position, cfg, emitter, render_ambisonics=False)
+            for position in channel_positions(rcv, model)
+        ]
         rir = np.stack([item.rir for item in channel_results], axis=0).astype(np.float32)
         paths = tuple(path for item in channel_results for path in item.paths)
         meta = dict(channel_results[0].metadata)
         meta["array_channel_count"] = int(rir.shape[0])
         return SimulationResult(rir, paths, channel_results[0].rt60, model, meta, source_model=emitter)
-    mono = _simulate_mono(room, src, rcv, cfg, emitter)
+    mono = _simulate_mono(room, src, rcv, cfg, emitter, render_ambisonics=bool(cfg.render_ambisonics))
     return SimulationResult(mono.rir.reshape(1, -1), mono.paths, mono.rt60, model, mono.metadata, mono.ambisonic_rir, emitter)
 
 
@@ -93,6 +96,8 @@ def _simulate_mono(
     receiver: tuple[float, float, float],
     config: SimConfig,
     source_model: Mapping[str, Any],
+    *,
+    render_ambisonics: bool,
 ) -> SimulationResult:
     material_rt60 = _estimate_material_rt60(room)
     steam = simulate_steam_room(
@@ -102,6 +107,7 @@ def _simulate_mono(
         config,
         source_model=source_model,
         late_reverb_prior=material_rt60.get("coupled_rt60_bands"),
+        render_ambisonics=render_ambisonics,
     )
     paths = tuple(sorted(tuple(steam.paths), key=lambda path: (path.delay_s, path.kind, -abs(path.gain))))
     rir = steam.rir

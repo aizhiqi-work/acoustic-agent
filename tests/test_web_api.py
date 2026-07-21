@@ -8,9 +8,37 @@ from acoustic_agent.custom_floorplan_web import custom_viewer_html
 from acoustic_agent.web_server import (
     WEB_ROOT,
     _get_stored_result,
+    _simulate_payload,
     simulate_api_from_payload,
     simulate_dynamic_workbench_from_payload,
 )
+
+
+def test_http_api_is_headless_while_workbench_keeps_visual_paths():
+    payload = {
+        "shape": "rectangle",
+        "size": [3.0, 2.5, 2.4],
+        "source": [0.7, 0.8, 1.2],
+        "receiver": [2.2, 1.7, 1.2],
+        "config": {
+            "fs": 8000,
+            "duration_s": 0.08,
+            "rt_num_rays": 256,
+            "rt_num_bounces": 2,
+            "rt_duration_s": 0.08,
+            "late_tail": False,
+            "diffraction_enabled": False,
+        },
+    }
+
+    api = _simulate_payload(payload, visualization=False).result
+    workbench = _simulate_payload(payload, visualization=True).result
+
+    np.testing.assert_array_equal(api.rir, workbench.rir)
+    assert api.metadata["steam_audio"]["rt_visual"]["enabled"] is False
+    assert workbench.metadata["steam_audio"]["rt_visual"]["enabled"] is True
+    assert not any(path.kind == "rt_reflection" for path in api.paths)
+    assert any(path.kind == "rt_reflection" for path in workbench.paths)
 
 
 def test_geometry_and_floorplan_share_the_unified_workbench_shell():

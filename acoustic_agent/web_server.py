@@ -264,7 +264,7 @@ class AcousticWorkbenchHandler(SimpleHTTPRequestHandler):
                     response = simulate_dynamic_workbench_from_payload(payload)
                     self._send_json(response)
                 else:
-                    simulation = _simulate_payload(payload)
+                    simulation = _simulate_payload(payload, visualization=False)
                     if parsed.path.endswith(".wav"):
                         self._send_binary(_float32_wav(simulation.result), "audio/wav", "rir.wav")
                     else:
@@ -416,18 +416,18 @@ def _resample_linear(samples: np.ndarray, source_fs: int, target_fs: int) -> np.
 
 
 def simulate_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    simulation = _simulate_payload(payload)
+    simulation = _simulate_payload(payload, visualization=True)
     return _scene_response(simulation, include_exact_rir=True)
 
 
 def simulate_api_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    simulation = _simulate_payload(payload)
+    simulation = _simulate_payload(payload, visualization=False)
     _, result_metadata = _store_result(simulation.result)
     return result_metadata
 
 
 def simulate_workbench_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    simulation = _simulate_payload(payload)
+    simulation = _simulate_payload(payload, visualization=True)
     result_id, result_metadata = _store_result(simulation.result)
     out = _scene_response(simulation, include_exact_rir=False)
     out["result_id"] = result_id
@@ -467,7 +467,7 @@ def simulate_dynamic_workbench_from_payload(payload: dict[str, Any]) -> dict[str
                 frame_payload["source"],
                 frame_payload["receiver"],
             )
-        simulation = _simulate_payload(frame_payload)
+        simulation = _simulate_payload(frame_payload, visualization=True)
         simulations.append(simulation)
         result_id, result_metadata = _store_result(simulation.result)
         frame_results.append({
@@ -510,7 +510,7 @@ def simulate_dynamic_workbench_from_payload(payload: dict[str, Any]) -> dict[str
     return out
 
 
-def _simulate_payload(payload: dict[str, Any]) -> PayloadSimulation:
+def _simulate_payload(payload: dict[str, Any], *, visualization: bool) -> PayloadSimulation:
     shape = str(payload.get("shape", "rectangle"))
     size = _float_list(payload.get("size", (6.0, 4.0, 2.8)), 3)
     source = tuple(_float_list(payload.get("source", (1.2, 1.1, 1.5)), 3))
@@ -580,6 +580,8 @@ def _simulate_payload(payload: dict[str, Any]) -> PayloadSimulation:
         rt_num_rays=rt_num_rays,
         rt_num_bounces=rt_num_bounces,
         rt_duration_s=float(config_raw.get("rt_duration_s", quality_config["rt_duration_s"])),
+        collect_visual_paths=bool(visualization),
+        render_ambisonics=str(receiver_raw.get("type", "mono")) == "hrtf",
         rt_visual_num_rays=int(config_raw["rt_visual_num_rays"]) if "rt_visual_num_rays" in config_raw else None,
         rt_visual_num_bounces=int(config_raw["rt_visual_num_bounces"]) if "rt_visual_num_bounces" in config_raw else None,
         adaptive_geometry_bounces=bool(config_raw.get("adaptive_geometry_bounces", True)),

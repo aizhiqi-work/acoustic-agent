@@ -78,6 +78,7 @@ All scene modes share these options:
 | `material_profile` | scene default | Semantic material choices |
 | `material_seed` | deterministic default | Material sampling seed |
 | `acoustic_geometry` | empty | Explicit semantic furniture or acoustic objects |
+| `visualization` | `False` | Collect representative RT paths for visualization |
 | `config` | `None` | Full `SimConfig` override |
 
 Convenience aliases are accepted by `create`: `mic` for the receiver position,
@@ -90,10 +91,17 @@ for `acoustic_geometry`, `rir_length` for `duration_s`, and `sample_rate` for
 ```python
 result = agent.run()
 result.rir       # float32 [channel, sample]
-result.paths     # direct, diffraction, and representative reflection paths
+result.paths     # direct, diffraction, and portal paths in the default fast mode
 result.rt60      # broadband and per-band decay estimates
 result.metadata  # resolved solver, materials, topology, cache, and diagnostics
 ```
+
+Mono agents use a headless fast path by default: the RIR and decay metrics are
+unchanged, while representative RT paths and the unused FOA/Ambisonic buffer are
+not generated. Set `visualization=True` when creating an agent to include RT
+paths for a custom viewer. HRTF receivers always retain the FOA reconstruction
+needed for binaural rendering. The WebGL workbench enables visualization
+automatically.
 
 ## Motion
 

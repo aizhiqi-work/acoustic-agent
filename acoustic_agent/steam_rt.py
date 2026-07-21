@@ -772,10 +772,12 @@ def simulate_steam_room(
     config: SimConfig,
     source_model: str | Mapping[str, Any] | None = None,
     late_reverb_prior: Mapping[str, float] | None = None,
+    render_ambisonics: bool | None = None,
 ) -> SteamRender:
     src = np.asarray(source, dtype=float)
     rcv = np.asarray(listener, dtype=float)
     emitter = source_directivity(source_model)
+    spatial_output = bool(config.render_ambisonics if render_ambisonics is None else render_ambisonics)
     scene = _cached_room_ray_scene(room)
     direct = simulate_direct(scene, src, rcv, config, emitter)
     fs = int(config.fs)
@@ -824,9 +826,31 @@ def simulate_steam_room(
 
     if config.reflections_enabled:
         reflection_config, adaptive_bounce_meta = _adaptive_reflection_config(scene, config)
-        field = trace_energy_field(scene, src, rcv, reflection_config, emitter)
-        rt_visual = _visual_rt_paths_from_energy_field(field, src, rcv, reflection_config)
-        paths.extend(rt_visual["paths"])
+        field = trace_energy_field(
+            scene,
+            src,
+            rcv,
+            reflection_config,
+            emitter,
+            render_ambisonics=spatial_output,
+        )
+        if config.collect_visual_paths:
+            rt_visual = _visual_rt_paths_from_energy_field(field, src, rcv, reflection_config)
+            paths.extend(rt_visual["paths"])
+        else:
+            rt_visual = {
+                "paths": [],
+                "metadata": {
+                    "enabled": False,
+                    "model": "disabled_for_headless_api",
+                    "ray_count": int(config.rt_num_rays),
+                    "max_bounces": int(reflection_config.rt_num_bounces),
+                    "follows_simulation": True,
+                    "retain_limit": int(_RT_VISUAL_RETAIN_LIMIT),
+                    "retained_path_count": 0,
+                    "shares_energy_trace": True,
+                },
+            }
         rt60_bands = estimate_reverb_times(field, reflection_config)
         if scene.is_multi_room:
             late_tail_target_rt60_bands, late_decay_profiles = estimate_late_reverb_times(
@@ -854,18 +878,19 @@ def simulate_steam_room(
             band: estimate_signal_decay_profile(band_irs[band_index], config)
             for band_index, band in enumerate(FREQUENCY_BANDS)
         }
-        traced_ambisonic_band_irs = reconstruct_ambisonic_band_irs(field, config)
-        ambisonic_band_irs = _hybridize_ambisonic_tail(
-            traced_ambisonic_band_irs,
-            fdn_component,
-            late_tail_meta,
-            config,
-        )
         seg_len = min(band_irs.shape[1], total - direct_sample) if direct_sample < total else 0
-        ambisonic_rir = np.zeros((4, total), dtype=np.float32)
+        ambisonic_rir = np.zeros((4, total), dtype=np.float32) if spatial_output else None
         if seg_len > 0:
             reflection_band[:, direct_sample:direct_sample + seg_len] += band_irs[:, :seg_len]
-            ambisonic_rir[:, direct_sample:direct_sample + seg_len] += np.sum(ambisonic_band_irs[:, :, :seg_len], axis=0)
+            if spatial_output:
+                traced_ambisonic_band_irs = reconstruct_ambisonic_band_irs(field, config)
+                ambisonic_band_irs = _hybridize_ambisonic_tail(
+                    traced_ambisonic_band_irs,
+                    fdn_component,
+                    late_tail_meta,
+                    config,
+                )
+                ambisonic_rir[:, direct_sample:direct_sample + seg_len] += np.sum(ambisonic_band_irs[:, :, :seg_len], axis=0)
         quality_warnings: list[str] = []
         if int(config.rt_num_rays) < 4096:
             quality_warnings.append("ray count is below the Steam Audio realtime reference")
@@ -903,11 +928,11 @@ def simulate_steam_room(
             "surface_energy": field.get("surface_energy", {}),
             "accelerator": field.get("accelerator", "numpy"),
             "ambisonics": {
-                "enabled": True,
+                "enabled": bool(spatial_output),
                 "order": 1,
                 "channels": ["W", "X", "Y", "Z"],
                 "normalization": "acoustic_agent_foa_unit_vector",
-                "energy": float(np.sum(ambisonic_rir * ambisonic_rir)),
+                "energy": float(np.sum(ambisonic_rir * ambisonic_rir)) if ambisonic_rir is not None else 0.0,
             },
         }
     else:
@@ -1541,11 +1566,27 @@ def trace_energy_field(
     listener: np.ndarray,
     config: SimConfig,
     source_model: str | Mapping[str, Any] | None = None,
+    *,
+    render_ambisonics: bool = True,
 ) -> dict[str, Any]:
     emitter = source_directivity(source_model)
     if njit is not None:
-        return _trace_energy_field_numba(scene, source, listener, config, emitter)
-    return _trace_energy_field_numpy(scene, source, listener, config, emitter)
+        return _trace_energy_field_numba(
+            scene,
+            source,
+            listener,
+            config,
+            emitter,
+            render_ambisonics=render_ambisonics,
+        )
+    return _trace_energy_field_numpy(
+        scene,
+        source,
+        listener,
+        config,
+        emitter,
+        render_ambisonics=render_ambisonics,
+    )
 
 
 def _trace_energy_field_numba(
@@ -1554,6 +1595,8 @@ def _trace_energy_field_numba(
     listener: np.ndarray,
     config: SimConfig,
     source_model: Mapping[str, Any] | None = None,
+    *,
+    render_ambisonics: bool = True,
 ) -> dict[str, Any]:
     emitter = source_directivity(source_model)
     arrays = _scene_kernel_arrays(scene)
@@ -1577,7 +1620,7 @@ def _trace_energy_field_numba(
         if config.rt_visual_num_rays is None
         else max(1, min(int(config.rt_visual_num_rays), default_visual_candidates))
     )
-    visual_candidate_limit = min(num_rays, requested_visual_candidates)
+    visual_candidate_limit = min(num_rays, requested_visual_candidates) if config.collect_visual_paths else 0
     visual_stride = max(1, num_rays // max(visual_candidate_limit, 1))
     (
         echogram,
@@ -1630,13 +1673,14 @@ def _trace_energy_field_numba(
         float(emitter["dipole_power"]),
         int(visual_candidate_limit),
         int(visual_stride),
+        bool(render_ambisonics),
     )
     names = arrays["names"]
     total_energy = np.sum(echogram, axis=0)
     nonzero_bins = np.flatnonzero(total_energy > 0.0)
     return {
         "echogram": echogram,
-        "ambisonic_echogram": ambisonic,
+        "ambisonic_echogram": ambisonic if render_ambisonics else None,
         "num_bins": num_bins,
         "bin_duration_s": bin_dur,
         "direct_delay_s": direct_delay,
@@ -1656,7 +1700,7 @@ def _trace_energy_field_numba(
             "surface_names": tuple(names),
             "candidate_limit": int(visual_candidate_limit),
             "stride": int(visual_stride),
-        },
+        } if config.collect_visual_paths else None,
         "accelerator": "numba",
         "source_directivity": dict(emitter),
     }
@@ -1668,6 +1712,8 @@ def _trace_energy_field_numpy(
     listener: np.ndarray,
     config: SimConfig,
     source_model: Mapping[str, Any] | None = None,
+    *,
+    render_ambisonics: bool = True,
 ) -> dict[str, Any]:
     emitter = source_directivity(source_model)
     c = config.c
@@ -1679,7 +1725,7 @@ def _trace_energy_field_numpy(
     max_path_len = duration * c
     direct_delay = float(np.linalg.norm(source - listener)) / c
     echogram = np.zeros((_NUM_BANDS, num_bins), dtype=np.float64)
-    ambisonic_echogram = np.zeros((_NUM_BANDS, 4, num_bins), dtype=np.float64)
+    ambisonic_echogram = np.zeros((_NUM_BANDS, 4, num_bins), dtype=np.float64) if render_ambisonics else None
     origins = np.tile(listener, (num_rays, 1)).astype(float)
     dirs = _sphere_samples(num_rays, config.seed)
     listener_dirs = dirs.copy()
@@ -1749,7 +1795,7 @@ def _trace_energy_field_numpy(
                 if np.any(valid):
                     bins_v = bin_index[valid]
                     energy_v = energy[valid]
-                    coeffs_v = _foa_coefficients(listener_dirs[valid])
+                    coeffs_v = _foa_coefficients(listener_dirs[valid]) if render_ambisonics else None
                     if surfaces is not None:
                         surface_v = surfaces[valid]
                         energy_sum_v = np.sum(energy_v, axis=1)
@@ -1760,8 +1806,9 @@ def _trace_energy_field_numpy(
                             surface_energy[key] = surface_energy.get(key, 0.0) + float(np.sum(energy_sum_v[mask]))
                     for bi in range(_NUM_BANDS):
                         np.add.at(echogram[bi], bins_v, energy_v[:, bi])
-                        for ci in range(4):
-                            np.add.at(ambisonic_echogram[bi, ci], bins_v, energy_v[:, bi] * coeffs_v[:, ci])
+                        if render_ambisonics:
+                            for ci in range(4):
+                                np.add.at(ambisonic_echogram[bi, ci], bins_v, energy_v[:, bi] * coeffs_v[:, ci])
         accum_energy = np.where(alive[:, None], accum_energy * (1.0 - absorption), accum_energy)
         accum_distance = np.where(alive, accum_distance + t, accum_distance)
         origins = np.where(alive[:, None], hit_point, origins)
@@ -4163,7 +4210,7 @@ if njit is not None:
 
 
     @njit(parallel=True)
-    def _trace_energy_kernel(source, listener, directions, diffuse_bank, diffuse_random, diffuse_indices, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, reflection, scattering, corners, height, num_bounces, num_bins, bin_dur, c, max_path_len, direct_delay, listener_radius, source_radius, irradiance_min_distance, specular_exponent, source_forward_vector, dipole_weight, dipole_power, visual_candidate_limit, visual_stride):
+    def _trace_energy_kernel(source, listener, directions, diffuse_bank, diffuse_random, diffuse_indices, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, reflection, scattering, corners, height, num_bounces, num_bins, bin_dur, c, max_path_len, direct_delay, listener_radius, source_radius, irradiance_min_distance, specular_exponent, source_forward_vector, dipole_weight, dipole_power, visual_candidate_limit, visual_stride, render_ambisonics):
         thread_count = get_num_threads()
         local_echogram = np.zeros((thread_count, _NUM_BANDS, num_bins), dtype=np.float64)
         local_ambisonic = np.zeros((thread_count, _NUM_BANDS, 4, num_bins), dtype=np.float64)
@@ -4262,10 +4309,11 @@ if njit is not None:
                                 for bi in range(_NUM_BANDS):
                                     energy = ((4.0 * math.pi) / max(directions.shape[0], 1)) * source_gain * distance_term * (diffuse + specular) * reflection[surf, bi] * accum_energy[bi]
                                     local_echogram[tid, bi, bin_index] += energy
-                                    local_ambisonic[tid, bi, 0, bin_index] += energy
-                                    local_ambisonic[tid, bi, 1, bin_index] += energy * coeff_x
-                                    local_ambisonic[tid, bi, 2, bin_index] += energy * coeff_y
-                                    local_ambisonic[tid, bi, 3, bin_index] += energy * coeff_z
+                                    if render_ambisonics:
+                                        local_ambisonic[tid, bi, 0, bin_index] += energy
+                                        local_ambisonic[tid, bi, 1, bin_index] += energy * coeff_x
+                                        local_ambisonic[tid, bi, 2, bin_index] += energy * coeff_y
+                                        local_ambisonic[tid, bi, 3, bin_index] += energy * coeff_z
                                     energy_sum += energy
                                 if visual_slot >= 0 and energy_sum > visual_gains[visual_slot] * visual_gains[visual_slot]:
                                     visual_orders[visual_slot] = bounce + 1
@@ -4315,8 +4363,9 @@ if njit is not None:
             for bi in range(_NUM_BANDS):
                 for b in range(num_bins):
                     echogram[bi, b] += local_echogram[ti, bi, b]
-                    for ci in range(4):
-                        ambisonic[bi, ci, b] += local_ambisonic[ti, bi, ci, b]
+                    if render_ambisonics:
+                        for ci in range(4):
+                            ambisonic[bi, ci, b] += local_ambisonic[ti, bi, ci, b]
         return (
             echogram,
             ambisonic,
