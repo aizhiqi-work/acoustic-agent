@@ -12,3 +12,4 @@ benchmark-results/
 .coverage
 htmlcov/
 examples/output/
+research/results/

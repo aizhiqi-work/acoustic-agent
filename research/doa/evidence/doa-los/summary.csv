@@ -1,0 +1,37 @@
+scene,case,condition,receiver,method,true_world_azimuth_deg,true_listener_azimuth_deg,evaluation_azimuth_deg,estimated_azimuth_deg,absolute_error_deg,ambiguity,distance_m,direct_visibility,floorplan_idx,seed,artifact
+geometry,geometry-030deg,direct,hrtf,binaural_hrtf_template,30.0,30.0,30.0,30.0,0.0,none (generic HRTF template),1.5,1.0,,20260752,geometry-030deg-direct-hrtf.npz
+geometry,geometry-030deg,direct,linear4,srp_phat,30.0,30.0,30.0,30.0,0.0,mirror across array axis,1.5,1.0,,20260752,geometry-030deg-direct-linear4.npz
+geometry,geometry-030deg,direct,circular8,srp_phat,30.0,30.0,30.0,30.0,0.0,none,1.5,1.0,,20260752,geometry-030deg-direct-circular8.npz
+geometry,geometry-030deg,room,hrtf,binaural_hrtf_template,30.0,30.0,30.0,30.0,0.0,none (generic HRTF template),1.5,1.0,,20260752,geometry-030deg-room-hrtf.npz
+geometry,geometry-030deg,room,linear4,srp_phat,30.0,30.0,30.0,40.0,10.0,mirror across array axis,1.5,1.0,,20260752,geometry-030deg-room-linear4.npz
+geometry,geometry-030deg,room,circular8,srp_phat,30.0,30.0,30.0,23.0,7.0,none,1.5,1.0,,20260752,geometry-030deg-room-circular8.npz
+geometry,geometry-105deg,direct,hrtf,binaural_hrtf_template,105.0,105.0,105.0,106.0,1.0,none (generic HRTF template),1.5,1.0,,20260827,geometry-105deg-direct-hrtf.npz
+geometry,geometry-105deg,direct,linear4,srp_phat,105.0,105.0,105.0,105.0,0.0,mirror across array axis,1.5,1.0,,20260827,geometry-105deg-direct-linear4.npz
+geometry,geometry-105deg,direct,circular8,srp_phat,105.0,105.0,105.0,105.0,0.0,none,1.5,1.0,,20260827,geometry-105deg-direct-circular8.npz
+geometry,geometry-105deg,room,hrtf,binaural_hrtf_template,105.0,105.0,105.0,106.0,1.0,none (generic HRTF template),1.5,1.0,,20260827,geometry-105deg-room-hrtf.npz
+geometry,geometry-105deg,room,linear4,srp_phat,105.0,105.0,105.0,108.0,3.0,mirror across array axis,1.5,1.0,,20260827,geometry-105deg-room-linear4.npz
+geometry,geometry-105deg,room,circular8,srp_phat,105.0,105.0,105.0,111.0,6.0,none,1.5,1.0,,20260827,geometry-105deg-room-circular8.npz
+geometry,geometry-230deg,direct,hrtf,binaural_hrtf_template,230.0,230.0,230.0,230.0,0.0,none (generic HRTF template),1.5,1.0,,20260952,geometry-230deg-direct-hrtf.npz
+geometry,geometry-230deg,direct,linear4,srp_phat,230.0,230.0,130.0,130.0,0.0,mirror across array axis,1.5,1.0,,20260952,geometry-230deg-direct-linear4.npz
+geometry,geometry-230deg,direct,circular8,srp_phat,230.0,230.0,230.0,230.0,0.0,none,1.5,1.0,,20260952,geometry-230deg-direct-circular8.npz
+geometry,geometry-230deg,room,hrtf,binaural_hrtf_template,230.0,230.0,230.0,230.0,0.0,none (generic HRTF template),1.5,1.0,,20260952,geometry-230deg-room-hrtf.npz
+geometry,geometry-230deg,room,linear4,srp_phat,230.0,230.0,130.0,138.0,8.0,mirror across array axis,1.5,1.0,,20260952,geometry-230deg-room-linear4.npz
+geometry,geometry-230deg,room,circular8,srp_phat,230.0,230.0,230.0,229.0,1.0,none,1.5,1.0,,20260952,geometry-230deg-room-circular8.npz
+floorplan,floorplan-0-seed-42,direct,hrtf,binaural_hrtf_template,60.8406,60.8406,60.8406,62.0,1.1594,none (generic HRTF template),1.2745,1.0,0,42,floorplan-0-seed-42-direct-hrtf.npz
+floorplan,floorplan-0-seed-42,direct,linear4,srp_phat,60.8406,60.8406,60.8406,61.0,0.1594,mirror across array axis,1.2745,1.0,0,42,floorplan-0-seed-42-direct-linear4.npz
+floorplan,floorplan-0-seed-42,direct,circular8,srp_phat,60.8406,60.8406,60.8406,61.0,0.1594,none,1.2745,1.0,0,42,floorplan-0-seed-42-direct-circular8.npz
+floorplan,floorplan-0-seed-42,room,hrtf,binaural_hrtf_template,60.8406,60.8406,60.8406,62.0,1.1594,none (generic HRTF template),1.2745,1.0,0,42,floorplan-0-seed-42-room-hrtf.npz
+floorplan,floorplan-0-seed-42,room,linear4,srp_phat,60.8406,60.8406,60.8406,58.0,2.8406,mirror across array axis,1.2745,1.0,0,42,floorplan-0-seed-42-room-linear4.npz
+floorplan,floorplan-0-seed-42,room,circular8,srp_phat,60.8406,60.8406,60.8406,58.0,2.8406,none,1.2745,1.0,0,42,floorplan-0-seed-42-room-circular8.npz
+floorplan,floorplan-0-seed-43,direct,hrtf,binaural_hrtf_template,340.0144,340.0144,340.0144,338.0,2.0144,none (generic HRTF template),1.9983,1.0,0,43,floorplan-0-seed-43-direct-hrtf.npz
+floorplan,floorplan-0-seed-43,direct,linear4,srp_phat,340.0144,340.0144,19.9856,20.0,0.0144,mirror across array axis,1.9983,1.0,0,43,floorplan-0-seed-43-direct-linear4.npz
+floorplan,floorplan-0-seed-43,direct,circular8,srp_phat,340.0144,340.0144,340.0144,340.0,0.0144,none,1.9983,1.0,0,43,floorplan-0-seed-43-direct-circular8.npz
+floorplan,floorplan-0-seed-43,room,hrtf,binaural_hrtf_template,340.0144,340.0144,340.0144,336.0,4.0144,none (generic HRTF template),1.9983,1.0,0,43,floorplan-0-seed-43-room-hrtf.npz
+floorplan,floorplan-0-seed-43,room,linear4,srp_phat,340.0144,340.0144,19.9856,24.0,4.0144,mirror across array axis,1.9983,1.0,0,43,floorplan-0-seed-43-room-linear4.npz
+floorplan,floorplan-0-seed-43,room,circular8,srp_phat,340.0144,340.0144,340.0144,338.0,2.0144,none,1.9983,1.0,0,43,floorplan-0-seed-43-room-circular8.npz
+floorplan,floorplan-0-seed-44,direct,hrtf,binaural_hrtf_template,41.1553,41.1553,41.1553,42.0,0.8447,none (generic HRTF template),1.0545,1.0,0,44,floorplan-0-seed-44-direct-hrtf.npz
+floorplan,floorplan-0-seed-44,direct,linear4,srp_phat,41.1553,41.1553,41.1553,41.0,0.1553,mirror across array axis,1.0545,1.0,0,44,floorplan-0-seed-44-direct-linear4.npz
+floorplan,floorplan-0-seed-44,direct,circular8,srp_phat,41.1553,41.1553,41.1553,41.0,0.1553,none,1.0545,1.0,0,44,floorplan-0-seed-44-direct-circular8.npz
+floorplan,floorplan-0-seed-44,room,hrtf,binaural_hrtf_template,41.1553,41.1553,41.1553,42.0,0.8447,none (generic HRTF template),1.0545,1.0,0,44,floorplan-0-seed-44-room-hrtf.npz
+floorplan,floorplan-0-seed-44,room,linear4,srp_phat,41.1553,41.1553,41.1553,41.0,0.1553,mirror across array axis,1.0545,1.0,0,44,floorplan-0-seed-44-room-linear4.npz
+floorplan,floorplan-0-seed-44,room,circular8,srp_phat,41.1553,41.1553,41.1553,41.0,0.1553,none,1.0545,1.0,0,44,floorplan-0-seed-44-room-circular8.npz

@@ -1,0 +1,4 @@
+relative_area_bin,floorplans,cases,median_error_m,p90_error_m,room_accuracy,cross_room_cases,cross_room_median_error_m,cross_room_room_accuracy
+large,35,320,0.7403,1.8202,0.95,120,0.9519,0.8917
+medium,32,293,0.6333,1.5968,0.9283,110,0.7469,0.8545
+small,43,377,0.5457,1.4357,0.9443,140,0.7136,0.8643
