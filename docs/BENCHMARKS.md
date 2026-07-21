@@ -41,7 +41,7 @@ intended to run on every commit.
 | `fdn_isolation` | FDN off/on equality before transition and difference after it |
 | `portal_coupling` | Open/closed door path, energy, and decay-signature changes |
 | `hrtf_consistency` | ITD, ILD, and energy-normalized binaural loudness |
-| `dynamic_continuity` | Adjacent-frame direct delay and raw RIR peak continuity |
+| `dynamic_continuity` | Adjacent-frame direct delay and direct-energy continuity; raw sample peaks are diagnostic |
 | `steam_audio_native` | Native Steam Audio and Acoustic Agent RT60 in the same shoebox |
 
 The report may contain failures. These are evidence of a regression or known

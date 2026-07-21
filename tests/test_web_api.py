@@ -8,9 +8,37 @@ from acoustic_agent.custom_floorplan_web import custom_viewer_html
 from acoustic_agent.web_server import (
     WEB_ROOT,
     _get_stored_result,
+    _simulate_payload,
     simulate_api_from_payload,
     simulate_dynamic_workbench_from_payload,
 )
+
+
+def test_http_api_is_headless_while_workbench_keeps_visual_paths():
+    payload = {
+        "shape": "rectangle",
+        "size": [3.0, 2.5, 2.4],
+        "source": [0.7, 0.8, 1.2],
+        "receiver": [2.2, 1.7, 1.2],
+        "config": {
+            "fs": 8000,
+            "duration_s": 0.08,
+            "rt_num_rays": 256,
+            "rt_num_bounces": 2,
+            "rt_duration_s": 0.08,
+            "late_tail": False,
+            "diffraction_enabled": False,
+        },
+    }
+
+    api = _simulate_payload(payload, visualization=False).result
+    workbench = _simulate_payload(payload, visualization=True).result
+
+    np.testing.assert_array_equal(api.rir, workbench.rir)
+    assert api.metadata["steam_audio"]["rt_visual"]["enabled"] is False
+    assert workbench.metadata["steam_audio"]["rt_visual"]["enabled"] is True
+    assert not any(path.kind == "rt_reflection" for path in api.paths)
+    assert any(path.kind == "rt_reflection" for path in workbench.paths)
 
 
 def test_geometry_and_floorplan_share_the_unified_workbench_shell():
@@ -29,6 +57,7 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
         assert 'id="motionMode"' in html
         assert 'id="motionMoving"' in html
         assert 'id="motionFrameSpacing"' in html
+        assert 'id="intersectionBackend"' in html
         assert 'id="resampleMotionPath"' in html
         assert 'id="viewToolbar"' in html
         assert 'id="stageDistance"' in html
@@ -90,6 +119,8 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
     assert "const RIR_DECAY_MIN_DB = -60;" in app_js
     assert 'const RIR_DECAY_DB_TICKS = ["0", "-20", "-40", "-60"];' in app_js
     assert 'keyframe_spacing_m: 0.25' in app_js
+    assert 'intersection_backend: "auto"' in app_js
+    assert '["intersection_backend", intersectionBackend]' in app_js
     assert 'keyframes=${Number(motion.keyframes' not in app_js
     assert "keyframe_spacing_m: Number(state.motion?.keyframe_spacing_m || 0.25)" in app_js
     assert '"agent = AcousticAgent.create("' in app_js

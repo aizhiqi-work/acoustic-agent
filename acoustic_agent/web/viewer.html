@@ -250,6 +250,13 @@
               <option value="reference">Reference</option>
             </select>
           </label>
+          <label for="intersectionBackend">Intersection
+            <select id="intersectionBackend">
+              <option value="auto" selected>Auto</option>
+              <option value="linear">Linear</option>
+              <option value="bvh">BVH</option>
+            </select>
+          </label>
           <label for="fs">Sample rate
             <select id="fs"><option>16000</option><option>24000</option><option>48000</option></select>
           </label>
@@ -381,6 +388,6 @@
       }
     }
   </script>
-  <script type="module" src="app.js?v=122-auto-furniture"></script>
+  <script type="module" src="app.js?v=123-bvh"></script>
 </body>
 </html>

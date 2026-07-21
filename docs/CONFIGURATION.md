@@ -39,6 +39,8 @@ Important common arguments:
 | `receiver_model` | `mono` | Mono, HRTF, linear, or circular receiver |
 | `source_model` | `omni` | Source directivity mapping |
 | `acoustic_geometry` | `None` | Semantic furniture/acoustic objects |
+| `visualization` | `False` | Include representative reflection paths for a viewer |
+| `intersection_backend` | `auto` | Surface lookup: `auto`, `linear`, or `bvh` |
 | `config` | `None` | Full `SimConfig` override |
 
 `config` takes precedence over `quality`, `fs`, and `duration_s` when supplied.
@@ -185,13 +187,20 @@ Common controls:
 | `rt_num_rays` | `32768` | Traced source rays |
 | `rt_num_bounces` | `96` | Base reflection depth |
 | `rt_receiver_radius_m` | `0.25` | Receiver hit radius |
+| `intersection_backend` | `auto` | Linear reference traversal or cached BVH |
+| `bvh_min_surfaces` | `16` | Surface threshold used by `auto` |
+| `collect_visual_paths` | `True` | Low-level representative RT path output |
+| `render_ambisonics` | `True` | Low-level FOA reflection reconstruction |
 | `adaptive_cross_room_bounces` | `True` | Raise cross-room reflection depth |
 | `cross_room_min_bounces` | `96` | Minimum cross-room depth |
 | `cross_room_max_bounces` | `128` | Maximum cross-room depth |
 | `seed` | `1729` | Deterministic simulation seed |
 
 Use the quality facade unless a controlled experiment requires individual
-fields. Record the complete resolved config with generated data.
+fields. `AcousticAgent` resolves the two output-only fields to `False` for its
+default Mono headless path; low-level `simulate_rir` keeps them enabled for
+backward compatibility. Record the complete resolved config with generated
+data.
 
 ## HTTP Endpoints
 
@@ -218,3 +227,5 @@ fields. Record the complete resolved config with generated data.
 
 Legacy `POST /api/simulate` remains available for compatibility. API responses
 enable CORS for local integration, but the server has no authentication.
+`/api/v1/simulate` and the direct WAV/NumPy endpoints use the headless path;
+workbench endpoints retain visualization data.

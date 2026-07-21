@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
 from .directivity import source_directivity
@@ -73,6 +73,8 @@ class AcousticAgent:
         receiver_model: str | Mapping[str, Any] = "mono",
         source_model: str | Mapping[str, Any] = "omni",
         acoustic_geometry: Sequence[Mapping[str, Any]] | None = None,
+        visualization: bool = False,
+        intersection_backend: str | None = None,
     ) -> None:
         self.room = _make_agent_room(
             room,
@@ -83,16 +85,33 @@ class AcousticAgent:
         )
         if acoustic_geometry is not None:
             self.room = _room_with_acoustic_geometry(self.room, acoustic_geometry)
-        preset = quality_preset(quality)
-        self.config = config or SimConfig(
-            fs=int(fs),
-            duration_s=float(duration_s),
-            rt_num_rays=int(preset["rt_num_rays"]),
-            rt_num_bounces=int(preset["rt_num_bounces"]),
-            rt_duration_s=float(preset["rt_duration_s"]),
-            seed=SimConfig.seed if seed is None else int(seed),
-        )
         self.receiver_model = _microphone_model(receiver_model)
+        receiver_kind = str(self.receiver_model.get("type", "mono"))
+        resolved_intersection_backend = str(
+            intersection_backend
+            if intersection_backend is not None
+            else config.intersection_backend if config is not None else "auto"
+        )
+        preset = quality_preset(quality)
+        if config is None:
+            self.config = SimConfig(
+                fs=int(fs),
+                duration_s=float(duration_s),
+                rt_num_rays=int(preset["rt_num_rays"]),
+                rt_num_bounces=int(preset["rt_num_bounces"]),
+                rt_duration_s=float(preset["rt_duration_s"]),
+                seed=SimConfig.seed if seed is None else int(seed),
+                intersection_backend=resolved_intersection_backend,
+                collect_visual_paths=bool(visualization),
+                render_ambisonics=receiver_kind == "hrtf",
+            )
+        else:
+            self.config = replace(
+                config,
+                intersection_backend=resolved_intersection_backend,
+                collect_visual_paths=bool(visualization),
+                render_ambisonics=receiver_kind == "hrtf",
+            )
         self.source_model = source_directivity(source_model)
         self.default_source: tuple[float, float, float] | None = None
         self.default_receiver: tuple[float, float, float] | None = None
@@ -175,6 +194,8 @@ class AcousticAgent:
         source_model: str | Mapping[str, Any] = "omni",
         acoustic_geometry: Sequence[Mapping[str, Any]] | None = None,
         furnishing: str | Mapping[str, Any] | None = None,
+        visualization: bool = False,
+        intersection_backend: str | None = None,
         mic_type: str | None = None,
         source_directivity: str | None = None,
         room_height_m: float = 2.8,
@@ -223,6 +244,8 @@ class AcousticAgent:
             receiver_model=mic_type or receiver_model,
             source_model=source_directivity or source_model,
             acoustic_geometry=resolved_geometry or None,
+            visualization=visualization,
+            intersection_backend=intersection_backend,
         )
         agent.default_source = tuple(float(value) for value in scene["source"])
         agent.default_receiver = tuple(float(value) for value in scene["receiver"])
@@ -264,6 +287,8 @@ class AcousticAgent:
         source_model: str | Mapping[str, Any] = "omni",
         acoustic_geometry: Sequence[Mapping[str, Any]] | None = None,
         furnishing: str | Mapping[str, Any] | None = None,
+        visualization: bool = False,
+        intersection_backend: str | None = None,
     ) -> "AcousticAgent":
         from .custom_floorplan import compile_floorplan_spec
 
@@ -296,6 +321,8 @@ class AcousticAgent:
             receiver_model=receiver_model,
             source_model=source_model,
             acoustic_geometry=resolved_geometry or None,
+            visualization=visualization,
+            intersection_backend=intersection_backend,
         )
         agent.default_source = tuple(float(value) for value in actual_source)
         agent.default_receiver = tuple(float(value) for value in actual_receiver)

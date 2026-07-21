@@ -147,7 +147,7 @@ const defaultState = {
   source: [1.2, 1.1, 1.5],
   receiver: [4.7, 2.8, 1.4],
   motion: { mode: "static", moving: "source", distance_m: 0.8, keyframe_spacing_m: 0.25, random_seed: 42 },
-  config: { fs: 16000, duration_s: 2.0, quality: "simulation", rt_num_rays: 32768, rt_num_bounces: 64, rt_duration_s: 2.0, diffraction_order: 3, max_diffraction_paths: 8 },
+  config: { fs: 16000, duration_s: 2.0, quality: "simulation", intersection_backend: "auto", rt_num_rays: 32768, rt_num_bounces: 64, rt_duration_s: 2.0, diffraction_order: 3, max_diffraction_paths: 8 },
   mic: { type: "mono", count: 4, spacing_m: 0.08, radius_m: 0.12, orientation_deg: 0 },
   sourceDirectivity: { type: "omni", orientation_deg: 0, elevation_deg: 0, dipole_weight: 0.0, dipole_power: 1.0 },
   floorplan: { index: 0, count: 0, roomId: null, roomType: null, receiverRoomId: null, receiverRoomType: null, corners: null, roomOptions: [], plan: null, dataset: null, selectedRoom: null, receiverRoom: null, roomMetadata: null },
@@ -976,7 +976,7 @@ function bindEvents() {
     : customMode
       ? ["materialSeed", ...activeBoundaryMaterialControls.map(([, , id]) => id)]
     : ["shape", "sizeX", "sizeY", "height", "materialSeed", ...activeBoundaryMaterialControls.map(([, , id]) => id)];
-  const ids = [...roomIds, "qualitySelect", "rirDuration", "sourceX", "sourceY", "sourceZ", "receiverX", "receiverY", "receiverZ", "motionMode", "motionMoving", "motionDistance", "motionFrameSpacing", "micOrientation", "micCount", "micSpacing", "sourceOrientation", "sourceElevation", "sourcePower", "fs"];
+  const ids = [...roomIds, "qualitySelect", "intersectionBackend", "rirDuration", "sourceX", "sourceY", "sourceZ", "receiverX", "receiverY", "receiverZ", "motionMode", "motionMoving", "motionDistance", "motionFrameSpacing", "micOrientation", "micCount", "micSpacing", "sourceOrientation", "sourceElevation", "sourcePower", "fs"];
   ids.forEach((id) => document.getElementById(id)?.addEventListener("input", () => {
     if (floorplanMode && id === "height") {
       state.size[2] = clamp(number("height"), 2.0, 6.0);
@@ -1288,6 +1288,7 @@ function readControls() {
   );
   readGeometryParams();
   state.config.quality = value("qualitySelect");
+  state.config.intersection_backend = value("intersectionBackend") || "auto";
   state.config.duration_s = clamp(number("rirDuration"), 0.3, 6.0);
   state.config.rt_duration_s = state.config.duration_s;
   state.motion = {
@@ -1343,6 +1344,7 @@ function updateControls() {
   activeBoundaryMaterialControls.forEach(([surface, , id]) => setValue(id, state.materialProfile?.[surface] || "auto"));
   applyMaterialAvailability();
   setValue("qualitySelect", state.config.quality);
+  setValue("intersectionBackend", state.config.intersection_backend || "auto");
   setValue("rirDuration", Number(state.config.duration_s || 2.0).toFixed(1));
   setValue("sourceX", state.source[0]);
   setValue("sourceY", state.source[1]);
@@ -4448,6 +4450,7 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
   const quality = String(payload.config?.quality || payload.quality || "simulation");
   const rirLength = Number(payload.config?.duration_s || 2.0);
   const sampleRate = Number(payload.config?.fs || 16000);
+  const intersectionBackend = String(payload.config?.intersection_backend || "auto");
   const motion = payload.motion || { mode: "static" };
   const dynamicMotion = motion.mode && motion.mode !== "static";
   const motionConfig = dynamicMotion ? {
@@ -4490,6 +4493,7 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
         ["source_model", sourceModel],
         ["acoustic_geometry", acousticGeometry.length ? acousticGeometry : undefined],
         ["quality", quality],
+        ["intersection_backend", intersectionBackend],
         ["duration_s", rirLength],
         ["fs", sampleRate],
       ]),
@@ -4518,6 +4522,7 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
         ["source_model", sourceModel],
         ["acoustic_geometry", acousticGeometry.length ? acousticGeometry : undefined],
         ["quality", quality],
+        ["intersection_backend", intersectionBackend],
         ["duration_s", rirLength],
         ["fs", sampleRate],
       ]),
@@ -4580,6 +4585,7 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
       ["source_model", sourceModel],
       ["acoustic_geometry", acousticGeometry.length ? acousticGeometry : undefined],
       ["quality", quality],
+      ["intersection_backend", intersectionBackend],
       ["duration_s", rirLength],
       ["fs", sampleRate],
     ]),

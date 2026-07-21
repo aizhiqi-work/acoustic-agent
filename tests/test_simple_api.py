@@ -1,5 +1,6 @@
 import math
 import json
+from dataclasses import replace
 
 import numpy as np
 
@@ -428,3 +429,67 @@ def test_cross_room_through_portal_crosses_next_door_in_both_directions():
     )
     assert rerun.metadata["multi_room"]["source_room_id"] == "bedroom_0"
     assert rerun.metadata["multi_room"]["route_room_ids"][0] == "bedroom_0"
+
+
+def test_agent_mono_defaults_to_headless_fast_path_and_can_enable_visualization():
+    config = SimConfig(
+        duration_s=0.08,
+        rt_duration_s=0.08,
+        rt_num_rays=256,
+        rt_num_bounces=2,
+        late_tail=False,
+    )
+    common = {
+        "room": [4.0, 3.0, 2.8],
+        "receiver_model": "mono",
+        "config": config,
+    }
+    fast = AcousticAgent(**common)
+    visual = AcousticAgent(**common, visualization=True)
+
+    assert fast.config.collect_visual_paths is False
+    assert fast.config.render_ambisonics is False
+    assert visual.config.collect_visual_paths is True
+    fast_result = fast.run(source=[1.0, 1.0, 1.4], receiver=[3.0, 2.0, 1.4])
+    visual_result = visual.run(source=[1.0, 1.0, 1.4], receiver=[3.0, 2.0, 1.4])
+
+    np.testing.assert_array_equal(fast_result.rir, visual_result.rir)
+    assert fast_result.ambisonic_rir is None
+    assert not any(path.kind == "rt_reflection" for path in fast_result.paths)
+    assert any(path.kind == "rt_reflection" for path in visual_result.paths)
+
+
+def test_bvh_and_linear_floorplan_rirs_are_sample_identical_and_auto_selects_by_scene_size():
+    lightweight = SimConfig(
+        fs=8000,
+        duration_s=0.12,
+        rt_duration_s=0.12,
+        rt_num_rays=512,
+        rt_num_bounces=3,
+        late_tail=False,
+        collect_visual_paths=False,
+        render_ambisonics=False,
+    )
+    for placement in ("same_room", "cross_room"):
+        floorplan = AcousticAgent.from_floorplan(
+            0,
+            placement=placement,
+            seed=42,
+            config=lightweight,
+        )
+        linear = floorplan.run(config=replace(floorplan.config, intersection_backend="linear"))
+        bvh = floorplan.run(config=replace(floorplan.config, intersection_backend="bvh"))
+        automatic = floorplan.run(config=replace(floorplan.config, intersection_backend="auto"))
+
+        np.testing.assert_array_equal(bvh.rir, linear.rir)
+        np.testing.assert_array_equal(automatic.rir, linear.rir)
+        assert linear.metadata["steam_audio"]["intersection"]["backend"] == "linear"
+        assert bvh.metadata["steam_audio"]["intersection"]["backend"] == "bvh"
+        assert automatic.metadata["steam_audio"]["intersection"]["backend"] == "bvh"
+        assert automatic.metadata["steam_audio"]["intersection"]["surface_count"] >= 16
+
+    geometry = AcousticAgent(
+        room=[4.0, 3.0, 2.8],
+        config=lightweight,
+    ).run(source=[1.0, 1.0, 1.4], receiver=[3.0, 2.0, 1.4])
+    assert geometry.metadata["steam_audio"]["intersection"]["backend"] == "linear"

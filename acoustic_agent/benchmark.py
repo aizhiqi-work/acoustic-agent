@@ -532,27 +532,56 @@ def _dynamic_continuity(context: _BenchmarkContext) -> BenchmarkCaseResult:
     peaks = np.asarray([float(np.max(np.abs(frame.rir))) for frame in result.frames])
     peak_db = 20.0 * np.log10(np.maximum(peaks, 1e-30))
     jumps = np.abs(np.diff(peak_db))
-    direct_delays = np.asarray([
-        next(path.delay_s for path in frame.paths if path.kind in {"direct", "direct_transmitted"})
+    direct_paths = [
+        next(path for path in frame.paths if path.kind in {"direct", "direct_transmitted"})
         for frame in result.frames
-    ])
+    ]
+    direct_delays = np.asarray([path.delay_s for path in direct_paths])
+    direct_energies = []
+    for frame, path in zip(result.frames, direct_paths):
+        center = int(round(path.delay_s * config.fs))
+        half_width = int(config.sinc_half_width) + 8
+        window = frame.rir[:, max(0, center - half_width):center + half_width + 1].astype(np.float64)
+        direct_energies.append(float(np.sum(window * window)))
+    direct_level_db = 10.0 * np.log10(np.maximum(np.asarray(direct_energies), 1e-30))
+    expected_level_db = 20.0 * np.log10(np.maximum(np.abs([path.gain for path in direct_paths]), 1e-30))
+    measured_steps = np.diff(direct_level_db)
+    expected_steps = np.diff(expected_level_db)
+    level_step_error = np.abs(measured_steps - expected_steps)
     delay_step_jitter = float(np.ptp(np.diff(direct_delays))) if direct_delays.size > 2 else 0.0
     max_peak_jump = float(np.max(jumps)) if jumps.size else 0.0
-    peak_pass = max_peak_jump <= 1.5
+    max_level_step_error = float(np.max(level_step_error)) if level_step_error.size else 0.0
+    level_pass = max_level_step_error <= 0.15
     delay_pass = delay_step_jitter <= 1e-9
-    passed = peak_pass and delay_pass
+    passed = level_pass and delay_pass
     return _case(
         "dynamic_continuity",
         "Adjacent dynamic-frame continuity",
         "dynamic RIR",
         passed,
-        "Uniform 0.1 m motion is checked for direct-delay continuity and raw RIR peak jumps.",
+        "Uniform 0.1 m motion is checked for direct-delay and physically normalized direct-energy continuity.",
         [
-            _metric("maximum adjacent peak jump", max_peak_jump, 0.0, 1.5, "dB", peak_pass),
+            _metric("maximum direct-level step error", max_level_step_error, 0.0, 0.15, "dB", level_pass),
             _metric("delay-step jitter", delay_step_jitter, 0.0, 1e-9, "s", delay_pass),
+            _metric(
+                "raw maximum-sample jump",
+                max_peak_jump,
+                None,
+                None,
+                "dB",
+                None,
+                "Diagnostic only: a fractionally delayed bandlimited impulse does not have an invariant maximum sample.",
+            ),
         ],
         scene={"motion": "approach", "travel_m": 1.0, "spacing_m": 0.1, "frames": len(result.frames)},
-        details={"peak_db": peak_db.tolist(), "adjacent_peak_jumps_db": jumps.tolist(), "direct_delays_s": direct_delays.tolist()},
+        details={
+            "direct_level_db": direct_level_db.tolist(),
+            "expected_path_level_db": expected_level_db.tolist(),
+            "direct_level_step_error_db": level_step_error.tolist(),
+            "raw_sample_peak_db": peak_db.tolist(),
+            "raw_adjacent_sample_peak_jumps_db": jumps.tolist(),
+            "direct_delays_s": direct_delays.tolist(),
+        },
     )
 
 

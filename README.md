@@ -25,6 +25,7 @@ sources or receivers.
 ## Features
 
 - One `AcousticAgent.create()` API for Geometry, Floorplan, and Custom scenes.
+- Selectable `auto` / `linear` / `bvh` intersection backends with cached BVH acceleration for complex scenes.
 - Direct sound, distance and air attenuation, occlusion, transmission, and
   UTD-style diffraction.
 - Six-band path-traced reflections and parameterized FDN late reverberation.
@@ -189,7 +190,9 @@ rir_frames = dynamic.rirs
 ```
 
 Use `run_batch()` when geometry and materials stay fixed but endpoint positions
-change:
+change. Mono production runs omit viewer-only reflection paths and FOA buffers
+by default; create the agent with `visualization=True` only when those paths are
+needed by a custom viewer:
 
 ```python
 batch = agent.run_batch([

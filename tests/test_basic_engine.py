@@ -60,6 +60,33 @@ def test_visual_path_budget_does_not_launch_a_second_trace_or_change_rir(monkeyp
     assert first.metadata["steam_audio"]["rt_visual"]["shares_energy_trace"] is True
 
 
+def test_headless_mono_path_is_sample_equivalent_without_spatial_or_visual_outputs():
+    room = make_room("rectangle", size=(5.0, 4.0, 2.8))
+    full = SimConfig(
+        duration_s=0.25,
+        late_tail=False,
+        rt_num_rays=1024,
+        rt_num_bounces=4,
+        rt_duration_s=0.25,
+        collect_visual_paths=True,
+        render_ambisonics=True,
+    )
+    fast = replace(full, collect_visual_paths=False, render_ambisonics=False)
+    args = (room, (1.0, 1.0, 1.4), (3.0, 2.5, 1.3))
+
+    full_result = simulate_rir(*args, config=full)
+    fast_result = simulate_rir(*args, config=fast)
+
+    np.testing.assert_array_equal(fast_result.rir, full_result.rir)
+    assert fast_result.rt60 == full_result.rt60
+    assert full_result.ambisonic_rir is not None
+    assert fast_result.ambisonic_rir is None
+    assert any(path.kind == "rt_reflection" for path in full_result.paths)
+    assert not any(path.kind == "rt_reflection" for path in fast_result.paths)
+    assert fast_result.metadata["steam_audio"]["rt_visual"]["model"] == "disabled_for_headless_api"
+    assert fast_result.metadata["steam_audio"]["reflections"]["ambisonics"]["enabled"] is False
+
+
 def test_static_scene_and_workspace_cache_preserve_exact_rir():
     import acoustic_agent.steam_rt as steam_rt
 

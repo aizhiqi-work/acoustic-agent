@@ -399,6 +399,32 @@ def test_cross_room_jit_intersections_match_python_for_portal_wall_spans():
                 arrays["corners"],
                 arrays["height"],
             )
+            bvh_surface_index, bvh_distance, *bvh_normal = steam_rt._closest_hit_backend_jit(
+                origin,
+                direction,
+                arrays["kinds"],
+                arrays["wall_a"],
+                arrays["wall_delta"],
+                arrays["wall_z"],
+                arrays["z_values"],
+                arrays["box_center"],
+                arrays["box_axis_u"],
+                arrays["box_axis_v"],
+                arrays["box_half"],
+                arrays["box_z"],
+                arrays["normals"],
+                arrays["corners"],
+                arrays["bvh_bounds_min"],
+                arrays["bvh_bounds_max"],
+                arrays["bvh_start"],
+                arrays["bvh_count"],
+                arrays["bvh_escape"],
+                arrays["bvh_primitives"],
+                True,
+            )
             assert (surface_index >= 0) is bool(expected["valid"])
+            assert bvh_surface_index == surface_index
+            assert bvh_distance == distance
+            np.testing.assert_array_equal(np.asarray(bvh_normal), np.asarray(_normal))
             if expected["valid"]:
                 assert np.isclose(distance, expected["distance"], rtol=1e-10, atol=1e-10)
