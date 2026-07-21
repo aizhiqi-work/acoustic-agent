@@ -12,9 +12,20 @@
 Floorplan cross-room simulation can increase the resolved bounce count to the
 configured `cross_room_min_bounces` and up to `cross_room_max_bounces`.
 
-## `AcousticAgent`
+## `AcousticAgent.create`
 
-Important constructor arguments:
+New code should use the same entry point for every scene:
+
+```python
+agent = AcousticAgent.create(scene="geometry", room=room, source=source, receiver=receiver)
+agent = AcousticAgent.create(scene="floorplan", idx=0, placement="same_room", seed=42)
+agent = AcousticAgent.create(scene="custom", spec=spec, seed=42)
+result = agent.run()
+```
+
+See [`API.md`](API.md) for motion and batch production.
+
+Important common arguments:
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
@@ -60,7 +71,8 @@ U-shape controls are normalized fractions of the width/depth:
 ## Floorplan Rooms
 
 ```python
-agent = AcousticAgent.from_floorplan(
+agent = AcousticAgent.create(
+    scene="floorplan",
     idx=0,
     placement="cross_room",
     seed=42,
@@ -128,9 +140,19 @@ reflected contributions according to their departure direction.
 
 ## Motion
 
-`sample_motion()` accepts `approach` and `random`, moving either `source` or
-`receiver`. `distance_m` controls travel length. `keyframe_spacing_m` defaults
-to 0.25 m; an explicit `keyframes` count overrides spacing-derived sampling.
+Pass a motion mapping directly to `run()` for the common workflow. Modes include
+`approach` and `random`, moving either `source` or `receiver`. `distance_m`
+controls travel length. `keyframe_spacing_m` defaults to 0.25 m; an explicit
+`keyframes` count overrides spacing-derived sampling.
+
+```python
+dynamic = agent.run(motion={
+    "mode": "approach",
+    "moving": "receiver",
+    "distance_m": 1.0,
+    "keyframe_spacing_m": 0.25,
+})
+```
 
 In Floorplan, trajectories use room and portal connectivity. Cross-room travel is
 routed through verified openings rather than interpolated through closed walls.
@@ -141,8 +163,9 @@ routed through verified openings rather than interpolated through closed walls.
 dimensions and bedroom, living, kitchen, bathroom, storage, and balcony counts
 in compact Chinese or English descriptions. `FloorplanBuilder.validate()` checks
 coverage, overlap, opening placement, references, and open-door connectivity.
-`AcousticAgent.from_floorplan_spec()` compiles a valid spec into the normal
-multi-room solver model.
+`AcousticAgent.create(scene="custom", spec=spec)` compiles a valid spec into the
+normal multi-room solver model. `from_floorplan_spec()` remains available for
+compatibility.
 
 The Custom JSON schema and zero-key image workflow are documented in
 [`CUSTOM_FLOORPLAN.md`](CUSTOM_FLOORPLAN.md).

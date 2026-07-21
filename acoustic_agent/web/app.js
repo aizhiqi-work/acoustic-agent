@@ -4378,6 +4378,43 @@ function writeAscii(view, offset, value) {
   for (let index = 0; index < value.length; index += 1) view.setUint8(offset + index, value.charCodeAt(index));
 }
 
+function pythonLiteral(value, indent = 0) {
+  if (value === null || value === undefined) return "None";
+  if (typeof value === "boolean") return value ? "True" : "False";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "None";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    if (!value.length) return "[]";
+    const simple = value.every((item) => item === null || ["boolean", "number", "string"].includes(typeof item));
+    if (simple) return `[${value.map((item) => pythonLiteral(item, indent)).join(", ")}]`;
+    const padding = " ".repeat(indent);
+    const childPadding = " ".repeat(indent + 4);
+    return `[
+${value.map((item) => `${childPadding}${pythonLiteral(item, indent + 4)},`).join("\n")}
+${padding}]`;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value);
+    if (!entries.length) return "{}";
+    const padding = " ".repeat(indent);
+    const childPadding = " ".repeat(indent + 4);
+    return `{
+${entries.map(([key, item]) => `${childPadding}${JSON.stringify(key)}: ${pythonLiteral(item, indent + 4)},`).join("\n")}
+${padding}}`;
+  }
+  return "None";
+}
+
+function pythonAgentCreate(entries) {
+  return [
+    "agent = AcousticAgent.create(",
+    ...entries
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => `    ${key}=${pythonLiteral(value, 4)},`),
+    ")",
+  ];
+}
+
 function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
   const shape = String(payload.shape || "rectangle");
   const micModel = payload.receiver_model || { type: "mono" };
@@ -4413,17 +4450,16 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
   const sampleRate = Number(payload.config?.fs || 16000);
   const motion = payload.motion || { mode: "static" };
   const dynamicMotion = motion.mode && motion.mode !== "static";
-  const dynamicRunLines = dynamicMotion ? [
-    "",
-    "motion = agent.sample_motion(",
-    `    mode="${motion.mode}", moving="${motion.moving || "source"}",`,
-    `    distance_m=${Number(motion.requested_distance_m || motion.distance_m || 0.8)},`,
-    `    keyframe_spacing_m=${Number(state.motion?.keyframe_spacing_m || 0.25)},`,
-    ...(motion.mode === "random" ? [`    seed=${Number(motion.random_seed ?? state.motion?.random_seed ?? 42)},`] : []),
-    ")",
-    "result = agent.run_dynamic(motion)",
-    "rir_frames = result.rirs",
-  ] : ["rir = agent.run().rir"];
+  const motionConfig = dynamicMotion ? {
+    mode: String(motion.mode),
+    moving: String(motion.moving || "source"),
+    distance_m: Number(motion.requested_distance_m || motion.distance_m || 0.8),
+    keyframe_spacing_m: Number(state.motion?.keyframe_spacing_m || 0.25),
+    ...(motion.mode === "random" ? { seed: Number(motion.random_seed ?? state.motion?.random_seed ?? 42) } : {}),
+  } : null;
+  const runLines = dynamicMotion
+    ? [`result = agent.run(motion=${pythonLiteral(motionConfig)})`, "rir_frames = result.rirs"]
+    : ["rir = agent.run().rir"];
   const acousticGeometry = (payload.objects || []).map((object) => ({
     type: String(object.type || "sofa"),
     semantic: String(object.semantic || furnitureCatalog[object.type]?.semantic || object.type || "furniture"),
@@ -4438,32 +4474,26 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
   if (customMode && shape === "floorplan") {
     const materialProfile = payload.material_profile || state.materialProfile || {};
     const materialSeed = Number(payload.material_seed ?? state.materialSeed ?? 42);
-    const sourcePosition = JSON.stringify((payload.source || state.source).map(Number));
-    const receiverPosition = JSON.stringify((payload.receiver || state.receiver).map(Number));
+    const sourcePosition = (payload.source || state.source).map(Number);
+    const receiverPosition = (payload.receiver || state.receiver).map(Number);
     return [
       "from acoustic_agent import AcousticAgent",
       "",
-      `floorplan_spec = ${JSON.stringify(state.custom.spec || {}, null, 4)}`,
-      `source = ${sourcePosition}  # [x, y, z] m`,
-      `mic = ${receiverPosition}     # [x, y, z] m`,
-      `material_seed = ${materialSeed}`,
-      `material_profile = ${JSON.stringify(materialProfile, null, 4)}`,
-      `mic_type = "${micType}"   # mono / hrtf / linear / circular`,
-      `mic_params = ${JSON.stringify(micParams, null, 4)}`,
-      `source_directivity = ${JSON.stringify(sourceModel, null, 4)}`,
-      `acoustic_geometry = ${JSON.stringify(acousticGeometry, null, 4)}`,
-      `quality = "${quality}"`,
-      `rir_length = ${rirLength}`,
-      `sample_rate = ${sampleRate}`,
-      "",
-      "agent = AcousticAgent.from_floorplan_spec(",
-      "    floorplan_spec, source=source, receiver=mic,",
-      "    material_seed=material_seed, material_profile=material_profile,",
-      '    receiver_model={"type": mic_type, **mic_params},',
-      "    source_model=source_directivity, acoustic_geometry=acoustic_geometry,",
-      "    quality=quality, duration_s=rir_length, fs=sample_rate,",
-      ")",
-      ...dynamicRunLines,
+      ...pythonAgentCreate([
+        ["scene", "custom"],
+        ["spec", state.custom.spec || {}],
+        ["source", sourcePosition],
+        ["receiver", receiverPosition],
+        ["material_seed", materialSeed],
+        ["material_profile", materialProfile],
+        ["receiver_model", { type: micType, ...micParams }],
+        ["source_model", sourceModel],
+        ["acoustic_geometry", acousticGeometry.length ? acousticGeometry : undefined],
+        ["quality", quality],
+        ["duration_s", rirLength],
+        ["fs", sampleRate],
+      ]),
+      ...runLines,
     ].join("\n");
   }
 
@@ -4472,38 +4502,26 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
     const idx = Number(floorplan.index ?? state.floorplan?.index ?? 0);
     const materialProfile = payload.material_profile || state.materialProfile || {};
     const materialSeed = Number(payload.material_seed ?? state.materialSeed ?? 42);
-    const sourcePosition = JSON.stringify((payload.source || state.source || [1.2, 1.1, 1.5]).map(Number));
-    const receiverPosition = JSON.stringify((payload.receiver || state.receiver || [4.7, 2.8, 1.4]).map(Number));
+    const sourcePosition = (payload.source || state.source || [1.2, 1.1, 1.5]).map(Number);
+    const receiverPosition = (payload.receiver || state.receiver || [4.7, 2.8, 1.4]).map(Number);
     return [
       "from acoustic_agent import AcousticAgent",
       "",
-      `idx = ${idx}`,
-      `source = ${sourcePosition}  # [x, y, z] m`,
-      `mic = ${receiverPosition}     # [x, y, z] m`,
-      `material_seed = ${materialSeed}`,
-      `material_profile = ${JSON.stringify(materialProfile, null, 4)}`,
-      `mic_type = "${micType}"   # mono / hrtf / linear / circular`,
-      `mic_params = ${JSON.stringify(micParams, null, 4)}`,
-      `source_directivity = ${JSON.stringify(sourceModel, null, 4)}`,
-      `acoustic_geometry = ${JSON.stringify(acousticGeometry, null, 4)}`,
-      `quality = "${quality}"    # preview / simulation / fine / reference`,
-      `rir_length = ${rirLength}  # seconds`,
-      `sample_rate = ${sampleRate} # Hz`,
-      "",
-      "agent = AcousticAgent.from_floorplan(",
-      "    idx=idx,",
-      "    source=source, receiver=mic,",
-      "    material_seed=material_seed,",
-      "    material_profile=material_profile,",
-      '    receiver_model={"type": mic_type, **mic_params},',
-      "    source_model=source_directivity,",
-      "    acoustic_geometry=acoustic_geometry,",
-      "    quality=quality, duration_s=rir_length, fs=sample_rate,",
-      ")",
-      "",
-      "print(agent.rooms)      # available room list",
-      "print(agent.placement)  # sampled rooms and [x, y, z] positions",
-      ...dynamicRunLines,
+      ...pythonAgentCreate([
+        ["scene", "floorplan"],
+        ["idx", idx],
+        ["source", sourcePosition],
+        ["receiver", receiverPosition],
+        ["material_seed", materialSeed],
+        ["material_profile", materialProfile],
+        ["receiver_model", { type: micType, ...micParams }],
+        ["source_model", sourceModel],
+        ["acoustic_geometry", acousticGeometry.length ? acousticGeometry : undefined],
+        ["quality", quality],
+        ["duration_s", rirLength],
+        ["fs", sampleRate],
+      ]),
+      ...runLines,
     ].join("\n");
   }
 
@@ -4548,41 +4566,24 @@ function acousticAgentCode(payload = lastSimulationPayload || apiPayload()) {
   };
   Object.assign(room, geometryParams[shape] || {});
 
-  const source = JSON.stringify((payload.source || [1.2, 1.1, 1.5]).map(Number));
-  const mic = JSON.stringify((payload.receiver || [4.7, 2.8, 1.4]).map(Number));
-  const geometryRunLines = dynamicMotion ? [
-    "motion = agent.sample_motion(",
-    "    source=source, receiver=mic,",
-    `    mode="${motion.mode}", moving="${motion.moving || "source"}",`,
-    `    distance_m=${Number(motion.requested_distance_m || motion.distance_m || 0.8)},`,
-    `    keyframe_spacing_m=${Number(state.motion?.keyframe_spacing_m || 0.25)},`,
-    ...(motion.mode === "random" ? [`    seed=${Number(motion.random_seed ?? state.motion?.random_seed ?? 42)},`] : []),
-    ")",
-    "result = agent.run_dynamic(motion)",
-    "rir_frames = result.rirs",
-  ] : ["rir = agent.run(source=source, receiver=mic).rir"];
+  const source = (payload.source || [1.2, 1.1, 1.5]).map(Number);
+  const mic = (payload.receiver || [4.7, 2.8, 1.4]).map(Number);
   return [
     "from acoustic_agent import AcousticAgent",
     "",
-    `room = ${JSON.stringify(room, null, 4)}`,
-    `acoustic_geometry = ${JSON.stringify(acousticGeometry, null, 4)}`,
-    "",
-    `source = ${source}         # [x, y, z] m`,
-    `source_directivity = ${JSON.stringify(sourceModel, null, 4)}`,
-    `mic = ${mic}               # [x, y, z] m`,
-    `mic_type = "${micType}"   # mono / hrtf / linear / circular`,
-    `mic_params = ${JSON.stringify(micParams, null, 4)}`,
-    `quality = "${quality}"    # preview / simulation / fine / reference`,
-    `rir_length = ${rirLength}  # seconds`,
-    `sample_rate = ${sampleRate} # Hz`,
-    "",
-    "agent = AcousticAgent(",
-    "    room=room, acoustic_geometry=acoustic_geometry,",
-    "    source_model=source_directivity,",
-    '    receiver_model={"type": mic_type, **mic_params},',
-    "    quality=quality, duration_s=rir_length, fs=sample_rate,",
-    ")",
-    ...geometryRunLines,
+    ...pythonAgentCreate([
+      ["scene", "geometry"],
+      ["room", room],
+      ["source", source],
+      ["receiver", mic],
+      ["receiver_model", { type: micType, ...micParams }],
+      ["source_model", sourceModel],
+      ["acoustic_geometry", acousticGeometry.length ? acousticGeometry : undefined],
+      ["quality", quality],
+      ["duration_s", rirLength],
+      ["fs", sampleRate],
+    ]),
+    ...runLines,
   ].join("\n");
 }
 

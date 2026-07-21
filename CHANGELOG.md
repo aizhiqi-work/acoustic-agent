@@ -3,6 +3,22 @@
 All notable changes to Acoustic Agent are documented here. The project follows
 semantic versioning after the initial `0.x` research releases.
 
+## Unreleased
+
+### Added
+
+- Unified `AcousticAgent.create()` entry point for Geometry, Floorplan, and
+  Custom scenes.
+- Compact dynamic execution through `agent.run(motion=...)`.
+- Plain tuple/mapping inputs for `agent.run_batch()` and mixed-scene dataset
+  production through `AcousticAgent.run_many()`.
+- NPZ production manifests and optional per-job failure collection.
+
+### Changed
+
+- Web workbench Python examples now use the compact unified API and emit valid
+  Python literals for custom scene JSON.
+
 ## 0.1.0 - 2026-07-20
 
 ### Added

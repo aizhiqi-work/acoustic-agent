@@ -76,7 +76,8 @@ and opening graph.
 ```python
 from acoustic_agent import AcousticAgent
 
-agent = AcousticAgent.from_floorplan(
+agent = AcousticAgent.create(
+    scene="floorplan",
     idx=0,
     placement="same_room",  # random / same_room / cross_room
     seed=42,
@@ -94,8 +95,8 @@ print(agent.placement)
 rir = agent.run().rir
 ```
 
-`from_resplan()` remains a compatibility alias for v0.1 code. New code should
-use `from_floorplan()`.
+`from_floorplan()` and the legacy `from_resplan()` alias remain available for
+existing code. New applications can use `create()` for every scene type.
 
 ## Semantic furniture
 
@@ -103,7 +104,8 @@ Floorplan and Custom scenes can generate deterministic, editable furniture from
 room semantics:
 
 ```python
-agent = AcousticAgent.from_floorplan(
+agent = AcousticAgent.create(
+    scene="floorplan",
     idx=0,
     furnishing={
         "mode": "auto",

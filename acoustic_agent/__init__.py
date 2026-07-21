@@ -3,7 +3,7 @@
 __version__ = "0.1.0"
 
 from .api import AcousticAgent, DynamicSimulationResult
-from .batch import BatchResult, SimulationPair, simulate_batch
+from .batch import BatchResult, ProductionResult, SimulationPair, simulate_batch
 from .custom_floorplan import FloorplanBuilder
 from .directivity import source_directivity
 from .engine import SimulationResult, simulate_rir
@@ -22,6 +22,7 @@ __all__ = [
     "AcousticAgent",
     "DynamicSimulationResult",
     "BatchResult",
+    "ProductionResult",
     "Material",
     "MaterialLibrary",
     "Room",
