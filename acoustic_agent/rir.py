@@ -22,7 +22,7 @@ def render_impulses(
     delays = np.asarray(delays_s, dtype=np.float64)
     values = np.asarray(gains, dtype=np.float64)
     if fractional:
-        _add_fractional_impulses(out, delays, values, int(fs), int(sinc_half_width))
+        _add_fractional_impulses(out, delays, values, int(fs), max(1, int(sinc_half_width)))
     else:
         _add_integer_impulses(out, delays, values, int(fs))
     return out
@@ -41,8 +41,20 @@ if njit is not None:
     def _add_fractional_impulses(out, delays_s, gains, fs, half_width):
         for i in range(delays_s.shape[0]):
             exact = delays_s[i] * fs
-            center = int(np.floor(exact))
+            center = int(np.floor(exact + 0.5))
             frac = exact - center
+            energy = 0.0
+            for k in range(-half_width, half_width + 1):
+                x = k - frac
+                if abs(x) < 1e-12:
+                    sinc = 1.0
+                else:
+                    sinc = np.sin(np.pi * x) / (np.pi * x)
+                window_pos = (k + half_width) / (2.0 * half_width)
+                window = 0.5 - 0.5 * np.cos(2.0 * np.pi * window_pos)
+                coefficient = sinc * window
+                energy += coefficient * coefficient
+            scale = gains[i] / np.sqrt(max(energy, 1e-20))
             for k in range(-half_width, half_width + 1):
                 index = center + k
                 if 0 <= index < out.shape[0]:
@@ -51,9 +63,9 @@ if njit is not None:
                         sinc = 1.0
                     else:
                         sinc = np.sin(np.pi * x) / (np.pi * x)
-                    window_pos = (k + half_width) / max(2.0 * half_width, 1.0)
+                    window_pos = (k + half_width) / (2.0 * half_width)
                     window = 0.5 - 0.5 * np.cos(2.0 * np.pi * window_pos)
-                    out[index] += gains[i] * sinc * window
+                    out[index] += scale * sinc * window
 
 else:
 
@@ -66,16 +78,20 @@ else:
     def _add_fractional_impulses(out, delays_s, gains, fs, half_width):
         for delay, gain in zip(delays_s, gains):
             exact = float(delay) * fs
-            center = int(np.floor(exact))
+            center = int(np.floor(exact + 0.5))
             frac = exact - center
+            coefficients = []
+            for k in range(-half_width, half_width + 1):
+                x = k - frac
+                sinc = 1.0 if abs(x) < 1e-12 else np.sin(np.pi * x) / (np.pi * x)
+                window_pos = (k + half_width) / (2.0 * half_width)
+                window = 0.5 - 0.5 * np.cos(2.0 * np.pi * window_pos)
+                coefficients.append(float(sinc * window))
+            scale = float(gain) / max(float(np.linalg.norm(coefficients)), 1e-10)
             for k in range(-half_width, half_width + 1):
                 index = center + k
                 if 0 <= index < out.shape[0]:
-                    x = k - frac
-                    sinc = 1.0 if abs(x) < 1e-12 else np.sin(np.pi * x) / (np.pi * x)
-                    window_pos = (k + half_width) / max(2.0 * half_width, 1.0)
-                    window = 0.5 - 0.5 * np.cos(2.0 * np.pi * window_pos)
-                    out[index] += float(gain) * sinc * window
+                    out[index] += scale * coefficients[k + half_width]
 
 
 def add_late_tail(
@@ -106,4 +122,3 @@ def add_late_tail(
         "rendered_energy": round(float(np.sum(noise * noise)), 12),
         "model": "energy_decay_noise_tail",
     }
-
