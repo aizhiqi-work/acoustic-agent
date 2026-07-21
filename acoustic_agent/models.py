@@ -86,6 +86,8 @@ class SimConfig:
     rt_source_radius: float = 0.1
     rt_listener_radius: float = 0.1
     rt_receiver_radius_m: float = 0.25
+    intersection_backend: str = "auto"
+    bvh_min_surfaces: int = 16
     collect_visual_paths: bool = True
     render_ambisonics: bool = True
     rt_visual_num_rays: int | None = None

@@ -25,6 +25,7 @@ sources or receivers.
 ## Features
 
 - One `AcousticAgent.create()` API for Geometry, Floorplan, and Custom scenes.
+- Selectable `auto` / `linear` / `bvh` intersection backends with cached BVH acceleration for complex scenes.
 - Direct sound, distance and air attenuation, occlusion, transmission, and
   UTD-style diffraction.
 - Six-band path-traced reflections and parameterized FDN late reverberation.

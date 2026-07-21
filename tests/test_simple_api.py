@@ -1,5 +1,6 @@
 import math
 import json
+from dataclasses import replace
 
 import numpy as np
 
@@ -456,3 +457,39 @@ def test_agent_mono_defaults_to_headless_fast_path_and_can_enable_visualization(
     assert fast_result.ambisonic_rir is None
     assert not any(path.kind == "rt_reflection" for path in fast_result.paths)
     assert any(path.kind == "rt_reflection" for path in visual_result.paths)
+
+
+def test_bvh_and_linear_floorplan_rirs_are_sample_identical_and_auto_selects_by_scene_size():
+    lightweight = SimConfig(
+        fs=8000,
+        duration_s=0.12,
+        rt_duration_s=0.12,
+        rt_num_rays=512,
+        rt_num_bounces=3,
+        late_tail=False,
+        collect_visual_paths=False,
+        render_ambisonics=False,
+    )
+    for placement in ("same_room", "cross_room"):
+        floorplan = AcousticAgent.from_floorplan(
+            0,
+            placement=placement,
+            seed=42,
+            config=lightweight,
+        )
+        linear = floorplan.run(config=replace(floorplan.config, intersection_backend="linear"))
+        bvh = floorplan.run(config=replace(floorplan.config, intersection_backend="bvh"))
+        automatic = floorplan.run(config=replace(floorplan.config, intersection_backend="auto"))
+
+        np.testing.assert_array_equal(bvh.rir, linear.rir)
+        np.testing.assert_array_equal(automatic.rir, linear.rir)
+        assert linear.metadata["steam_audio"]["intersection"]["backend"] == "linear"
+        assert bvh.metadata["steam_audio"]["intersection"]["backend"] == "bvh"
+        assert automatic.metadata["steam_audio"]["intersection"]["backend"] == "bvh"
+        assert automatic.metadata["steam_audio"]["intersection"]["surface_count"] >= 16
+
+    geometry = AcousticAgent(
+        room=[4.0, 3.0, 2.8],
+        config=lightweight,
+    ).run(source=[1.0, 1.0, 1.4], receiver=[3.0, 2.0, 1.4])
+    assert geometry.metadata["steam_audio"]["intersection"]["backend"] == "linear"

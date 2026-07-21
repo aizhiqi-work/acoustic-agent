@@ -79,6 +79,7 @@ All scene modes share these options:
 | `material_seed` | deterministic default | Material sampling seed |
 | `acoustic_geometry` | empty | Explicit semantic furniture or acoustic objects |
 | `visualization` | `False` | Collect representative RT paths for visualization |
+| `intersection_backend` | `auto` | `auto`, `linear`, or `bvh` surface lookup |
 | `config` | `None` | Full `SimConfig` override |
 
 Convenience aliases are accepted by `create`: `mic` for the receiver position,
@@ -102,6 +103,12 @@ not generated. Set `visualization=True` when creating an agent to include RT
 paths for a custom viewer. HRTF receivers always retain the FOA reconstruction
 needed for binaural rendering. The WebGL workbench enables visualization
 automatically.
+
+`intersection_backend="linear"` keeps the exhaustive reference traversal,
+while `"bvh"` forces the cached bounding-volume hierarchy. The default
+`"auto"` uses Linear for small Geometry scenes and BVH when a scene has at
+least 16 surfaces, which normally includes complete Floorplan scenes and
+furnished rooms. Both backends call the same exact surface intersection code.
 
 ## Motion
 

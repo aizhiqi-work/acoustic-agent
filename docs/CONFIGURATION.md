@@ -40,6 +40,7 @@ Important common arguments:
 | `source_model` | `omni` | Source directivity mapping |
 | `acoustic_geometry` | `None` | Semantic furniture/acoustic objects |
 | `visualization` | `False` | Include representative reflection paths for a viewer |
+| `intersection_backend` | `auto` | Surface lookup: `auto`, `linear`, or `bvh` |
 | `config` | `None` | Full `SimConfig` override |
 
 `config` takes precedence over `quality`, `fs`, and `duration_s` when supplied.
@@ -186,6 +187,8 @@ Common controls:
 | `rt_num_rays` | `32768` | Traced source rays |
 | `rt_num_bounces` | `96` | Base reflection depth |
 | `rt_receiver_radius_m` | `0.25` | Receiver hit radius |
+| `intersection_backend` | `auto` | Linear reference traversal or cached BVH |
+| `bvh_min_surfaces` | `16` | Surface threshold used by `auto` |
 | `collect_visual_paths` | `True` | Low-level representative RT path output |
 | `render_ambisonics` | `True` | Low-level FOA reflection reconstruction |
 | `adaptive_cross_room_bounces` | `True` | Raise cross-room reflection depth |

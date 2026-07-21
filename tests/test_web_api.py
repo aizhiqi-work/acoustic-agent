@@ -57,6 +57,7 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
         assert 'id="motionMode"' in html
         assert 'id="motionMoving"' in html
         assert 'id="motionFrameSpacing"' in html
+        assert 'id="intersectionBackend"' in html
         assert 'id="resampleMotionPath"' in html
         assert 'id="viewToolbar"' in html
         assert 'id="stageDistance"' in html
@@ -118,6 +119,8 @@ def test_geometry_and_floorplan_share_the_unified_workbench_shell():
     assert "const RIR_DECAY_MIN_DB = -60;" in app_js
     assert 'const RIR_DECAY_DB_TICKS = ["0", "-20", "-40", "-60"];' in app_js
     assert 'keyframe_spacing_m: 0.25' in app_js
+    assert 'intersection_backend: "auto"' in app_js
+    assert '["intersection_backend", intersectionBackend]' in app_js
     assert 'keyframes=${Number(motion.keyframes' not in app_js
     assert "keyframe_spacing_m: Number(state.motion?.keyframe_spacing_m || 0.25)" in app_js
     assert '"agent = AcousticAgent.create("' in app_js

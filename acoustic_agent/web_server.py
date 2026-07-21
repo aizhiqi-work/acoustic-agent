@@ -580,6 +580,8 @@ def _simulate_payload(payload: dict[str, Any], *, visualization: bool) -> Payloa
         rt_num_rays=rt_num_rays,
         rt_num_bounces=rt_num_bounces,
         rt_duration_s=float(config_raw.get("rt_duration_s", quality_config["rt_duration_s"])),
+        intersection_backend=str(config_raw.get("intersection_backend", "auto")),
+        bvh_min_surfaces=int(config_raw.get("bvh_min_surfaces", 16)),
         collect_visual_paths=bool(visualization),
         render_ambisonics=str(receiver_raw.get("type", "mono")) == "hrtf",
         rt_visual_num_rays=int(config_raw["rt_visual_num_rays"]) if "rt_visual_num_rays" in config_raw else None,

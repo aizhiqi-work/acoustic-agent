@@ -7,6 +7,7 @@ import heapq
 from itertools import permutations
 import math
 from threading import RLock
+import time
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -24,6 +25,7 @@ from .acoustics import (
     propagation_band_gains,
     steam_audio_pathing_deviation,
 )
+from .bvh import build_bvh
 from .directivity import source_directivity, source_directivity_gain, source_forward
 from .geometry import point_in_polygon
 from .materials import MaterialLibrary, fallback_material, material_summary
@@ -38,6 +40,7 @@ _ENERGY_THRESHOLD = 1e-9
 _HIT_OFFSET = 1e-2
 _RT_VISUAL_RETAIN_LIMIT = 512
 _RT_VISUAL_CANDIDATE_FACTOR = 32
+_BVH_BOUNDS_EPS = 2.0e-6
 _STATIC_SCENE_CACHE_LIMIT = 32
 _WORKSPACE_CACHE_BYTES = 256 * 1024 * 1024
 _STATIC_CACHE_LOCK = RLock()
@@ -210,6 +213,76 @@ class _BoxSurface(_Surface):
         return hit[0], np.asarray(hit[1], dtype=float)
 
 
+def _normalize_intersection_backend(value: str) -> str:
+    backend = str(value).strip().lower()
+    if backend not in {"auto", "linear", "bvh"}:
+        raise ValueError("intersection_backend must be auto, linear, or bvh")
+    return backend
+
+
+def _resolve_intersection_backend(value: str, surface_count: int, min_surfaces: int) -> str:
+    requested = _normalize_intersection_backend(value)
+    threshold = max(1, int(min_surfaces))
+    return "bvh" if requested == "bvh" or (requested == "auto" and int(surface_count) >= threshold) else "linear"
+
+
+def _surface_bounds(surface: Any) -> tuple[np.ndarray, np.ndarray]:
+    if isinstance(surface, _WallSurface):
+        lower = np.asarray([
+            min(float(surface.a[0]), float(surface.b[0])),
+            min(float(surface.a[1]), float(surface.b[1])),
+            float(surface.z_min),
+        ])
+        upper = np.asarray([
+            max(float(surface.a[0]), float(surface.b[0])),
+            max(float(surface.a[1]), float(surface.b[1])),
+            float(surface.z_max),
+        ])
+    elif isinstance(surface, _BoxSurface):
+        extent = np.abs(surface.axis_u) * float(surface.half_width) + np.abs(surface.axis_v) * float(surface.half_depth)
+        lower = np.asarray([
+            float(surface.center[0] - extent[0]),
+            float(surface.center[1] - extent[1]),
+            float(surface.z_min),
+        ])
+        upper = np.asarray([
+            float(surface.center[0] + extent[0]),
+            float(surface.center[1] + extent[1]),
+            float(surface.z_max),
+        ])
+    else:
+        corners = np.asarray(surface.corners, dtype=np.float64)
+        lower = np.asarray([float(np.min(corners[:, 0])), float(np.min(corners[:, 1])), float(surface.z)])
+        upper = np.asarray([float(np.max(corners[:, 0])), float(np.max(corners[:, 1])), float(surface.z)])
+    return lower - _BVH_BOUNDS_EPS, upper + _BVH_BOUNDS_EPS
+
+
+def _ray_aabb_intersects(
+    origin: np.ndarray,
+    direction: np.ndarray,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    max_distance: float,
+) -> bool:
+    enter = 0.0
+    exit_ = float(max_distance) + _BVH_BOUNDS_EPS
+    for axis in range(3):
+        value = float(direction[axis])
+        if abs(value) <= 1e-15:
+            if float(origin[axis]) < float(lower[axis]) or float(origin[axis]) > float(upper[axis]):
+                return False
+            continue
+        first = (float(lower[axis]) - float(origin[axis])) / value
+        second = (float(upper[axis]) - float(origin[axis])) / value
+        if first > second:
+            first, second = second, first
+        enter = max(enter, first)
+        exit_ = min(exit_, second)
+        if enter > exit_:
+            return False
+    return exit_ > _EPS
+
+
 class RoomRayScene:
     def __init__(self, room: Room) -> None:
         self._set_room_state(room)
@@ -223,6 +296,8 @@ class RoomRayScene:
         self.surfaces.append(_HorizontalSurface(room.height_m, False, room.corners, "ceiling", _band_array(ceiling, "absorption", 0.1), _band_array(ceiling, "scattering", 0.1), _band_array(ceiling, "transmission", 10.0 ** (-30.0 / 20.0))))
         self.surfaces.extend(_object_box_surfaces(room, wall))
         self._batch_ready = False
+        self._intersection_backend = "linear"
+        self._bvh_arrays: Mapping[str, Any] | None = None
 
     def _set_room_state(self, room: Room) -> None:
         self.room = room
@@ -241,27 +316,67 @@ class RoomRayScene:
         best_t = np.inf
         best = None
         normal = None
-        for surface in self.surfaces:
+        best_index = len(self.surfaces)
+        candidates = self._bvh_candidate_indices(origin, direction, best_t) if self._intersection_backend == "bvh" else range(len(self.surfaces))
+        for surface_index in candidates:
+            surface = self.surfaces[surface_index]
             t = surface.intersect(origin, direction)
-            if t < best_t:
+            if t < best_t or (t == best_t and surface_index < best_index):
                 best_t = t
                 best = surface
+                best_index = surface_index
                 if hasattr(surface, "normal_at"):
                     normal = surface.normal_at(origin, direction, t)
                 else:
                     normal = surface.normal.copy()
         if best is None:
-            return {"valid": False, "distance": np.inf, "transmission": np.ones(_NUM_BANDS), "surface": None}
+            return {"valid": False, "distance": np.inf, "transmission": np.ones(_NUM_BANDS), "surface": None, "surface_index": -1}
         if float(np.dot(normal, direction)) > 0.0:
             normal = -normal
-        return {"valid": True, "distance": best_t, "point": origin + best_t * direction, "normal": normal, "absorption": best.absorption, "scattering": best.scattering, "transmission": best.transmission, "surface": best.name}
+        return {"valid": True, "distance": best_t, "point": origin + best_t * direction, "normal": normal, "absorption": best.absorption, "scattering": best.scattering, "transmission": best.transmission, "surface": best.name, "surface_index": best_index}
 
     def any_hit(self, origin: np.ndarray, direction: np.ndarray, max_distance: float) -> bool:
-        for surface in self.surfaces:
+        candidates = self._bvh_candidate_indices(origin, direction, max_distance) if self._intersection_backend == "bvh" else range(len(self.surfaces))
+        for surface_index in candidates:
+            surface = self.surfaces[surface_index]
             t = surface.intersect(origin, direction)
             if _EPS < t < max_distance - _EPS:
                 return True
         return False
+
+    def configure_intersection(self, backend: str, min_surfaces: int) -> str:
+        resolved = _resolve_intersection_backend(backend, len(self.surfaces), min_surfaces)
+        self._intersection_backend = resolved
+        self._bvh_arrays = _scene_kernel_arrays(self) if resolved == "bvh" else None
+        return resolved
+
+    def _bvh_candidate_indices(
+        self,
+        origin: np.ndarray,
+        direction: np.ndarray,
+        max_distance: float,
+    ) -> list[int]:
+        arrays = self._bvh_arrays
+        if arrays is None:
+            return list(range(len(self.surfaces)))
+        bounds_min = arrays["bvh_bounds_min"]
+        bounds_max = arrays["bvh_bounds_max"]
+        starts = arrays["bvh_start"]
+        counts = arrays["bvh_count"]
+        escapes = arrays["bvh_escape"]
+        primitives = arrays["bvh_primitives"]
+        candidates: list[int] = []
+        node = 0
+        while node < len(starts):
+            if not _ray_aabb_intersects(origin, direction, bounds_min[node], bounds_max[node], max_distance):
+                node = int(escapes[node])
+                continue
+            count = int(counts[node])
+            if count > 0:
+                start = int(starts[node])
+                candidates.extend(int(value) for value in primitives[start:start + count])
+            node += 1
+        return candidates
 
     def _build_batch_arrays(self) -> None:
         if self._batch_ready:
@@ -277,6 +392,17 @@ class RoomRayScene:
 
     def batch_closest_hit(self, origins: np.ndarray, dirs: np.ndarray) -> dict[str, Any]:
         self._build_batch_arrays()
+        if self._intersection_backend == "bvh":
+            items = [self.closest_hit(origins[index], dirs[index]) for index in range(origins.shape[0])]
+            valid = np.asarray([bool(item["valid"]) for item in items], dtype=bool)
+            surf = np.asarray([max(0, int(item.get("surface_index", -1))) for item in items], dtype=np.int64)
+            t = np.asarray([float(item["distance"]) for item in items], dtype=np.float64)
+            points = origins + np.where(valid, t, 0.0)[:, None] * dirs
+            normals = np.asarray([
+                np.asarray(item.get("normal", (0.0, 0.0, 1.0)), dtype=np.float64)
+                for item in items
+            ])
+            return {"t": t, "valid": valid, "point": points, "normal": normals, "absorption": self._surf_abs[surf], "scattering": self._surf_sca_mean[surf], "surface": self._surf_names[surf]}
         hits = [surface.batch_intersect(origins, dirs, self) for surface in self.surfaces]
         t_all = np.stack([hit[0] for hit in hits], axis=0)
         normal_all = np.stack([hit[1] for hit in hits], axis=0)
@@ -291,6 +417,11 @@ class RoomRayScene:
 
     def batch_any_hit(self, origins: np.ndarray, dirs: np.ndarray, max_distance: np.ndarray) -> np.ndarray:
         self._build_batch_arrays()
+        if self._intersection_backend == "bvh":
+            return np.asarray([
+                self.any_hit(origins[index], dirs[index], float(max_distance[index]))
+                for index in range(origins.shape[0])
+            ], dtype=bool)
         t_all = np.stack([surface.batch_intersect(origins, dirs, self)[0] for surface in self.surfaces], axis=0)
         return np.any((t_all > _EPS) & (t_all < (max_distance - _EPS)[None, :]), axis=0)
 
@@ -363,6 +494,8 @@ def _cached_room_ray_scene(room: Room) -> RoomRayScene:
     scene._set_room_state(room)
     scene.surfaces = list(cached_surfaces)
     scene._batch_ready = False
+    scene._intersection_backend = "linear"
+    scene._bvh_arrays = None
     return scene
 
 
@@ -734,6 +867,12 @@ def _scene_kernel_arrays(scene: RoomRayScene) -> dict[str, Any]:
         else:
             kinds[index] = 1
             z_values[index] = float(surface.z)
+    surface_bounds = [_surface_bounds(surface) for surface in scene.surfaces]
+    surface_bounds_min = np.asarray([bounds[0] for bounds in surface_bounds], dtype=np.float64)
+    surface_bounds_max = np.asarray([bounds[1] for bounds in surface_bounds], dtype=np.float64)
+    bvh_started = time.perf_counter()
+    bvh = build_bvh(surface_bounds_min, surface_bounds_max)
+    bvh_build_time_ms = (time.perf_counter() - bvh_started) * 1000.0
     arrays = {
         "kinds": kinds,
         "wall_a": wall_a,
@@ -752,6 +891,19 @@ def _scene_kernel_arrays(scene: RoomRayScene) -> dict[str, Any]:
         "names": tuple(names),
         "corners": np.asarray(scene.room.corners, dtype=np.float64)[:, :2],
         "height": float(scene.room.height_m),
+        "surface_bounds_min": surface_bounds_min,
+        "surface_bounds_max": surface_bounds_max,
+        "bvh_bounds_min": bvh["bounds_min"],
+        "bvh_bounds_max": bvh["bounds_max"],
+        "bvh_start": bvh["start"],
+        "bvh_count": bvh["count"],
+        "bvh_escape": bvh["escape"],
+        "bvh_primitives": bvh["primitives"],
+        "bvh_node_count": int(bvh["node_count"]),
+        "bvh_leaf_count": int(bvh["leaf_count"]),
+        "bvh_max_depth": int(bvh["max_depth"]),
+        "bvh_leaf_size": int(bvh["leaf_size"]),
+        "bvh_build_time_ms": float(bvh_build_time_ms),
     }
     for value in arrays.values():
         if isinstance(value, np.ndarray):
@@ -779,6 +931,7 @@ def simulate_steam_room(
     emitter = source_directivity(source_model)
     spatial_output = bool(config.render_ambisonics if render_ambisonics is None else render_ambisonics)
     scene = _cached_room_ray_scene(room)
+    intersection_backend = scene.configure_intersection(config.intersection_backend, config.bvh_min_surfaces)
     direct = simulate_direct(scene, src, rcv, config, emitter)
     fs = int(config.fs)
     total = max(1, int(round(config.duration_s * fs)))
@@ -1014,6 +1167,16 @@ def simulate_steam_room(
             },
             "reflections": reflection_metadata,
             "rt_visual": rt_visual["metadata"],
+            "intersection": {
+                "requested_backend": _normalize_intersection_backend(config.intersection_backend),
+                "backend": intersection_backend,
+                "surface_count": len(scene.surfaces),
+                "auto_threshold": max(1, int(config.bvh_min_surfaces)),
+                "bvh_node_count": int(scene._bvh_arrays["bvh_node_count"]) if scene._bvh_arrays is not None else 0,
+                "bvh_leaf_count": int(scene._bvh_arrays["bvh_leaf_count"]) if scene._bvh_arrays is not None else 0,
+                "bvh_max_depth": int(scene._bvh_arrays["bvh_max_depth"]) if scene._bvh_arrays is not None else 0,
+                "bvh_build_time_ms": float(scene._bvh_arrays["bvh_build_time_ms"]) if scene._bvh_arrays is not None else 0.0,
+            },
             "rt60_bands": rt60_bands,
             "source_directivity": dict(emitter),
         },
@@ -1286,6 +1449,11 @@ def _scan_visual_rt_paths_numba(
     max_bounces: int,
 ) -> dict[str, Any]:
     arrays = _scene_kernel_arrays(scene)
+    use_bvh = _resolve_intersection_backend(
+        config.intersection_backend,
+        len(scene.surfaces),
+        config.bvh_min_surfaces,
+    ) == "bvh"
     candidate_limit = max(int(_RT_VISUAL_RETAIN_LIMIT), int(_RT_VISUAL_RETAIN_LIMIT * _RT_VISUAL_CANDIDATE_FACTOR))
     src_array = np.asarray(src, dtype=np.float64)
     rcv_array = np.asarray(rcv, dtype=np.float64)
@@ -1307,6 +1475,13 @@ def _scan_visual_rt_paths_numba(
         arrays["box_half"],
         arrays["box_z"],
         arrays["normals"],
+        arrays["bvh_bounds_min"],
+        arrays["bvh_bounds_max"],
+        arrays["bvh_start"],
+        arrays["bvh_count"],
+        arrays["bvh_escape"],
+        arrays["bvh_primitives"],
+        bool(use_bvh),
         surface_survival,
         arrays["corners"],
         float(arrays["height"]),
@@ -1336,6 +1511,13 @@ def _scan_visual_rt_paths_numba(
         arrays["box_half"],
         arrays["box_z"],
         arrays["normals"],
+        arrays["bvh_bounds_min"],
+        arrays["bvh_bounds_max"],
+        arrays["bvh_start"],
+        arrays["bvh_count"],
+        arrays["bvh_escape"],
+        arrays["bvh_primitives"],
+        bool(use_bvh),
         surface_survival,
         arrays["corners"],
         float(arrays["height"]),
@@ -1600,6 +1782,12 @@ def _trace_energy_field_numba(
 ) -> dict[str, Any]:
     emitter = source_directivity(source_model)
     arrays = _scene_kernel_arrays(scene)
+    intersection_backend = _resolve_intersection_backend(
+        config.intersection_backend,
+        len(scene.surfaces),
+        config.bvh_min_surfaces,
+    )
+    use_bvh = intersection_backend == "bvh"
     num_rays = int(config.rt_num_rays)
     num_bounces = int(config.rt_num_bounces)
     bin_dur = float(config.rt_bin_duration_s)
@@ -1654,6 +1842,13 @@ def _trace_energy_field_numba(
         arrays["box_half"],
         arrays["box_z"],
         arrays["normals"],
+        arrays["bvh_bounds_min"],
+        arrays["bvh_bounds_max"],
+        arrays["bvh_start"],
+        arrays["bvh_count"],
+        arrays["bvh_escape"],
+        arrays["bvh_primitives"],
+        bool(use_bvh),
         arrays["reflection"],
         arrays["scattering"],
         arrays["corners"],
@@ -1702,6 +1897,7 @@ def _trace_energy_field_numba(
             "stride": int(visual_stride),
         } if config.collect_visual_paths else None,
         "accelerator": "numba",
+        "intersection_backend": intersection_backend,
         "source_directivity": dict(emitter),
     }
 
@@ -1832,6 +2028,7 @@ def _trace_energy_field_numpy(
         "surface_contribution_count": dict(sorted(surface_contribution_count.items())),
         "surface_energy": {key: float(value) for key, value in sorted(surface_energy.items())},
         "accelerator": "numpy",
+        "intersection_backend": scene._intersection_backend,
         "source_directivity": dict(emitter),
     }
 
@@ -3964,6 +4161,74 @@ if njit is not None:
         return t_max, ex_nx, ex_ny, ex_nz
 
 
+    @njit(cache=True, inline="always")
+    def _surface_hit_jit(si, origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners):
+        t = 1e30
+        surf_nx = normals[si, 0]
+        surf_ny = normals[si, 1]
+        surf_nz = normals[si, 2]
+        if kinds[si] == 0:
+            sx = wall_delta[si, 0]
+            sy = wall_delta[si, 1]
+            det = sx * direction[1] - sy * direction[0]
+            if abs(det) > 1e-12:
+                relx = origin[0] - wall_a[si, 0]
+                rely = origin[1] - wall_a[si, 1]
+                cand_t = (relx * sy - rely * sx) / det
+                u = (relx * direction[1] - rely * direction[0]) / det
+                z = origin[2] + cand_t * direction[2]
+                if cand_t > _EPS and u >= -1e-6 and u <= 1.0 + 1e-6 and z >= wall_z[si, 0] - 1e-6 and z <= wall_z[si, 1] + 1e-6:
+                    t = cand_t
+        elif kinds[si] == 2:
+            cand_t, cand_nx, cand_ny, cand_nz = _box_hit_jit(origin, direction, box_center[si], box_axis_u[si], box_axis_v[si], box_half[si], box_z[si])
+            if cand_t > _EPS and cand_t < 1.0e29:
+                t = cand_t
+                surf_nx = cand_nx
+                surf_ny = cand_ny
+                surf_nz = cand_nz
+        elif abs(direction[2]) > 1e-12:
+            cand_t = (z_values[si] - origin[2]) / direction[2]
+            px = origin[0] + cand_t * direction[0]
+            py = origin[1] + cand_t * direction[1]
+            if cand_t > _EPS and _point_in_polygon_jit(px, py, corners):
+                t = cand_t
+        return t, surf_nx, surf_ny, surf_nz
+
+
+    @njit(cache=True, inline="always")
+    def _orient_hit_normal_jit(best_surface, best_t, nx, ny, nz, direction):
+        if best_surface >= 0:
+            dot = nx * direction[0] + ny * direction[1] + nz * direction[2]
+            if dot > 0.0:
+                nx = -nx
+                ny = -ny
+                nz = -nz
+        return best_surface, best_t, nx, ny, nz
+
+
+    @njit(cache=True, inline="always")
+    def _ray_aabb_intersects_jit(origin, direction, lower, upper, max_distance):
+        enter = 0.0
+        exit_ = max_distance + _BVH_BOUNDS_EPS
+        for axis in range(3):
+            value = direction[axis]
+            if abs(value) <= 1e-15:
+                if origin[axis] < lower[axis] or origin[axis] > upper[axis]:
+                    return False
+                continue
+            first = (lower[axis] - origin[axis]) / value
+            second = (upper[axis] - origin[axis]) / value
+            if first > second:
+                first, second = second, first
+            if first > enter:
+                enter = first
+            if second < exit_:
+                exit_ = second
+            if enter > exit_:
+                return False
+        return exit_ > _EPS
+
+
     @njit(cache=True)
     def _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height):
         best_t = 1e30
@@ -3995,13 +4260,12 @@ if njit is not None:
                     surf_nx = cand_nx
                     surf_ny = cand_ny
                     surf_nz = cand_nz
-            else:
-                if abs(direction[2]) > 1e-12:
-                    cand_t = (z_values[si] - origin[2]) / direction[2]
-                    px = origin[0] + cand_t * direction[0]
-                    py = origin[1] + cand_t * direction[1]
-                    if cand_t > _EPS and _point_in_polygon_jit(px, py, corners):
-                        t = cand_t
+            elif abs(direction[2]) > 1e-12:
+                cand_t = (z_values[si] - origin[2]) / direction[2]
+                px = origin[0] + cand_t * direction[0]
+                py = origin[1] + cand_t * direction[1]
+                if cand_t > _EPS and _point_in_polygon_jit(px, py, corners):
+                    t = cand_t
             if t < best_t:
                 best_t = t
                 best_surface = si
@@ -4017,9 +4281,44 @@ if njit is not None:
         return best_surface, best_t, best_nx, best_ny, best_nz
 
 
+    @njit(cache=True, inline="always")
+    def _closest_hit_bvh_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives):
+        best_t = 1e30
+        best_surface = -1
+        best_nx = 0.0
+        best_ny = 0.0
+        best_nz = 0.0
+        node = 0
+        while node < bvh_start.shape[0]:
+            if not _ray_aabb_intersects_jit(origin, direction, bvh_bounds_min[node], bvh_bounds_max[node], best_t):
+                node = bvh_escape[node]
+                continue
+            count = bvh_count[node]
+            if count > 0:
+                start = bvh_start[node]
+                for offset in range(count):
+                    si = bvh_primitives[start + offset]
+                    t, surf_nx, surf_ny, surf_nz = _surface_hit_jit(si, origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners)
+                    if t < best_t or (t == best_t and (best_surface < 0 or si < best_surface)):
+                        best_t = t
+                        best_surface = si
+                        best_nx = surf_nx
+                        best_ny = surf_ny
+                        best_nz = surf_nz
+            node += 1
+        return _orient_hit_normal_jit(best_surface, best_t, best_nx, best_ny, best_nz, direction)
+
+
+    @njit(cache=True, inline="always")
+    def _closest_hit_backend_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives, use_bvh):
+        if use_bvh:
+            return _closest_hit_bvh_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives)
+        return _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, 0.0)
+
+
     @njit(cache=True)
-    def _any_hit_jit(origin, direction, max_distance, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height):
-        surf, t, nx, ny, nz = _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
+    def _any_hit_jit(origin, direction, max_distance, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives, use_bvh):
+        surf, t, nx, ny, nz = _closest_hit_backend_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives, use_bvh)
         return surf >= 0 and t > _EPS and t < max_distance - _EPS
 
 
@@ -4098,14 +4397,14 @@ if njit is not None:
 
 
     @njit(parallel=True, cache=True)
-    def _visual_event_count_kernel(src, rcv, directions, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, surface_survival, corners, height, receiver_radius, max_path_len, max_bounces):
+    def _visual_event_count_kernel(src, rcv, directions, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives, use_bvh, surface_survival, corners, height, receiver_radius, max_path_len, max_bounces):
         event_flags = np.zeros((directions.shape[0], max_bounces + 1), dtype=np.bool_)
         for ri in prange(directions.shape[0]):
             origin = src.copy()
             direction = directions[ri].copy()
             distance_so_far = 0.0
             for bounce in range(max_bounces + 1):
-                surf, t, nx, ny, nz = _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
+                surf, t, nx, ny, nz = _closest_hit_backend_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives, use_bvh)
                 receiver_t = _ray_sphere_intersection_jit(origin, direction, rcv, receiver_radius)
                 max_t = t if surf >= 0 else 1e30
                 if receiver_t > 0.0 and receiver_t < max_t and bounce > 0:
@@ -4133,7 +4432,7 @@ if njit is not None:
 
 
     @njit(parallel=True, cache=True)
-    def _visual_record_kernel(src, rcv, directions, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, surface_survival, corners, height, receiver_radius, min_distance, max_path_len, max_bounces, events_per_ray, event_offsets, retain_limit):
+    def _visual_record_kernel(src, rcv, directions, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives, use_bvh, surface_survival, corners, height, receiver_radius, min_distance, max_path_len, max_bounces, events_per_ray, event_offsets, retain_limit):
         retained_points = np.zeros((retain_limit, max_bounces + 2, 3), dtype=np.float64)
         point_counts = np.zeros(retain_limit, dtype=np.int64)
         ray_indices = np.zeros(retain_limit, dtype=np.int64)
@@ -4153,7 +4452,7 @@ if njit is not None:
             hit_count = 0
             accepted_for_ray = 0
             for bounce in range(max_bounces + 1):
-                surf, t, nx, ny, nz = _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
+                surf, t, nx, ny, nz = _closest_hit_backend_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives, use_bvh)
                 receiver_t = _ray_sphere_intersection_jit(origin, direction, rcv, receiver_radius)
                 max_t = t if surf >= 0 else 1e30
                 if receiver_t > 0.0 and receiver_t < max_t and bounce > 0:
@@ -4210,7 +4509,7 @@ if njit is not None:
 
 
     @njit(parallel=True)
-    def _trace_energy_kernel(source, listener, directions, diffuse_bank, diffuse_random, diffuse_indices, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, reflection, scattering, corners, height, num_bounces, num_bins, bin_dur, c, max_path_len, direct_delay, listener_radius, source_radius, irradiance_min_distance, specular_exponent, source_forward_vector, dipole_weight, dipole_power, visual_candidate_limit, visual_stride, render_ambisonics):
+    def _trace_energy_kernel(source, listener, directions, diffuse_bank, diffuse_random, diffuse_indices, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives, use_bvh, reflection, scattering, corners, height, num_bounces, num_bins, bin_dur, c, max_path_len, direct_delay, listener_radius, source_radius, irradiance_min_distance, specular_exponent, source_forward_vector, dipole_weight, dipole_power, visual_candidate_limit, visual_stride, render_ambisonics):
         thread_count = get_num_threads()
         local_echogram = np.zeros((thread_count, _NUM_BANDS, num_bins), dtype=np.float64)
         local_ambisonic = np.zeros((thread_count, _NUM_BANDS, 4, num_bins), dtype=np.float64)
@@ -4247,7 +4546,10 @@ if njit is not None:
             for bounce in range(num_bounces):
                 if bounce + 1 > local_actual_bounces[tid]:
                     local_actual_bounces[tid] = bounce + 1
-                surf, t, nx, ny, nz = _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
+                if use_bvh:
+                    surf, t, nx, ny, nz = _closest_hit_bvh_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives)
+                else:
+                    surf, t, nx, ny, nz = _closest_hit_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
                 if surf < 0 or t <= listener_radius or accum_distance > max_path_len:
                     alive = False
                     break
@@ -4286,7 +4588,11 @@ if njit is not None:
                         shadow_dir[0] = sdx
                         shadow_dir[1] = sdy
                         shadow_dir[2] = sdz
-                        occluded = _any_hit_jit(shadow_origin, shadow_dir, dist_to_source, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
+                        if use_bvh:
+                            shadow_surface, shadow_t, _, _, _ = _closest_hit_bvh_jit(shadow_origin, shadow_dir, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives)
+                        else:
+                            shadow_surface, shadow_t, _, _, _ = _closest_hit_jit(shadow_origin, shadow_dir, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, height)
+                        occluded = shadow_surface >= 0 and shadow_t > _EPS and shadow_t < dist_to_source - _EPS
                         if not occluded:
                             cos_in = facing
                             diffuse = (1.0 / math.pi) * scattering[surf] * cos_in
