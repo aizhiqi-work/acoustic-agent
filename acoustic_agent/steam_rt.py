@@ -43,11 +43,14 @@ _RT_VISUAL_CANDIDATE_FACTOR = 32
 _BVH_BOUNDS_EPS = 2.0e-6
 _STATIC_SCENE_CACHE_LIMIT = 32
 _WORKSPACE_CACHE_BYTES = 256 * 1024 * 1024
+_PRECISION_CACHE_BYTES = 256 * 1024 * 1024
 _STATIC_CACHE_LOCK = RLock()
 _SCENE_SURFACE_CACHE: OrderedDict[tuple[Any, ...], tuple[Any, ...]] = OrderedDict()
 _SCENE_ARRAY_CACHE: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
 _RANDOM_WORKSPACE_CACHE: OrderedDict[tuple[int, int, int, int], tuple[np.ndarray, np.ndarray]] = OrderedDict()
 _RANDOM_WORKSPACE_BYTES = 0
+_PRECISION_ARRAY_CACHE: OrderedDict[tuple[Any, ...], tuple[np.ndarray, np.ndarray, int]] = OrderedDict()
+_PRECISION_ARRAY_BYTES = 0
 _STATIC_CACHE_STATS = {
     "scene_hits": 0,
     "scene_misses": 0,
@@ -55,6 +58,8 @@ _STATIC_CACHE_STATS = {
     "array_misses": 0,
     "workspace_hits": 0,
     "workspace_misses": 0,
+    "precision_hits": 0,
+    "precision_misses": 0,
 }
 
 
@@ -1082,6 +1087,11 @@ def simulate_steam_room(
             "surface_contribution_count": field.get("surface_contribution_count", {}),
             "surface_energy": field.get("surface_energy", {}),
             "accelerator": field.get("accelerator", "numpy"),
+            "precision": field.get("precision", "float64"),
+            "cuda": field.get("cuda"),
+            "kernel_time_s": field.get("kernel_time_s"),
+            "transfer_time_s": field.get("transfer_time_s"),
+            "device_input_cache": field.get("device_input_cache"),
             "ambisonics": {
                 "enabled": bool(spatial_output),
                 "order": 1,
@@ -1754,6 +1764,27 @@ def trace_energy_field(
     render_ambisonics: bool = True,
 ) -> dict[str, Any]:
     emitter = source_directivity(source_model)
+    accelerator = _normalize_rt_accelerator(config.rt_accelerator)
+    precision = _normalize_rt_precision(config.rt_precision)
+    if accelerator in {"cuda", "auto"}:
+        from .steam_rt_cuda import cuda_available
+
+        available = cuda_available(int(config.rt_cuda_device))
+        if accelerator == "cuda" and not available:
+            raise RuntimeError(
+                f"CUDA accelerator requested for device {config.rt_cuda_device}, but no compatible CUDA device is available"
+            )
+        if accelerator == "cuda" and precision != "float32":
+            raise ValueError("CUDA tracing currently supports rt_precision='float32' only")
+        if available and precision == "float32":
+            return _trace_energy_field_cuda(
+                scene,
+                source,
+                listener,
+                config,
+                emitter,
+                render_ambisonics=render_ambisonics,
+            )
     if njit is not None:
         return _trace_energy_field_numba(
             scene,
@@ -1773,6 +1804,125 @@ def trace_energy_field(
     )
 
 
+def _normalize_rt_accelerator(value: str) -> str:
+    accelerator = str(value).strip().lower()
+    if accelerator not in {"auto", "numba", "cuda"}:
+        raise ValueError("rt_accelerator must be auto, numba, or cuda")
+    return accelerator
+
+
+def _normalize_rt_precision(value: str) -> str:
+    aliases = {"fp32": "float32", "single": "float32", "fp64": "float64", "double": "float64"}
+    precision = aliases.get(str(value).strip().lower(), str(value).strip().lower())
+    if precision not in {"float32", "float64"}:
+        raise ValueError("rt_precision must be float32 or float64")
+    return precision
+
+
+def _trace_energy_field_cuda(
+    scene: RoomRayScene,
+    source: np.ndarray,
+    listener: np.ndarray,
+    config: SimConfig,
+    source_model: Mapping[str, Any] | None = None,
+    *,
+    render_ambisonics: bool = True,
+) -> dict[str, Any]:
+    from .steam_rt_cuda import trace_energy_field_cuda
+
+    emitter = source_directivity(source_model)
+    arrays = _scene_kernel_arrays(scene)
+    intersection_backend = _resolve_intersection_backend(
+        config.intersection_backend,
+        len(scene.surfaces),
+        config.bvh_min_surfaces,
+    )
+    num_rays = int(config.rt_num_rays)
+    num_bounces = int(config.rt_num_bounces)
+    bin_dur = float(config.rt_bin_duration_s)
+    duration = max(float(config.rt_duration_s), float(config.duration_s))
+    num_bins = max(1, int(math.ceil(duration / bin_dur)))
+    directions = _sphere_samples(num_rays, int(config.seed))
+    diffuse_bank = _diffuse_sample_bank(config.rt_num_diffuse_samples)
+    diffuse_random, diffuse_indices = _diffuse_random_sequence(
+        num_rays,
+        num_bounces,
+        diffuse_bank.shape[0],
+        int(config.seed),
+    )
+    default_visual_candidates = int(_RT_VISUAL_RETAIN_LIMIT * 4)
+    requested_visual_candidates = (
+        default_visual_candidates
+        if config.rt_visual_num_rays is None
+        else max(1, min(int(config.rt_visual_num_rays), default_visual_candidates))
+    )
+    visual_candidate_limit = min(num_rays, requested_visual_candidates) if config.collect_visual_paths else 0
+    visual_stride = max(1, num_rays // max(visual_candidate_limit, 1))
+    direct_delay = float(np.linalg.norm(np.asarray(source, dtype=float) - np.asarray(listener, dtype=float))) / float(config.c)
+    raw = trace_energy_field_cuda(
+        source=np.asarray(source, dtype=np.float32),
+        listener=np.asarray(listener, dtype=np.float32),
+        directions=directions,
+        diffuse_bank=diffuse_bank,
+        diffuse_random=diffuse_random,
+        diffuse_indices=diffuse_indices,
+        arrays=arrays,
+        use_bvh=intersection_backend == "bvh",
+        num_bounces=num_bounces,
+        num_bins=num_bins,
+        bin_dur=bin_dur,
+        speed_of_sound=float(config.c),
+        max_path_len=duration * float(config.c),
+        direct_delay=direct_delay,
+        listener_radius=float(config.rt_listener_radius),
+        source_radius=float(config.rt_source_radius),
+        irradiance_min_distance=float(config.rt_irradiance_min_distance),
+        specular_exponent=float(config.rt_specular_exponent),
+        source_forward_vector=np.asarray(source_forward(emitter), dtype=np.float32),
+        dipole_weight=float(emitter["dipole_weight"]),
+        dipole_power=float(emitter["dipole_power"]),
+        visual_candidate_limit=visual_candidate_limit,
+        visual_stride=visual_stride,
+        render_ambisonics=render_ambisonics,
+        device_id=int(config.rt_cuda_device),
+    )
+    names = arrays["names"]
+    total_energy = np.sum(raw["echogram"], axis=0)
+    nonzero_bins = np.flatnonzero(total_energy > 0.0)
+    return {
+        "echogram": raw["echogram"],
+        "ambisonic_echogram": raw["ambisonic"] if render_ambisonics else None,
+        "num_bins": num_bins,
+        "bin_duration_s": bin_dur,
+        "direct_delay_s": direct_delay,
+        "actual_bounces": int(raw["actual_bounces"]),
+        "active_ray_count": int(raw["active_count"]),
+        "last_energy_time_s": float(nonzero_bins[-1] * bin_dur) if nonzero_bins.size else 0.0,
+        "surface_hit_count": {names[i]: int(raw["hit_counts"][i]) for i in range(len(names)) if int(raw["hit_counts"][i]) > 0},
+        "surface_contribution_count": {names[i]: int(raw["contrib_counts"][i]) for i in range(len(names)) if int(raw["contrib_counts"][i]) > 0},
+        "surface_energy": {names[i]: float(raw["surface_energy"][i]) for i in range(len(names)) if float(raw["surface_energy"][i]) > 0.0},
+        "visual_candidates": {
+            "hit_points": raw["visual_hit_points"],
+            "surface_indices": raw["visual_surface_indices"],
+            "ray_indices": raw["visual_ray_indices"],
+            "orders": raw["visual_orders"],
+            "distances": raw["visual_distances"],
+            "gains": raw["visual_gains"],
+            "surface_names": tuple(names),
+            "candidate_limit": int(visual_candidate_limit),
+            "stride": int(visual_stride),
+        } if config.collect_visual_paths else None,
+        "accelerator": "cuda",
+        "precision": "float32",
+        "cuda": raw["device"],
+        "device_input_cache": raw["device_input_cache"],
+        "kernel_time_s": float(raw["kernel_time_s"]),
+        "transfer_time_s": float(raw["transfer_time_s"]),
+        "intersection_backend": intersection_backend,
+        "source_directivity": dict(emitter),
+    }
+
+
 def _trace_energy_field_numba(
     scene: RoomRayScene,
     source: np.ndarray,
@@ -1783,6 +1933,8 @@ def _trace_energy_field_numba(
     render_ambisonics: bool = True,
 ) -> dict[str, Any]:
     emitter = source_directivity(source_model)
+    precision = _normalize_rt_precision(config.rt_precision)
+    compute_dtype = np.float32 if precision == "float32" else np.float64
     arrays = _scene_kernel_arrays(scene)
     intersection_backend = _resolve_intersection_backend(
         config.intersection_backend,
@@ -1827,47 +1979,47 @@ def _trace_energy_field_numba(
         visual_distances,
         visual_gains,
     ) = _trace_energy_kernel(
-        np.asarray(source, dtype=np.float64),
-        np.asarray(listener, dtype=np.float64),
-        np.asarray(directions, dtype=np.float64),
-        np.asarray(diffuse_bank, dtype=np.float64),
-        diffuse_random,
+        np.asarray(source, dtype=compute_dtype),
+        np.asarray(listener, dtype=compute_dtype),
+        _as_precision_array(directions, compute_dtype),
+        _as_precision_array(diffuse_bank, compute_dtype),
+        _as_precision_array(diffuse_random, compute_dtype),
         diffuse_indices,
         arrays["kinds"],
-        arrays["wall_a"],
-        arrays["wall_delta"],
-        arrays["wall_z"],
-        arrays["z_values"],
-        arrays["box_center"],
-        arrays["box_axis_u"],
-        arrays["box_axis_v"],
-        arrays["box_half"],
-        arrays["box_z"],
-        arrays["normals"],
-        arrays["bvh_bounds_min"],
-        arrays["bvh_bounds_max"],
+        _as_precision_array(arrays["wall_a"], compute_dtype),
+        _as_precision_array(arrays["wall_delta"], compute_dtype),
+        _as_precision_array(arrays["wall_z"], compute_dtype),
+        _as_precision_array(arrays["z_values"], compute_dtype),
+        _as_precision_array(arrays["box_center"], compute_dtype),
+        _as_precision_array(arrays["box_axis_u"], compute_dtype),
+        _as_precision_array(arrays["box_axis_v"], compute_dtype),
+        _as_precision_array(arrays["box_half"], compute_dtype),
+        _as_precision_array(arrays["box_z"], compute_dtype),
+        _as_precision_array(arrays["normals"], compute_dtype),
+        _as_precision_array(arrays["bvh_bounds_min"], compute_dtype),
+        _as_precision_array(arrays["bvh_bounds_max"], compute_dtype),
         arrays["bvh_start"],
         arrays["bvh_count"],
         arrays["bvh_escape"],
         arrays["bvh_primitives"],
         bool(use_bvh),
-        arrays["reflection"],
-        arrays["scattering"],
-        arrays["corners"],
-        float(arrays["height"]),
+        _as_precision_array(arrays["reflection"], compute_dtype),
+        _as_precision_array(arrays["scattering"], compute_dtype),
+        _as_precision_array(arrays["corners"], compute_dtype),
+        compute_dtype(arrays["height"]),
         int(num_bounces),
         int(num_bins),
-        float(bin_dur),
-        float(config.c),
-        float(duration) * float(config.c),
-        float(direct_delay),
-        float(config.rt_listener_radius),
-        float(config.rt_source_radius),
-        float(config.rt_irradiance_min_distance),
-        float(config.rt_specular_exponent),
-        source_forward(emitter),
-        float(emitter["dipole_weight"]),
-        float(emitter["dipole_power"]),
+        compute_dtype(bin_dur),
+        compute_dtype(config.c),
+        compute_dtype(duration * float(config.c)),
+        compute_dtype(direct_delay),
+        compute_dtype(config.rt_listener_radius),
+        compute_dtype(config.rt_source_radius),
+        compute_dtype(config.rt_irradiance_min_distance),
+        compute_dtype(config.rt_specular_exponent),
+        np.asarray(source_forward(emitter), dtype=compute_dtype),
+        compute_dtype(emitter["dipole_weight"]),
+        compute_dtype(emitter["dipole_power"]),
         int(visual_candidate_limit),
         int(visual_stride),
         bool(render_ambisonics),
@@ -1899,6 +2051,7 @@ def _trace_energy_field_numba(
             "stride": int(visual_stride),
         } if config.collect_visual_paths else None,
         "accelerator": "numba",
+        "precision": precision,
         "intersection_backend": intersection_backend,
         "source_directivity": dict(emitter),
     }
@@ -3891,13 +4044,52 @@ def _diffuse_random_sequence(
     return workspace
 
 
+def _as_precision_array(value: np.ndarray, dtype: Any) -> np.ndarray:
+    global _PRECISION_ARRAY_BYTES
+    source = np.asarray(value)
+    target_dtype = np.dtype(dtype)
+    if source.dtype == target_dtype and source.flags.c_contiguous:
+        return source
+    key = (
+        int(source.__array_interface__["data"][0]),
+        source.shape,
+        source.strides,
+        source.dtype.str,
+        target_dtype.str,
+    )
+    with _STATIC_CACHE_LOCK:
+        cached = _PRECISION_ARRAY_CACHE.get(key)
+        if cached is not None and cached[0] is value:
+            _PRECISION_ARRAY_CACHE.move_to_end(key)
+            _STATIC_CACHE_STATS["precision_hits"] += 1
+            return cached[1]
+
+    converted = np.ascontiguousarray(value, dtype=target_dtype)
+    converted.setflags(write=False)
+    size = int(converted.nbytes)
+    with _STATIC_CACHE_LOCK:
+        _STATIC_CACHE_STATS["precision_misses"] += 1
+        previous = _PRECISION_ARRAY_CACHE.pop(key, None)
+        if previous is not None:
+            _PRECISION_ARRAY_BYTES -= previous[2]
+        while _PRECISION_ARRAY_CACHE and _PRECISION_ARRAY_BYTES + size > _PRECISION_CACHE_BYTES:
+            _, expired = _PRECISION_ARRAY_CACHE.popitem(last=False)
+            _PRECISION_ARRAY_BYTES -= expired[2]
+        if size <= _PRECISION_CACHE_BYTES:
+            _PRECISION_ARRAY_CACHE[key] = (value, converted, size)
+            _PRECISION_ARRAY_BYTES += size
+    return converted
+
+
 def _clear_static_caches() -> None:
-    global _RANDOM_WORKSPACE_BYTES
+    global _PRECISION_ARRAY_BYTES, _RANDOM_WORKSPACE_BYTES
     with _STATIC_CACHE_LOCK:
         _SCENE_SURFACE_CACHE.clear()
         _SCENE_ARRAY_CACHE.clear()
         _RANDOM_WORKSPACE_CACHE.clear()
+        _PRECISION_ARRAY_CACHE.clear()
         _RANDOM_WORKSPACE_BYTES = 0
+        _PRECISION_ARRAY_BYTES = 0
         for key in _STATIC_CACHE_STATS:
             _STATIC_CACHE_STATS[key] = 0
     _sphere_samples.cache_clear()
@@ -3913,6 +4105,9 @@ def _static_cache_info() -> dict[str, int]:
             "workspace_entries": len(_RANDOM_WORKSPACE_CACHE),
             "workspace_bytes": int(_RANDOM_WORKSPACE_BYTES),
             "workspace_byte_limit": int(_WORKSPACE_CACHE_BYTES),
+            "precision_entries": len(_PRECISION_ARRAY_CACHE),
+            "precision_bytes": int(_PRECISION_ARRAY_BYTES),
+            "precision_byte_limit": int(_PRECISION_CACHE_BYTES),
             "sphere_entries": int(_sphere_samples.cache_info().currsize),
             "diffuse_bank_entries": int(_diffuse_sample_bank.cache_info().currsize),
         }
@@ -4513,19 +4708,19 @@ if njit is not None:
     @njit(parallel=True)
     def _trace_energy_kernel(source, listener, directions, diffuse_bank, diffuse_random, diffuse_indices, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives, use_bvh, reflection, scattering, corners, height, num_bounces, num_bins, bin_dur, c, max_path_len, direct_delay, listener_radius, source_radius, irradiance_min_distance, specular_exponent, source_forward_vector, dipole_weight, dipole_power, visual_candidate_limit, visual_stride, render_ambisonics):
         thread_count = get_num_threads()
-        local_echogram = np.zeros((thread_count, _NUM_BANDS, num_bins), dtype=np.float64)
-        local_ambisonic = np.zeros((thread_count, _NUM_BANDS, 4, num_bins), dtype=np.float64)
+        local_echogram = np.zeros((thread_count, _NUM_BANDS, num_bins), dtype=directions.dtype)
+        local_ambisonic = np.zeros((thread_count, _NUM_BANDS, 4, num_bins), dtype=directions.dtype)
         local_hit_counts = np.zeros((thread_count, kinds.shape[0]), dtype=np.int64)
         local_contrib_counts = np.zeros((thread_count, kinds.shape[0]), dtype=np.int64)
-        local_surface_energy = np.zeros((thread_count, kinds.shape[0]), dtype=np.float64)
+        local_surface_energy = np.zeros((thread_count, kinds.shape[0]), dtype=directions.dtype)
         local_active_count = np.zeros(thread_count, dtype=np.int64)
         local_actual_bounces = np.zeros(thread_count, dtype=np.int64)
-        visual_hit_points = np.zeros((visual_candidate_limit, num_bounces, 3), dtype=np.float64)
+        visual_hit_points = np.zeros((visual_candidate_limit, num_bounces, 3), dtype=directions.dtype)
         visual_surface_indices = -np.ones((visual_candidate_limit, num_bounces), dtype=np.int64)
         visual_ray_indices = -np.ones(visual_candidate_limit, dtype=np.int64)
         visual_orders = np.zeros(visual_candidate_limit, dtype=np.int64)
-        visual_distances = np.zeros(visual_candidate_limit, dtype=np.float64)
-        visual_gains = np.zeros(visual_candidate_limit, dtype=np.float64)
+        visual_distances = np.zeros(visual_candidate_limit, dtype=directions.dtype)
+        visual_gains = np.zeros(visual_candidate_limit, dtype=directions.dtype)
         for ri in prange(directions.shape[0]):
             tid = get_thread_id()
             visual_slot = -1
@@ -4534,16 +4729,16 @@ if njit is not None:
                 if candidate_slot < visual_candidate_limit:
                     visual_slot = candidate_slot
                     visual_ray_indices[visual_slot] = ri
-            origin = np.empty(3, dtype=np.float64)
+            origin = np.empty(3, dtype=directions.dtype)
             origin[0] = listener[0]
             origin[1] = listener[1]
             origin[2] = listener[2]
-            direction = np.empty(3, dtype=np.float64)
+            direction = np.empty(3, dtype=directions.dtype)
             direction[0] = directions[ri, 0]
             direction[1] = directions[ri, 1]
             direction[2] = directions[ri, 2]
             accum_distance = 0.0
-            accum_energy = np.ones(_NUM_BANDS, dtype=np.float64)
+            accum_energy = np.ones(_NUM_BANDS, dtype=directions.dtype)
             alive = True
             for bounce in range(num_bounces):
                 if bounce + 1 > local_actual_bounces[tid]:
@@ -4582,11 +4777,11 @@ if njit is not None:
                     sdz = tsz / dist_to_source
                     facing = nx * sdx + ny * sdy + nz * sdz
                     if facing > 0.0:
-                        shadow_origin = np.empty(3, dtype=np.float64)
+                        shadow_origin = np.empty(3, dtype=directions.dtype)
                         shadow_origin[0] = hx
                         shadow_origin[1] = hy
                         shadow_origin[2] = hz
-                        shadow_dir = np.empty(3, dtype=np.float64)
+                        shadow_dir = np.empty(3, dtype=directions.dtype)
                         shadow_dir[0] = sdx
                         shadow_dir[1] = sdy
                         shadow_dir[2] = sdz
@@ -4653,11 +4848,11 @@ if njit is not None:
                     break
             if alive:
                 local_active_count[tid] += 1
-        echogram = np.zeros((_NUM_BANDS, num_bins), dtype=np.float64)
-        ambisonic = np.zeros((_NUM_BANDS, 4, num_bins), dtype=np.float64)
+        echogram = np.zeros((_NUM_BANDS, num_bins), dtype=directions.dtype)
+        ambisonic = np.zeros((_NUM_BANDS, 4, num_bins), dtype=directions.dtype)
         hit_counts = np.zeros(kinds.shape[0], dtype=np.int64)
         contrib_counts = np.zeros(kinds.shape[0], dtype=np.int64)
-        surface_energy = np.zeros(kinds.shape[0], dtype=np.float64)
+        surface_energy = np.zeros(kinds.shape[0], dtype=directions.dtype)
         active_count = 0
         actual_bounces = 0
         for ti in range(thread_count):

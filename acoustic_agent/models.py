@@ -76,6 +76,9 @@ class SimConfig:
     direct_occlusion_samples: int = 32
     num_transmission_rays: int = 8
     reflections_enabled: bool = True
+    rt_accelerator: str = "numba"
+    rt_precision: str = "float64"
+    rt_cuda_device: int = 0
     rt_num_rays: int = 32768
     rt_num_bounces: int = 96
     rt_num_diffuse_samples: int = 128

@@ -13,6 +13,17 @@ Runtime dependencies:
 - h5py for SOFA HRTF files.
 - Shapely and NetworkX for Floorplan geometry, portals, and motion routing.
 
+The optional single-GPU reflection tracer requires an NVIDIA CUDA device and a
+working Numba CUDA target. CUDA 12.4 with Python 3.12 is the primary tested GPU
+environment. Verify it before selecting the CUDA accelerator:
+
+```bash
+python -c "from numba import cuda; print(cuda.is_available())"
+```
+
+See [`CUDA_ACCELERATION.md`](CUDA_ACCELERATION.md) for configuration, benchmark
+commands, and measured RTX 4090/A6000 performance.
+
 ## Clone With Binary Resources
 
 SOFA and SQLite resources are intentionally part of the project. The SQLite
