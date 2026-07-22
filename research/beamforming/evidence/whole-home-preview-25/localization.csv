@@ -1,0 +1,4 @@
+target_case,cases,room_accuracy,median_error_m,p90_error_m
+all,100,0.76,1.07475,2.12795
+array_covered,50,0.68,1.07475,1.9817
+array_uncovered,50,0.84,1.0265,2.28288

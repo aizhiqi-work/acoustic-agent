@@ -13,6 +13,12 @@ Current studies:
 - [`doa/`](doa/README.md): line-of-sight direction-of-arrival baselines for
   HRTF, linear-array, and circular-array receivers in Geometry and FloorPlan
   scenes, plus [distributed whole-home localization and tracking](doa/DISTRIBUTED_FLOORPLAN.md).
+- [`beamforming/`](beamforming/README.md): single-channel enhancement, local
+  four-channel arrays, topology-aware distributed synchronized-mic
+  beamforming, WPE dereverberation, WPD, and the complete classical audio
+  front-end benchmark, including fixed whole-home single/array hybrid
+  deployment with TDOA routing. The completed protocol and flowchart are in
+  [`beamforming/WHOLE_HOME_DISTRIBUTED.md`](beamforming/WHOLE_HOME_DISTRIBUTED.md).
 
 Generated artifacts are written under `research/results/` and are ignored by
 Git.

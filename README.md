@@ -476,6 +476,29 @@ for every exact room count from 4 to 14, with floor-area-decile coverage:
 python -m research.doa.run_stratified
 ```
 
+The [beamforming study](research/beamforming/README.md) adds a true
+single-channel enhancement baseline, a four-channel local array, and
+topology-aware synchronized microphones distributed across a FloorPlan. It
+compares oracle RIR-arrival steering with SRP-PHAT/GCC-PHAT estimated steering,
+same-room and cross-room interferers, microphone subset size, and deployments
+without a microphone in the source room:
+
+```bash
+python -m research.beamforming.run --quality preview
+python -m research.beamforming.run_benchmark --plans-per-room-count 5
+python -m research.beamforming.run_frontend_benchmark --plans-per-room-count 5
+python -m research.beamforming.run_whole_home_benchmark --plans-per-room-count 5
+```
+
+The stratified benchmark compares best-single, DS, weighted DS, MVDR, GEV,
+and MWF over five held-out layouts for each of 4, 6, 8, 10, and 12 rooms. It
+reports SNR, SI-SDR, optional PESQ/STOI, TDOA localization, and processing RTF.
+The complete front-end benchmark additionally places the single-microphone
+baseline beside local and distributed MVDR/MWF, WPE+MVDR, WPE+MWF, and WPD.
+The [fixed whole-home study](research/beamforming/WHOLE_HOME_DISTRIBUTED.md)
+freezes all sensor positions before target sampling and compares distributed
+singles, fixed arrays, equal-channel hybrids, and coverage-preserving hybrids.
+
 ## Documentation
 
 | Guide | Purpose |

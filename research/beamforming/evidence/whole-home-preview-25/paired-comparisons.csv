@@ -1,0 +1,10 @@
+baseline,strategy,cases,floorplans,mean_delta_output_pesq,ci95_low_delta_output_pesq,ci95_high_delta_output_pesq,win_rate_output_pesq,mean_delta_output_stoi,ci95_low_delta_output_stoi,ci95_high_delta_output_stoi,win_rate_output_stoi,mean_delta_si_sdr_improvement_db,ci95_low_delta_si_sdr_improvement_db,ci95_high_delta_si_sdr_improvement_db,win_rate_si_sdr_improvement_db
+distributed_singles_mwf,oracle_target_room_single_raw,100,25,-0.31643,-0.37431,-0.26147,0.0,-0.14881,-0.17445,-0.12484,0.06,-8.5173,-9.37011,-7.68815,0.0
+distributed_singles_mwf,tdoa_routed_single_raw,100,25,-0.31464,-0.37396,-0.26068,0.0,-0.17868,-0.22907,-0.13489,0.08,-8.5173,-9.33702,-7.70914,0.0
+distributed_singles_mwf,tdoa_routed_single_wiener,100,25,-0.33971,-0.3997,-0.28483,0.01,-0.21494,-0.26436,-0.17155,0.03,-7.05413,-7.91171,-6.18775,0.0
+distributed_singles_mwf,oracle_target_room_array_mwf,100,25,0.74792,0.63743,0.85656,0.92,0.18205,0.15491,0.20914,0.94,6.73622,5.65991,7.73421,0.91
+distributed_singles_mwf,tdoa_routed_fixed_array_ds,100,25,-0.27025,-0.34975,-0.18648,0.04,-0.29186,-0.3257,-0.254,0.17,-8.50917,-9.33598,-7.67907,0.0
+distributed_singles_mwf,tdoa_routed_fixed_array_mwf,100,25,0.28224,0.17466,0.38625,0.48,-0.12097,-0.15386,-0.08399,0.46,5.20336,4.13338,6.21847,0.84
+distributed_singles_mwf,equal_channel_hybrid_mwf,100,25,0.12893,0.02323,0.24443,0.38,-0.06369,-0.10641,-0.0207,0.39,1.60008,0.32606,2.91132,0.53
+distributed_singles_mwf,coverage_hybrid_selected_mwf,100,25,0.4144,0.31861,0.5141,0.64,0.07241,0.047,0.09635,0.63,3.36234,2.48973,4.19578,0.63
+distributed_singles_mwf,coverage_hybrid_all_mwf,100,25,0.53678,0.44354,0.62971,0.91,0.10056,0.0817,0.1195,0.9,4.52869,3.74138,5.31493,0.96
