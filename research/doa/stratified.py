@@ -182,6 +182,9 @@ def run_stratified_study(
     quality: str = "preview",
     points_per_room: int = 1,
     seed: int = 20260722,
+    rt_accelerator: str = "numba",
+    rt_precision: str = "float64",
+    rt_cuda_device: int = 0,
 ) -> dict[str, Any]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -202,7 +205,13 @@ def run_stratified_study(
     split_by_index = {int(row["index"]): row for row in split_rows}
 
     risk_quantile, tuning_rows = tune_risk_quantile(calibration_indices, resource=resource)
-    generator = AcousticMeasurementGenerator(output, quality=quality)
+    generator = AcousticMeasurementGenerator(
+        output,
+        quality=quality,
+        rt_accelerator=rt_accelerator,
+        rt_precision=rt_precision,
+        rt_cuda_device=rt_cuda_device,
+    )
     results: list[dict[str, Any]] = []
     placements: list[dict[str, Any]] = []
 
@@ -300,6 +309,9 @@ def run_stratified_study(
         "calibration_indices": calibration_indices,
         "validation_indices": validation_indices,
         "quality": quality,
+        "rt_accelerator": rt_accelerator,
+        "rt_precision": rt_precision,
+        "rt_cuda_device": int(rt_cuda_device),
         "points_per_room": int(points_per_room),
         "selected_risk_quantile": risk_quantile,
         "adequacy_thresholds": {
@@ -516,6 +528,7 @@ def _write_outputs(output: Path, payload: Mapping[str, Any]) -> None:
         f"- Calibration: **{payload['calibration_per_room_count']} FloorPlans per room count**.",
         f"- Unseen validation: **{payload['validation_per_room_count']} FloorPlans per room count**.",
         f"- Acoustic cases: one source point per room at `{payload['quality']}` RIR quality.",
+        f"- Reflection tracer: `{payload['rt_accelerator']}` / `{payload['rt_precision']}` / device `{payload['rt_cuda_device']}`.",
         "- Validation FloorPlans are selected one per area decile within each room-count stratum.",
         "- Confidence intervals resample entire FloorPlans, not individual source points.",
         "",
@@ -566,12 +579,7 @@ def _write_outputs(output: Path, payload: Mapping[str, Any]) -> None:
             "|---|---:|---:|---:|---:|---:|",
         ]
     )
-    for label in ("small", "medium", "large"):
-        row = relative_rows[label]
-        lines.append(
-            f"| {label} | {row['floorplans']} | {row['cases']} | {row['median_error_m']:.2f} m | "
-            f"{row['p90_error_m']:.2f} m | {100.0 * row['room_accuracy']:.1f}% |"
-        )
+    _append_area_metric_rows(lines, relative_rows, ("small", "medium", "large"))
     lines.extend(
         [
             "",
@@ -579,12 +587,11 @@ def _write_outputs(output: Path, payload: Mapping[str, Any]) -> None:
             "|---|---:|---:|---:|---:|---:|",
         ]
     )
-    for label in ("compact_lt60", "medium_60_100", "large_100_150", "very_large_ge150"):
-        row = absolute_rows[label]
-        lines.append(
-            f"| {label} | {row['floorplans']} | {row['cases']} | {row['median_error_m']:.2f} m | "
-            f"{row['p90_error_m']:.2f} m | {100.0 * row['room_accuracy']:.1f}% |"
-        )
+    _append_area_metric_rows(
+        lines,
+        absolute_rows,
+        ("compact_lt60", "medium_60_100", "large_100_150", "very_large_ge150"),
+    )
     observed_rule = all(
         int(row["recommended_microphones"])
         == min(7, max(4, int(math.ceil(int(row["room_count"]) / 2.0)) + 1))
@@ -606,6 +613,22 @@ def _write_outputs(output: Path, payload: Mapping[str, Any]) -> None:
         ]
     )
     (output / "report.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _append_area_metric_rows(
+    lines: list[str],
+    rows_by_label: Mapping[str, Mapping[str, Any]],
+    labels: Sequence[str],
+) -> None:
+    for label in labels:
+        row = rows_by_label.get(label)
+        if row is None:
+            lines.append(f"| {label} | 0 | 0 | n/a | n/a | n/a |")
+            continue
+        lines.append(
+            f"| {label} | {row['floorplans']} | {row['cases']} | {row['median_error_m']:.2f} m | "
+            f"{row['p90_error_m']:.2f} m | {100.0 * row['room_accuracy']:.1f}% |"
+        )
 
 
 def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:

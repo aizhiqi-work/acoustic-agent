@@ -1,0 +1,17 @@
+configuration,algorithm,placement_method,channels,array_nodes,single_nodes,cases,median_error_m,p90_error_m,room_accuracy,cross_room_cases,cross_room_median_error_m,cross_room_room_accuracy
+array_1x8,doa,topology_greedy,8,1,0,35,5.9363,10.5213,0.1143,31,6.116,0.0323
+array_2x4_async,doa,topology_greedy,8,2,0,35,4.2197,10.2595,0.1714,27,5.7189,0.037
+array_3x4_async,doa,topology_greedy,12,3,0,35,4.2033,9.3953,0.2,23,4.2275,0.0435
+array_4x4_async,doa,topology_greedy,16,4,0,35,4.27,9.2551,0.2,19,4.4313,0.0
+array_2x4_sync,sync_array,topology_greedy,8,2,0,35,1.3754,5.1868,0.6,27,1.603,0.5556
+array_3x4_sync,sync_array,topology_greedy,12,3,0,35,0.8812,4.6601,0.7429,23,1.5489,0.6522
+array_4x4_sync,sync_array,topology_greedy,16,4,0,35,0.369,3.5024,0.8571,19,0.8889,0.7368
+single_3x1,tdoa,topology_greedy,3,0,3,35,0.9608,3.5853,0.6571,23,1.7798,0.4783
+single_4x1,tdoa,topology_greedy,4,0,4,35,0.7401,3.5716,0.7429,19,1.8834,0.5263
+single_6x1,tdoa,topology_greedy,6,0,6,35,0.6258,1.6885,0.9429,11,1.1052,0.8182
+single_6x1_100us,tdoa_100us,topology_greedy,6,0,6,280,0.5999,1.8206,0.9429,88,1.112,0.8182
+single_6x1_500us,tdoa_500us,topology_greedy,6,0,6,280,0.6202,1.873,0.9464,88,1.0613,0.8409
+single_8x1,tdoa,topology_greedy,8,0,8,28,0.4122,1.3266,1.0,4,0.4122,1.0
+single_6x1_largest,tdoa,largest_rooms,6,0,6,35,1.1502,2.4939,0.7429,11,2.1772,0.1818
+single_6x1_farthest,tdoa,farthest_rooms,6,0,6,35,0.7722,2.7587,0.8286,11,1.4356,0.4545
+hybrid_2x4_4x1,hybrid,topology_greedy,12,2,4,35,0.5351,2.301,0.8857,18,0.8659,0.7778

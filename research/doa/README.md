@@ -33,6 +33,14 @@ python -m research.doa.run_los --quick
 python -m research.doa.run_los
 ```
 
+Run the room condition on one visible NVIDIA GPU in FP32:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m research.doa.run_los \
+  --accelerator cuda --precision float32 --cuda-device 0 \
+  --output-dir research/results/doa-los-cuda-4090
+```
+
 The quick command runs one Geometry and one FloorPlan placement. The full
 command runs three placements per scene under both acoustic conditions.
 
@@ -92,6 +100,16 @@ python -m research.doa.run_distributed --quick
 python -m research.doa.run_distributed
 ```
 
+The CUDA run must use a separate output directory. Accelerator, precision, and
+device are part of the measurement-cache key, so CPU and GPU observations
+cannot be mixed silently:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m research.doa.run_distributed \
+  --accelerator cuda --precision float32 --cuda-device 0 \
+  --output-dir research/results/distributed-floorplan-cuda-4090
+```
+
 The fixed training split selects the placement risk parameter. Target
 positions from the disjoint test FloorPlans never participate in placement or
 selection. The report compares one large array, distributed four-channel
@@ -103,6 +121,9 @@ For the larger room-count and floor-area-stratified validation, run:
 ```bash
 python -m research.doa.run_stratified
 ```
+
+Use the same accelerator flags with `run_stratified`; `--quick` validates two
+room-count strata before starting the full 110-FloorPlan study.
 
 This scans all 15,376 compiled FloorPlans, filters disconnected or malformed
 room graphs, and evaluates 4- through 14-room homes. Every room-count stratum

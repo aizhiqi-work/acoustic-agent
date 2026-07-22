@@ -158,12 +158,42 @@ def load_model(index: int, resource: FloorplanResource | None = None) -> Floorpl
     return FloorplanModel(index, loader.record(index))
 
 
-def candidate_nodes(model: FloorplanModel, *, height_m: float = 2.2) -> list[SensorNode]:
+def candidate_nodes(
+    model: FloorplanModel,
+    *,
+    height_m: float = 2.2,
+    positions_per_room: int = 1,
+) -> list[SensorNode]:
     nodes: list[SensorNode] = []
+    positions_per_room = max(1, int(positions_per_room))
     for room_id in sorted(model.rooms):
         polygon = _safe_polygon(model.polygons[room_id], 0.28)
         center = polygon.representative_point()
         nodes.append(SensorNode(f"{room_id}:center", room_id, (float(center.x), float(center.y), float(height_m))))
+        if positions_per_room == 1:
+            continue
+        points = _polygon_grid(model.polygons[room_id], spacing_m=0.7, margin_m=0.32)
+        selected = [np.asarray([center.x, center.y], dtype=float)]
+        remaining = [np.asarray(point, dtype=float) for point in points]
+        for position_index in range(1, positions_per_room):
+            if remaining:
+                chosen_index = max(
+                    range(len(remaining)),
+                    key=lambda index: min(
+                        float(np.linalg.norm(remaining[index] - other)) for other in selected
+                    ),
+                )
+                chosen = remaining.pop(chosen_index)
+            else:
+                chosen = selected[-1]
+            selected.append(chosen)
+            nodes.append(
+                SensorNode(
+                    f"{room_id}:aux:{position_index}",
+                    room_id,
+                    (float(chosen[0]), float(chosen[1]), float(height_m)),
+                )
+            )
     return nodes
 
 
@@ -210,15 +240,16 @@ def place_nodes(
     mode: str,
     risk_quantile: float,
     method: str = "topology_greedy",
+    candidates: Sequence[SensorNode] | None = None,
 ) -> list[SensorNode]:
-    candidates = candidate_nodes(model)
-    count = min(max(int(count), 1), len(candidates))
+    available = list(candidates) if candidates is not None else candidate_nodes(model)
+    count = min(max(int(count), 1), len(available))
     if method == "largest_rooms":
-        return sorted(candidates, key=lambda node: float(model.rooms[node.room_id]["area_m2"]), reverse=True)[:count]
+        return sorted(available, key=lambda node: float(model.rooms[node.room_id]["area_m2"]), reverse=True)[:count]
     if method == "farthest_rooms":
-        selected = [max(candidates, key=lambda node: float(model.rooms[node.room_id]["area_m2"]))]
+        selected = [max(available, key=lambda node: float(model.rooms[node.room_id]["area_m2"]))]
         while len(selected) < count:
-            remaining = [node for node in candidates if node not in selected]
+            remaining = [node for node in available if node not in selected]
             selected.append(
                 max(
                     remaining,
@@ -234,7 +265,7 @@ def place_nodes(
     structural_points = sample_target_points(model, points_per_room=3, seed=17_000 + model.index, spacing_m=0.7)
     selected: list[SensorNode] = []
     while len(selected) < count:
-        remaining = [node for node in candidates if node not in selected]
+        remaining = [node for node in available if node not in selected]
         selected.append(
             max(
                 remaining,
@@ -341,11 +372,22 @@ def localize_hybrid(
 
 
 class AcousticMeasurementGenerator:
-    def __init__(self, output_dir: str | Path, *, quality: str = "preview") -> None:
+    def __init__(
+        self,
+        output_dir: str | Path,
+        *,
+        quality: str = "preview",
+        rt_accelerator: str = "numba",
+        rt_precision: str = "float64",
+        rt_cuda_device: int = 0,
+    ) -> None:
         self.output_dir = Path(output_dir)
         self.cache_dir = self.output_dir / "measurement-cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.quality = str(quality)
+        self.rt_accelerator = str(rt_accelerator)
+        self.rt_precision = str(rt_precision)
+        self.rt_cuda_device = int(rt_cuda_device)
         self.probe = broadband_probe(FS, duration_s=0.35, seed=20260722)
 
     def array(
@@ -442,6 +484,9 @@ class AcousticMeasurementGenerator:
             late_tail=False,
             collect_visual_paths=False,
             render_ambisonics=False,
+            rt_accelerator=self.rt_accelerator,
+            rt_precision=self.rt_precision,
+            rt_cuda_device=self.rt_cuda_device,
         )
         return agent.run(config=config)
 
@@ -456,7 +501,10 @@ class AcousticMeasurementGenerator:
                 "node_room": node.room_id,
                 "channels": channels,
                 "quality": self.quality,
-                "version": 3,
+                "rt_accelerator": self.rt_accelerator,
+                "rt_precision": self.rt_precision,
+                "rt_cuda_device": self.rt_cuda_device,
+                "version": 4,
             },
             sort_keys=True,
         )
@@ -477,12 +525,21 @@ def run_distributed_study(
     test_indices: Sequence[int] = TEST_INDICES,
     quality: str = "preview",
     points_per_room: int = 1,
+    rt_accelerator: str = "numba",
+    rt_precision: str = "float64",
+    rt_cuda_device: int = 0,
 ) -> dict[str, Any]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     resource = FloorplanResource()
     risk_quantile, tuning_rows = tune_risk_quantile(train_indices, resource=resource)
-    generator = AcousticMeasurementGenerator(output, quality=quality)
+    generator = AcousticMeasurementGenerator(
+        output,
+        quality=quality,
+        rt_accelerator=rt_accelerator,
+        rt_precision=rt_precision,
+        rt_cuda_device=rt_cuda_device,
+    )
     result_rows: list[dict[str, Any]] = []
     placement_rows: list[dict[str, Any]] = []
 
@@ -652,6 +709,9 @@ def run_distributed_study(
         "selected_risk_quantile": risk_quantile,
         "tuning": tuning_rows,
         "quality": quality,
+        "rt_accelerator": rt_accelerator,
+        "rt_precision": rt_precision,
+        "rt_cuda_device": int(rt_cuda_device),
         "points_per_room": points_per_room,
         "selected_configuration": selected,
         "summary": summary_rows,
@@ -1055,6 +1115,7 @@ def _write_study(output: Path, payload: Mapping[str, Any]) -> None:
         f"- Unseen test FloorPlans: `{payload['test_indices']}`",
         f"- Selected minimax risk quantile: `{payload['selected_risk_quantile']}`",
         f"- RIR quality: `{payload['quality']}`",
+        f"- Reflection tracer: `{payload['rt_accelerator']}` / `{payload['rt_precision']}` / device `{payload['rt_cuda_device']}`",
         "- Placement uses only room polygons, room areas, and portal topology. Test target positions are never used.",
         "- Array nodes use SRP-PHAT DOA. Synchronized single microphones use onset TDOA. Hybrid fusion uses both.",
         "",

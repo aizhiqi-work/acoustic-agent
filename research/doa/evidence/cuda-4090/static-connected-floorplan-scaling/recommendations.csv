@@ -1,0 +1,11 @@
+room_count,evidence_tier,sensor_kind,recommended_nodes,physical_microphones,meets_thresholds,ci95_supports_thresholds,selection_basis,floorplans,cases,median_error_m,p90_error_m,room_accuracy,cross_room_cases,cross_room_median_error_m,cross_room_room_accuracy,median_error_ci95_low_m,median_error_ci95_high_m,p90_error_ci95_low_m,p90_error_ci95_high_m,room_accuracy_ci95_low,room_accuracy_ci95_high
+4,5-plan,single,5,5,True,True,ci95,5,20,0.7554,1.1272,1.0,3,0.5502,1.0,0.553,0.8657,0.8068,1.4891,1.0,1.0
+4,5-plan,array_4ch,4,16,True,True,ci95,5,20,0.4089,1.0735,0.95,0,,,0.3495,0.4828,0.5231,1.1967,0.85,1.0
+6,5-plan,single,8,8,True,True,ci95,5,30,0.4626,0.7951,1.0,5,0.3634,1.0,0.3534,0.597,0.6346,1.1557,1.0,1.0
+6,5-plan,array_4ch,5,20,True,True,ci95,5,30,0.314,0.8543,0.9333,5,1.0341,0.6,0.2245,0.439,0.6079,1.3511,0.8667,1.0
+8,5-plan,single,6,6,True,False,point_estimate_only,5,40,0.6751,1.9052,0.925,12,1.0481,0.75,0.5818,0.8132,1.0159,2.9203,0.825,1.0
+8,5-plan,array_4ch,7,28,True,True,ci95,5,40,0.3715,0.8766,0.95,5,0.735,0.8,0.2729,0.4457,0.6995,1.4588,0.85,1.0
+10,5-plan,single,8,8,True,True,ci95,5,50,0.4517,1.2283,1.0,15,0.4539,1.0,0.2571,0.6361,0.9585,1.3995,1.0,1.0
+10,5-plan,array_4ch,7,28,True,True,ci95,5,50,0.3884,1.3146,0.98,15,0.7695,1.0,0.3037,0.4872,0.706,1.884,0.94,1.0
+12,5-plan,single,8,8,True,True,ci95,5,60,0.4601,1.5695,0.9833,23,0.6788,0.9565,0.3976,0.6361,1.151,1.6289,0.95,1.0
+12,5-plan,array_4ch,8,32,True,True,ci95,5,60,0.3695,1.5262,0.9333,20,0.9818,0.95,0.3008,0.3789,1.2357,1.7883,0.8833,0.9833

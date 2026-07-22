@@ -13,8 +13,13 @@ def main() -> None:
     parser.add_argument("--train-indices", nargs="+", type=int, default=TRAIN_INDICES)
     parser.add_argument("--test-indices", nargs="+", type=int, default=TEST_INDICES)
     parser.add_argument("--points-per-room", type=int, default=1)
+    parser.add_argument("--accelerator", choices=("numba", "cuda", "auto"), default="numba")
+    parser.add_argument("--precision", choices=("float32", "float64"), default="float64")
+    parser.add_argument("--cuda-device", type=int, default=0)
     parser.add_argument("--quick", action="store_true", help="Use two train and two test FloorPlans.")
     args = parser.parse_args()
+    if args.accelerator == "cuda" and args.precision != "float32":
+        parser.error("CUDA experiments require --precision float32")
     train_indices = tuple(args.train_indices[:2]) if args.quick else tuple(args.train_indices)
     test_indices = tuple(args.test_indices[:2]) if args.quick else tuple(args.test_indices)
     payload = run_distributed_study(
@@ -23,6 +28,9 @@ def main() -> None:
         test_indices=test_indices,
         quality=args.quality,
         points_per_room=max(1, int(args.points_per_room)),
+        rt_accelerator=args.accelerator,
+        rt_precision=args.precision,
+        rt_cuda_device=args.cuda_device,
     )
     chosen = payload["selected_configuration"]
     print(f"Selected: {chosen['configuration']} ({chosen['channels']} channels)")

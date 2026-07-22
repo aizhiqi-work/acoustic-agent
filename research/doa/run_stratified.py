@@ -21,12 +21,17 @@ def main() -> None:
     parser.add_argument("--validation-per-count", type=int, default=10)
     parser.add_argument("--points-per-room", type=int, default=1)
     parser.add_argument("--seed", type=int, default=20260722)
+    parser.add_argument("--accelerator", choices=("numba", "cuda", "auto"), default="numba")
+    parser.add_argument("--precision", choices=("float32", "float64"), default="float64")
+    parser.add_argument("--cuda-device", type=int, default=0)
     parser.add_argument(
         "--quick",
         action="store_true",
         help="Run two room-count strata with one calibration and two validation FloorPlans each.",
     )
     args = parser.parse_args()
+    if args.accelerator == "cuda" and args.precision != "float32":
+        parser.error("CUDA experiments require --precision float32")
     room_counts = tuple(args.room_counts)
     calibration = max(1, int(args.calibration_per_count))
     validation = max(1, int(args.validation_per_count))
@@ -42,6 +47,9 @@ def main() -> None:
         quality=args.quality,
         points_per_room=max(1, int(args.points_per_room)),
         seed=int(args.seed),
+        rt_accelerator=args.accelerator,
+        rt_precision=args.precision,
+        rt_cuda_device=args.cuda_device,
     )
     print(f"Validation FloorPlans: {len(payload['validation_indices'])}")
     print(f"Acoustic cases: {len(payload['results'])}")
