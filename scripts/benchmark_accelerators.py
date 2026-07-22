@@ -11,8 +11,9 @@ import time
 from typing import Any, Sequence
 
 import numpy as np
+import numba
 
-from acoustic_agent import SimConfig, make_room, simulate_rir
+from acoustic_agent import AcousticAgent, SimConfig, make_room, simulate_rir
 from acoustic_agent.api import QUALITY_PRESETS
 from acoustic_agent.models import Room
 from acoustic_agent.steam_rt import RoomRayScene, trace_energy_field
@@ -24,6 +25,10 @@ class BenchmarkScene:
     room: Room
     source: tuple[float, float, float]
     receiver: tuple[float, float, float]
+    category: str = "geometry"
+    floorplan_index: int | None = None
+    room_count: int | None = None
+    furnishing: str | None = None
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -31,6 +36,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--accelerator", choices=("numba", "cuda"), required=True)
     parser.add_argument("--precision", choices=("float32", "float64"), required=True)
     parser.add_argument("--device", type=int, default=0)
+    parser.add_argument("--scene-set", choices=("geometry", "floorplan", "all"), default="geometry")
     parser.add_argument("--qualities", default="preview,simulation,reference")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--output", type=Path, default=None)
@@ -43,7 +49,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if unknown:
         parser.error(f"unknown qualities: {', '.join(unknown)}")
 
-    scenes = _benchmark_scenes()
+    scenes = _benchmark_scenes(args.scene_set)
     warmup_config = _config(args.accelerator, args.precision, args.device, rays=512, bounces=4)
     warmup_scene = RoomRayScene(scenes[0].room)
     warmup_started = time.perf_counter()
@@ -99,6 +105,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "surface_count": len(ray_scene.surfaces),
                 "intersection_backend": field.get("intersection_backend"),
                 "quality": quality,
+                "category": scene_case.category,
+                "floorplan_index": scene_case.floorplan_index,
+                "room_count": scene_case.room_count,
+                "furnishing": scene_case.furnishing,
                 "rays": int(config.rt_num_rays),
                 "bounces": int(config.rt_num_bounces),
                 "trace_s_median": statistics.median(trace_times),
@@ -127,6 +137,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "platform": platform.platform(),
             "processor": platform.processor(),
             "numpy": np.__version__,
+            "numba": numba.__version__,
+            "numba_threads": int(numba.get_num_threads()),
         },
         "scenes": [
             {
@@ -135,6 +147,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "receiver": scene.receiver,
                 "shape": scene.room.metadata.get("shape"),
                 "object_count": len(scene.room.metadata.get("objects", [])),
+                "category": scene.category,
+                "floorplan_index": scene.floorplan_index,
+                "room_count": scene.room_count,
+                "furnishing": scene.furnishing,
             }
             for scene in scenes
         ],
@@ -167,7 +183,7 @@ def _config(accelerator: str, precision: str, device: int, *, rays: int, bounces
     )
 
 
-def _benchmark_scenes() -> tuple[BenchmarkScene, ...]:
+def _benchmark_scenes(scene_set: str = "geometry") -> tuple[BenchmarkScene, ...]:
     simple = make_room("rectangle", size=(8.0, 6.0, 3.0), material_seed=17)
     medium = _with_objects(
         make_room("u_shape", size=(8.0, 6.0, 3.0), material_seed=17),
@@ -183,11 +199,56 @@ def _benchmark_scenes() -> tuple[BenchmarkScene, ...]:
         x_range=(2.0, 8.0),
         y_range=(2.0, 6.0),
     )
-    return (
+    geometry_scenes = (
         BenchmarkScene("simple_rectangle", simple, (0.8, 0.8, 1.4), (7.2, 1.4, 1.4)),
         BenchmarkScene("medium_u_furnished", medium, (0.8, 0.8, 1.4), (7.2, 1.4, 1.4)),
         BenchmarkScene("complex_round_furnished", complex_room, (1.2, 4.0, 1.4), (8.8, 4.0, 1.4)),
     )
+    if scene_set == "geometry":
+        return geometry_scenes
+    floorplan_scenes = _floorplan_benchmark_scenes()
+    if scene_set == "floorplan":
+        return floorplan_scenes
+    return geometry_scenes + floorplan_scenes
+
+
+def _floorplan_benchmark_scenes() -> tuple[BenchmarkScene, ...]:
+    cases = (
+        (12513, 5, None),
+        (12513, 5, "balanced"),
+        (11282, 10, None),
+        (11282, 10, "balanced"),
+    )
+    scenes: list[BenchmarkScene] = []
+    for index, expected_rooms, furnishing in cases:
+        agent = AcousticAgent.create(
+            scene="floorplan",
+            idx=index,
+            placement="cross_room",
+            seed=20260722,
+            furnishing=furnishing,
+            visualization=False,
+        )
+        if len(agent.rooms) != expected_rooms:
+            raise RuntimeError(
+                f"FloorPlan {index} expected {expected_rooms} rooms, found {len(agent.rooms)}"
+            )
+        if agent.default_source is None or agent.default_receiver is None:
+            raise RuntimeError(f"FloorPlan {index} did not resolve benchmark positions")
+        suffix = "furnished" if furnishing else "empty"
+        scenes.append(
+            BenchmarkScene(
+                name=f"floorplan_{expected_rooms}_rooms_{suffix}",
+                room=agent.room,
+                source=agent.default_source,
+                receiver=agent.default_receiver,
+                category="floorplan",
+                floorplan_index=index,
+                room_count=expected_rooms,
+                furnishing=furnishing or "none",
+            )
+        )
+    return tuple(scenes)
 
 
 def _with_objects(

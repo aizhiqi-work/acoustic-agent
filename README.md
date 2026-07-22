@@ -19,6 +19,7 @@ sources or receivers.
 - [Audio And Noise](#audio-and-noise)
 - [Motion And Batch Production](#motion-and-batch-production)
 - [Quality Presets](#quality-presets)
+- [CUDA Acceleration](#cuda-acceleration)
 - [Performance](#performance)
 - [Resources And Data Terms](#resources-and-data-terms)
 - [Accuracy Benchmark](#accuracy-benchmark)
@@ -40,7 +41,8 @@ sources or receivers.
 - Editable acoustic furniture with room-semantic automatic placement.
 - Static and multi-keyframe motion simulation.
 - Independent multi-source RIRs and speech, music, or noise auralization.
-- Numba JIT kernels, deterministic seeds, and reusable scene caches.
+- Selectable Numba FP64/FP32 and single-GPU CUDA FP32 reflection tracing.
+- Deterministic seeds and reusable CPU/GPU scene caches.
 
 ## Installation
 
@@ -284,6 +286,65 @@ solver can increase the effective depth without reducing the ray count:
 The requested and effective values are recorded in `result.metadata`. RIR
 length is independent of quality and is controlled with `duration_s`.
 
+## CUDA Acceleration
+
+The reflection tracer can run on one NVIDIA GPU in FP32. The default remains
+Numba FP64 so CPU-only installations and existing experiments keep the same
+behavior.
+
+```python
+from acoustic_agent import AcousticAgent, SimConfig
+
+config = SimConfig(
+    rt_accelerator="cuda",  # numba / cuda / auto
+    rt_precision="float32", # Numba: float32 or float64; CUDA: float32
+    rt_cuda_device=0,
+)
+
+agent = AcousticAgent.create(
+    scene="geometry",
+    room={"shape": "rectangle", "size": [8.0, 6.0, 2.8]},
+    source=[1.0, 1.0, 1.4],
+    receiver=[6.5, 4.5, 1.4],
+    config=config,
+)
+result = agent.run()
+```
+
+`auto` uses CUDA when the selected device is available and the requested
+precision is FP32. It otherwise falls back to Numba. An NVIDIA driver and a
+working Numba CUDA target are required:
+
+```bash
+python -c "from numba import cuda; print(cuda.is_available())"
+```
+
+Warm, single-device measurements below use Python 3.12, Numba 0.65, CUDA 12.4,
+the 131,072-ray `reference` preset, and the median of three runs. Times include
+the complete RIR call; speedups are relative to 64-thread Numba FP64.
+
+| Geometry workload | Numba FP64 | Numba FP32 | RTX A6000 FP32 | RTX 4090 FP32 |
+| --- | ---: | ---: | ---: | ---: |
+| Rectangle, 6 surfaces | 201.3 ms | 200.0 ms | 58.5 ms (3.44x) | 58.1 ms (3.47x) |
+| Furnished U room, 22 surfaces | 254.6 ms | 247.7 ms | 69.3 ms (3.68x) | 59.6 ms (4.27x) |
+| Furnished round room, 98 surfaces | 426.6 ms | 446.8 ms | 126.1 ms (3.38x) | 93.1 ms (4.58x) |
+
+The FloorPlan benchmark uses deterministic cross-room placements. FloorPlan
+12513 has 5 rooms; FloorPlan 11282 has 10 rooms.
+
+| FloorPlan workload | Surfaces | Numba FP64 | Numba FP32 | RTX A6000 FP32 | RTX 4090 FP32 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 5 rooms, empty | 68 | 145.9 ms | 155.3 ms | 84.3 ms (1.73x) | 74.1 ms (1.97x) |
+| 5 rooms, 12 furnishings | 83 | 169.8 ms | 166.9 ms | 90.3 ms (1.88x) | 77.6 ms (2.19x) |
+| 10 rooms, empty | 145 | 173.9 ms | 175.8 ms | 92.8 ms (1.87x) | 81.8 ms (2.13x) |
+| 10 rooms, 27 furnishings | 178 | 200.0 ms | 205.9 ms | 104.2 ms (1.92x) | 92.0 ms (2.17x) |
+
+The CUDA ray-tracing stage alone reached up to 11.40x on RTX A6000 and 13.28x
+on RTX 4090 in the formal reference run. Small preview workloads may be
+dominated by launch, transfer, and CPU post-processing overhead. See the
+[CUDA acceleration guide](docs/CUDA_ACCELERATION.md) for all quality levels,
+accuracy deltas, and reproduction commands.
+
 ## Performance
 
 Ray intersection can be selected independently of the quality preset:
@@ -367,7 +428,7 @@ Current branch verification:
 
 | Check | Result |
 | --- | ---: |
-| Unit and integration tests | 132 passed |
+| Unit and integration tests | 149 passed |
 | Quick accuracy profile | 9/9 passed |
 | Full accuracy profile | 9/9 passed |
 | Source distribution and wheel | Passed `twine check` |
@@ -421,6 +482,7 @@ python -m research.doa.run_stratified
 | --- | --- |
 | [Python API](docs/API.md) | Scenes, models, motion, batching, and compatibility |
 | [Configuration](docs/CONFIGURATION.md) | Shapes, materials, quality, and solver controls |
+| [CUDA Acceleration](docs/CUDA_ACCELERATION.md) | Single-GPU setup, precision controls, and RTX benchmarks |
 | [Floorplan](docs/FLOORPLAN.md) | ResPlan conversion, portals, citation, and data terms |
 | [Custom Floorplan](docs/CUSTOM_FLOORPLAN.md) | Text/image handoff and JSON schema |
 | [Material Database](docs/MATERIAL_DATABASE.md) | Semantic mapping, provenance, and sampling |
