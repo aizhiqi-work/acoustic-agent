@@ -40,6 +40,9 @@ def run_los_study(
     floorplan_idx: int = 0,
     geometry_angles_deg: Iterable[float] = (30.0, 105.0, 230.0),
     floorplan_seeds: Iterable[int] = (42, 43, 44),
+    rt_accelerator: str = "numba",
+    rt_precision: str = "float64",
+    rt_cuda_device: int = 0,
 ) -> list[dict[str, Any]]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -58,8 +61,15 @@ def run_los_study(
             for condition in conditions:
                 for receiver_name, receiver_model in RECEIVERS.items():
                     agent = _agent_for_placement(placement, receiver_model, quality)
-                    config = _condition_config(agent.config, condition)
+                    config = _condition_config(
+                        agent.config,
+                        condition,
+                        rt_accelerator=rt_accelerator,
+                        rt_precision=rt_precision,
+                        rt_cuda_device=rt_cuda_device,
+                    )
                     result = agent.run(config=config)
+                    reflections = result.metadata.get("steam_audio", {}).get("reflections", {})
                     visibility = float(result.metadata.get("steam_audio", {}).get("direct", {}).get("occlusion", 0.0))
                     if visibility < 0.999:
                         raise RuntimeError(f"LOS case became occluded: {placement['id']} ({visibility:.3f})")
@@ -127,11 +137,24 @@ def run_los_study(
                             "direct_visibility": round(visibility, 4),
                             "floorplan_idx": placement.get("floorplan_idx"),
                             "seed": placement.get("seed"),
+                            "rt_accelerator": reflections.get(
+                                "accelerator",
+                                "disabled" if condition == "direct" else config.rt_accelerator,
+                            ),
+                            "rt_precision": reflections.get("precision", config.rt_precision),
+                            "rt_cuda_device": int(config.rt_cuda_device),
                             "artifact": f"{stem}.npz",
                         }
                     )
 
-    _write_results(output, rows, quality)
+    _write_results(
+        output,
+        rows,
+        quality,
+        rt_accelerator=rt_accelerator,
+        rt_precision=rt_precision,
+        rt_cuda_device=rt_cuda_device,
+    )
     return rows
 
 
@@ -229,7 +252,19 @@ def _agent_for_placement(placement: Mapping[str, Any], receiver_model: Mapping[s
     )
 
 
-def _condition_config(config: Any, condition: str) -> Any:
+def _condition_config(
+    config: Any,
+    condition: str,
+    *,
+    rt_accelerator: str = "numba",
+    rt_precision: str = "float64",
+    rt_cuda_device: int = 0,
+) -> Any:
+    common = {
+        "rt_accelerator": str(rt_accelerator),
+        "rt_precision": str(rt_precision),
+        "rt_cuda_device": int(rt_cuda_device),
+    }
     if condition == "direct":
         return replace(
             config,
@@ -242,20 +277,48 @@ def _condition_config(config: Any, condition: str) -> Any:
             rt_num_rays=64,
             rt_num_bounces=1,
             collect_visual_paths=False,
+            **common,
         )
     if condition == "room":
-        return replace(config, duration_s=1.2, rt_duration_s=1.2, collect_visual_paths=False)
+        return replace(
+            config,
+            duration_s=1.2,
+            rt_duration_s=1.2,
+            collect_visual_paths=False,
+            **common,
+        )
     raise ValueError("conditions may only contain direct and room")
 
 
-def _write_results(output: Path, rows: list[dict[str, Any]], quality: str) -> None:
+def _write_results(
+    output: Path,
+    rows: list[dict[str, Any]],
+    quality: str,
+    *,
+    rt_accelerator: str,
+    rt_precision: str,
+    rt_cuda_device: int,
+) -> None:
     fields = list(rows[0]) if rows else []
     with (output / "summary.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
     (output / "summary.json").write_text(
-        json.dumps({"configuration": {"fs": FS, "speed_of_sound_m_s": C, "quality": quality}, "results": rows}, indent=2),
+        json.dumps(
+            {
+                "configuration": {
+                    "fs": FS,
+                    "speed_of_sound_m_s": C,
+                    "quality": quality,
+                    "rt_accelerator": rt_accelerator,
+                    "rt_precision": rt_precision,
+                    "rt_cuda_device": int(rt_cuda_device),
+                },
+                "results": rows,
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
@@ -269,6 +332,7 @@ def _write_results(output: Path, rows: list[dict[str, Any]], quality: str) -> No
         f"- Sample rate: {FS} Hz",
         f"- Speed of sound: {C:.1f} m/s",
         f"- Simulation quality: `{quality}`",
+        f"- Reflection tracer: `{rt_accelerator}` / `{rt_precision}` / device `{rt_cuda_device}`",
         "- Linear-array errors are evaluated against the mirror-equivalent half-plane bearing.",
         "- `direct` isolates the direct path; `room` retains reflections and late reverberation while LOS remains open.",
         "",

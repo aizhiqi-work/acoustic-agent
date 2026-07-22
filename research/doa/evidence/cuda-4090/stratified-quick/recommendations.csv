@@ -1,0 +1,3 @@
+room_count,recommended_microphones,meets_thresholds,floorplans,cases,median_error_m,p90_error_m,room_accuracy,cross_room_cases,cross_room_median_error_m,cross_room_room_accuracy,median_error_ci95_low_m,median_error_ci95_high_m,p90_error_ci95_low_m,p90_error_ci95_high_m,room_accuracy_ci95_low,room_accuracy_ci95_high
+4,4,False,2,8,1.0735,2.1015,1.0,0,,,0.7397,1.4659,1.1531,3.0299,1.0,1.0
+5,5,True,2,10,0.6419,1.1759,1.0,0,,,0.5573,0.6427,1.1257,1.6274,1.0,1.0

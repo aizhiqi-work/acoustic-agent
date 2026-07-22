@@ -341,11 +341,22 @@ def localize_hybrid(
 
 
 class AcousticMeasurementGenerator:
-    def __init__(self, output_dir: str | Path, *, quality: str = "preview") -> None:
+    def __init__(
+        self,
+        output_dir: str | Path,
+        *,
+        quality: str = "preview",
+        rt_accelerator: str = "numba",
+        rt_precision: str = "float64",
+        rt_cuda_device: int = 0,
+    ) -> None:
         self.output_dir = Path(output_dir)
         self.cache_dir = self.output_dir / "measurement-cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.quality = str(quality)
+        self.rt_accelerator = str(rt_accelerator)
+        self.rt_precision = str(rt_precision)
+        self.rt_cuda_device = int(rt_cuda_device)
         self.probe = broadband_probe(FS, duration_s=0.35, seed=20260722)
 
     def array(
@@ -442,6 +453,9 @@ class AcousticMeasurementGenerator:
             late_tail=False,
             collect_visual_paths=False,
             render_ambisonics=False,
+            rt_accelerator=self.rt_accelerator,
+            rt_precision=self.rt_precision,
+            rt_cuda_device=self.rt_cuda_device,
         )
         return agent.run(config=config)
 
@@ -456,7 +470,10 @@ class AcousticMeasurementGenerator:
                 "node_room": node.room_id,
                 "channels": channels,
                 "quality": self.quality,
-                "version": 3,
+                "rt_accelerator": self.rt_accelerator,
+                "rt_precision": self.rt_precision,
+                "rt_cuda_device": self.rt_cuda_device,
+                "version": 4,
             },
             sort_keys=True,
         )
@@ -477,12 +494,21 @@ def run_distributed_study(
     test_indices: Sequence[int] = TEST_INDICES,
     quality: str = "preview",
     points_per_room: int = 1,
+    rt_accelerator: str = "numba",
+    rt_precision: str = "float64",
+    rt_cuda_device: int = 0,
 ) -> dict[str, Any]:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     resource = FloorplanResource()
     risk_quantile, tuning_rows = tune_risk_quantile(train_indices, resource=resource)
-    generator = AcousticMeasurementGenerator(output, quality=quality)
+    generator = AcousticMeasurementGenerator(
+        output,
+        quality=quality,
+        rt_accelerator=rt_accelerator,
+        rt_precision=rt_precision,
+        rt_cuda_device=rt_cuda_device,
+    )
     result_rows: list[dict[str, Any]] = []
     placement_rows: list[dict[str, Any]] = []
 
@@ -652,6 +678,9 @@ def run_distributed_study(
         "selected_risk_quantile": risk_quantile,
         "tuning": tuning_rows,
         "quality": quality,
+        "rt_accelerator": rt_accelerator,
+        "rt_precision": rt_precision,
+        "rt_cuda_device": int(rt_cuda_device),
         "points_per_room": points_per_room,
         "selected_configuration": selected,
         "summary": summary_rows,
@@ -1055,6 +1084,7 @@ def _write_study(output: Path, payload: Mapping[str, Any]) -> None:
         f"- Unseen test FloorPlans: `{payload['test_indices']}`",
         f"- Selected minimax risk quantile: `{payload['selected_risk_quantile']}`",
         f"- RIR quality: `{payload['quality']}`",
+        f"- Reflection tracer: `{payload['rt_accelerator']}` / `{payload['rt_precision']}` / device `{payload['rt_cuda_device']}`",
         "- Placement uses only room polygons, room areas, and portal topology. Test target positions are never used.",
         "- Array nodes use SRP-PHAT DOA. Synchronized single microphones use onset TDOA. Hybrid fusion uses both.",
         "",
