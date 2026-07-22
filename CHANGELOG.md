@@ -5,6 +5,13 @@ semantic versioning after the initial `0.x` research releases.
 
 ## Unreleased
 
+### Added
+
+- Single-GPU CUDA FP32 reflection tracing with linear and BVH traversal,
+  deterministic device caches, and runtime timing metadata.
+- Explicit Numba FP32/FP64 precision selection and automatic CPU fallback.
+- Reproducible RTX 4090/A6000 accelerator benchmarks and documentation.
+
 ## 0.1.1 - 2026-07-22
 
 ### Added
