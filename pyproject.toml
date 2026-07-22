@@ -48,6 +48,10 @@ dev = [
   "pytest>=7",
   "twine>=5",
 ]
+research = [
+  "pesq>=0.0.4",
+  "pystoi>=0.4",
+]
 
 [project.scripts]
 acoustic-agent = "acoustic_agent.cli:main"
