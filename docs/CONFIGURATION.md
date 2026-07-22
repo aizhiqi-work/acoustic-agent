@@ -184,6 +184,9 @@ Common controls:
 | `direct_transmission` | `True` | Add transmitted direct energy |
 | `diffraction_enabled` | `True` | Find diffraction paths |
 | `diffraction_order` | `3` | Maximum diffraction order |
+| `rt_accelerator` | `numba` | Reflection tracer: `numba`, `cuda`, or `auto` |
+| `rt_precision` | `float64` | Numba precision: `float32` or `float64`; CUDA requires `float32` |
+| `rt_cuda_device` | `0` | CUDA device index for the current process |
 | `rt_num_rays` | `32768` | Traced source rays |
 | `rt_num_bounces` | `96` | Base reflection depth |
 | `rt_receiver_radius_m` | `0.25` | Receiver hit radius |
@@ -201,6 +204,16 @@ fields. `AcousticAgent` resolves the two output-only fields to `False` for its
 default Mono headless path; low-level `simulate_rir` keeps them enabled for
 backward compatibility. Record the complete resolved config with generated
 data.
+
+CUDA is opt-in so the same configuration remains reproducible across CPU-only
+and GPU hosts. Use `rt_accelerator="cuda", rt_precision="float32"` for an
+explicit single-GPU run. `auto` selects CUDA when the configured device is
+available and otherwise falls back to Numba. The selected accelerator,
+precision, device, kernel time, and transfer time are recorded in reflection
+metadata.
+
+Implementation details, benchmark methodology, and RTX 4090/A6000 results are
+in [`CUDA_ACCELERATION.md`](CUDA_ACCELERATION.md).
 
 ## HTTP Endpoints
 
