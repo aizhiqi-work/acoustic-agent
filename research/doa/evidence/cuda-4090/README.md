@@ -16,6 +16,7 @@ committed.
 - Precision: `float32`
 - CUDA device inside the isolated process: `0`
 - Test suite: 153 passed
+- Static-scaling focused tests: 8 passed
 
 The process exposed only the selected RTX 4090 through `CUDA_VISIBLE_DEVICES`.
 Every output payload records the accelerator, precision, and logical device.
@@ -34,6 +35,13 @@ python -m research.doa.run_distributed \
   --quality preview \
   --accelerator cuda --precision float32 --cuda-device 0 \
   --output-dir research/results/distributed-floorplan-cuda-4090
+
+python -m research.doa.run_static_scaling \
+  --quality preview \
+  --room-counts 4 6 8 10 12 \
+  --calibration-per-count 5 --validation-per-count 5 \
+  --accelerator cuda --precision float32 --cuda-device 0 \
+  --output-dir research/results/static-connected-floorplan-scaling-cuda-4090-5x5
 ```
 
 The same commands were repeated at `simulation` quality. The stratified
@@ -51,6 +59,8 @@ rendering, localization, and report generation.
 | Distributed FloorPlan | Preview | 35 static targets plus 24 motion frames | 127.22 s |
 | Distributed FloorPlan | Simulation | 35 static targets plus 24 motion frames | 141.96 s |
 | Stratified quick | Preview | 4 FloorPlans, 46 localization cases | 24.27 s uncached |
+| Static connected FloorPlan scaling | Preview | 25 FloorPlans, 2,800 localization cases | 623.9 s uncached plan time |
+| Static result filtering and report | Preview | Same 25 FloorPlans | 10.4 s |
 
 The LOS Simulation run was not slower than Preview after warmup despite using
 four times as many rays. Distributed runtime rose by 11.6% because the CPU
@@ -111,3 +121,30 @@ fixed thresholds for the sampled 4-room subset (1.0735 m median, 2.1015 m P90,
 The run also exposed and fixed a report-only bug: quick samples do not always
 contain every area bin. Missing bins now render as `0 / n/a` instead of raising
 `KeyError` after acoustic simulation completes.
+
+## Static Whole-Home Position And Room
+
+The study removes motion and estimates only global `(x, y)` plus `room_id`. It
+admits only fully connected, geometry-valid FloorPlans, with two candidate
+installation positions per room. It evaluates five room-count strata: 4, 6,
+8, 10, and 12 rooms, with five area-stratified validation FloorPlans in each.
+
+Globally synchronized single microphones use onset TDOA. Four-channel array
+nodes use SRP-PHAT DOA plus synchronized inter-array TDOA. The accuracy gate is
+median error <= 1 m, P90 <= 2 m, and room accuracy >= 85%. Recommendations
+prefer the smallest configuration whose FloorPlan-clustered 95% bootstrap
+interval supports all three gates.
+
+For 4, 6, 8, 10, and 12 rooms, the selected single-microphone counts are 5, 8,
+6, 8, and 8. The selected 4-channel array-node counts are 4, 5, 7, 7, and 8,
+equivalent to 16, 20, 28, 28, and 32 physical microphones. Arrays have lower
+median position error, but require substantially more physical microphones.
+The 8-room single-mic point estimate passes the gate, but no tested
+configuration up to eight singles has 95% interval support for all three
+metrics. The other four selected single-mic configurations and all five array
+configurations have 95% interval support in this five-plan study.
+
+Detailed recommendations, per-configuration metrics, split membership,
+runtime rows, and area sensitivity are under
+`static-connected-floorplan-scaling/`. Large measurement caches remain
+uncommitted under `research/results/`.

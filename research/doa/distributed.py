@@ -158,12 +158,42 @@ def load_model(index: int, resource: FloorplanResource | None = None) -> Floorpl
     return FloorplanModel(index, loader.record(index))
 
 
-def candidate_nodes(model: FloorplanModel, *, height_m: float = 2.2) -> list[SensorNode]:
+def candidate_nodes(
+    model: FloorplanModel,
+    *,
+    height_m: float = 2.2,
+    positions_per_room: int = 1,
+) -> list[SensorNode]:
     nodes: list[SensorNode] = []
+    positions_per_room = max(1, int(positions_per_room))
     for room_id in sorted(model.rooms):
         polygon = _safe_polygon(model.polygons[room_id], 0.28)
         center = polygon.representative_point()
         nodes.append(SensorNode(f"{room_id}:center", room_id, (float(center.x), float(center.y), float(height_m))))
+        if positions_per_room == 1:
+            continue
+        points = _polygon_grid(model.polygons[room_id], spacing_m=0.7, margin_m=0.32)
+        selected = [np.asarray([center.x, center.y], dtype=float)]
+        remaining = [np.asarray(point, dtype=float) for point in points]
+        for position_index in range(1, positions_per_room):
+            if remaining:
+                chosen_index = max(
+                    range(len(remaining)),
+                    key=lambda index: min(
+                        float(np.linalg.norm(remaining[index] - other)) for other in selected
+                    ),
+                )
+                chosen = remaining.pop(chosen_index)
+            else:
+                chosen = selected[-1]
+            selected.append(chosen)
+            nodes.append(
+                SensorNode(
+                    f"{room_id}:aux:{position_index}",
+                    room_id,
+                    (float(chosen[0]), float(chosen[1]), float(height_m)),
+                )
+            )
     return nodes
 
 
@@ -210,15 +240,16 @@ def place_nodes(
     mode: str,
     risk_quantile: float,
     method: str = "topology_greedy",
+    candidates: Sequence[SensorNode] | None = None,
 ) -> list[SensorNode]:
-    candidates = candidate_nodes(model)
-    count = min(max(int(count), 1), len(candidates))
+    available = list(candidates) if candidates is not None else candidate_nodes(model)
+    count = min(max(int(count), 1), len(available))
     if method == "largest_rooms":
-        return sorted(candidates, key=lambda node: float(model.rooms[node.room_id]["area_m2"]), reverse=True)[:count]
+        return sorted(available, key=lambda node: float(model.rooms[node.room_id]["area_m2"]), reverse=True)[:count]
     if method == "farthest_rooms":
-        selected = [max(candidates, key=lambda node: float(model.rooms[node.room_id]["area_m2"]))]
+        selected = [max(available, key=lambda node: float(model.rooms[node.room_id]["area_m2"]))]
         while len(selected) < count:
-            remaining = [node for node in candidates if node not in selected]
+            remaining = [node for node in available if node not in selected]
             selected.append(
                 max(
                     remaining,
@@ -234,7 +265,7 @@ def place_nodes(
     structural_points = sample_target_points(model, points_per_room=3, seed=17_000 + model.index, spacing_m=0.7)
     selected: list[SensorNode] = []
     while len(selected) < count:
-        remaining = [node for node in candidates if node not in selected]
+        remaining = [node for node in available if node not in selected]
         selected.append(
             max(
                 remaining,

@@ -1,0 +1,7 @@
+sensor_kind,relative_area_bin,node_count_min,node_count_max,physical_microphones,physical_microphones_min,physical_microphones_max,floorplans,cases,median_error_m,p90_error_m,room_accuracy,cross_room_cases,cross_room_median_error_m,cross_room_room_accuracy
+array_4ch,large,4,8,,16,32,8,68,0.3467,1.427,0.9853,17,0.9504,1.0
+array_4ch,medium,4,8,,16,32,6,46,0.3939,1.1657,0.9565,9,0.6987,0.8889
+array_4ch,small,4,8,,16,32,11,86,0.3548,1.2286,0.9186,19,0.7695,0.8421
+single,large,5,8,,5,8,8,68,0.575,1.5679,0.9853,20,0.4641,0.95
+single,medium,5,8,,5,8,6,46,0.5966,1.1926,0.9565,13,0.6113,0.8462
+single,small,5,8,,5,8,11,86,0.545,1.2423,0.9884,25,0.7714,0.96
