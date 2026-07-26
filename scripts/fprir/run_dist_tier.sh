@@ -79,7 +79,7 @@ run_beamforming() {
     --rt-accelerator cuda \
     --rt-precision float32 \
     --rt-cuda-device 0 \
-    --seed 20260726
+    --seed 20260723
 }
 
 case "${STAGE}" in
