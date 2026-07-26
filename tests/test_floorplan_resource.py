@@ -91,6 +91,30 @@ def test_acoustic_agent_from_floorplan_runs_without_manual_positions():
     assert result.metadata["floorplan"]["index"] == 0
 
 
+def test_floorplan_resource_removes_redundant_closing_outer_corner():
+    resource = FloorplanResource()
+
+    for index in (1237, 4519, 6742, 9149):
+        raw = resource.record(index)["corners"]
+        assert raw[0] == raw[-1]
+
+        scene = resource.scene(index)
+        corners = scene["room"]["corners"]
+        assert corners[0] != corners[-1]
+
+        agent = AcousticAgent.from_floorplan(
+            index,
+            seed=42,
+            config=SimConfig(
+                fs=8000,
+                duration_s=0.01,
+                reflections_enabled=False,
+                diffraction_enabled=False,
+            ),
+        )
+        assert agent.run().rir.shape == (1, 80)
+
+
 def test_floorplan_material_rt60_uses_source_room_surfaces_and_open_portals():
     agent = AcousticAgent.from_floorplan(
         0,

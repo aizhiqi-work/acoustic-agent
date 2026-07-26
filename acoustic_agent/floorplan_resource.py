@@ -189,6 +189,7 @@ class FloorplanResource:
         resolved = self.resolve_index(index)
         record = self.record(resolved)
         rooms = record["rooms"]
+        outer_corners = _open_polygon_corners(record["corners"])
         room_by_id = {str(room["id"]): room for room in rooms}
         selected = _room_by_id(room_by_id, room_id) if room_id else _default_room(rooms)
         if receiver_room_id == "auto":
@@ -303,7 +304,7 @@ class FloorplanResource:
             "room": {
                 "shape": "floorplan",
                 "size": [float(record["size"][0]), float(record["size"][1]), float(height_m)],
-                "corners": record["corners"],
+                "corners": outer_corners,
                 "metadata": room_metadata,
             },
             "source": [float(value) for value in source],
@@ -449,6 +450,19 @@ def _point_segment_distance(point: Sequence[float], a: Sequence[float], b: Seque
 
 def _distance_2d(a: Sequence[float], b: Sequence[float]) -> float:
     return math.hypot(float(a[0]) - float(b[0]), float(a[1]) - float(b[1]))
+
+
+def _open_polygon_corners(corners: Sequence[Sequence[float]]) -> list[list[float]]:
+    """Remove redundant consecutive/closing points without changing the boundary."""
+
+    normalized: list[list[float]] = []
+    for raw in corners:
+        point = [float(raw[0]), float(raw[1])]
+        if not normalized or _distance_2d(normalized[-1], point) > 1e-8:
+            normalized.append(point)
+    if len(normalized) > 1 and _distance_2d(normalized[0], normalized[-1]) <= 1e-8:
+        normalized.pop()
+    return normalized
 
 
 def _stable_seed(index: int, source_room: str, receiver_room: str) -> int:
