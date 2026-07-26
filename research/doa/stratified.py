@@ -527,9 +527,10 @@ def _write_outputs(output: Path, payload: Mapping[str, Any]) -> None:
         f"- Main room-count strata: **{payload['room_counts'][0]}-{payload['room_counts'][-1]} rooms**.",
         f"- Calibration: **{payload['calibration_per_room_count']} FloorPlans per room count**.",
         f"- Unseen validation: **{payload['validation_per_room_count']} FloorPlans per room count**.",
-        f"- Acoustic cases: one source point per room at `{payload['quality']}` RIR quality.",
+        f"- Acoustic cases: **{payload['points_per_room']}** source point(s) per room "
+        f"at `{payload['quality']}` RIR quality.",
         f"- Reflection tracer: `{payload['rt_accelerator']}` / `{payload['rt_precision']}` / device `{payload['rt_cuda_device']}`.",
-        "- Validation FloorPlans are selected one per area decile within each room-count stratum.",
+        "- Validation FloorPlans are area-stratified within each room-count stratum.",
         "- Confidence intervals resample entire FloorPlans, not individual source points.",
         "",
         "## Database population",
