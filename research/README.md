@@ -10,6 +10,9 @@ Acoustic Agent API. It is intentionally separate from `examples/`:
 
 Current studies:
 
+- [`fprir/`](fprir/README.md): tiered far-field adaptation RIR corpora and
+  distributed-localization/beamforming evaluation suites, including the RTX
+  4090 Quick validation snapshot.
 - [`doa/`](doa/README.md): line-of-sight direction-of-arrival baselines for
   HRTF, linear-array, and circular-array receivers in Geometry and FloorPlan
   scenes, plus [distributed whole-home localization and tracking](doa/DISTRIBUTED_FLOORPLAN.md).
