@@ -466,7 +466,8 @@ if cuda is not None:
         disc = b * b - c
         if disc < np.float32(0.0):
             return False
-        root = -b - math.sqrt(max(disc, np.float32(0.0)))
+        clipped_disc = disc if disc > np.float32(0.0) else np.float32(0.0)
+        root = -b - math.sqrt(clipped_disc)
         return root >= np.float32(0.0) and root < max_distance
 
 
@@ -576,7 +577,8 @@ if cuda is not None:
         )
         accum_distance = np.float32(0.0)
         alive = True
-        ray_scale = _FOUR_PI / max(directions.shape[0], 1)
+        ray_count = directions.shape[0] if directions.shape[0] > 1 else 1
+        ray_scale = _FOUR_PI / ray_count
 
         for bounce in range(num_bounces):
             cuda.atomic.max(actual_bounces, 0, bounce + 1)
@@ -663,9 +665,11 @@ if cuda is not None:
                     if not occluded:
                         diffuse = _INV_PI * scattering[surf] * facing
                         halfx, halfy, halfz = _normalize3_cuda(sdx - direction[0], sdy - direction[1], sdz - direction[2])
-                        cos_half = max(np.float32(0.0), halfx * nx + halfy * ny + halfz * nz)
+                        raw_cos_half = halfx * nx + halfy * ny + halfz * nz
+                        cos_half = raw_cos_half if raw_cos_half > np.float32(0.0) else np.float32(0.0)
                         specular = (specular_exponent + np.float32(2.0)) * _INV_8PI * (np.float32(1.0) - scattering[surf]) * (cos_half ** specular_exponent)
-                        distance_term = _INV_4PI / (max(distance_to_source, irradiance_min_distance) ** 2)
+                        irradiance_distance = distance_to_source if distance_to_source > irradiance_min_distance else irradiance_min_distance
+                        distance_term = _INV_4PI / (irradiance_distance ** 2)
                         source_cosine = -(source_forward_vector[0] * sdx + source_forward_vector[1] * sdy + source_forward_vector[2] * sdz)
                         source_gain = abs((np.float32(1.0) - dipole_weight) + dipole_weight * source_cosine) ** dipole_power
                         relative_delay = (accum_distance + distance + distance_to_source) / speed_of_sound - direct_delay
@@ -684,7 +688,8 @@ if cuda is not None:
                             if visual_slot >= 0 and energy_sum > visual_gains[visual_slot] * visual_gains[visual_slot]:
                                 visual_orders[visual_slot] = bounce + 1
                                 visual_distances[visual_slot] = accum_distance + distance + distance_to_source
-                                visual_gains[visual_slot] = math.sqrt(max(energy_sum, np.float32(0.0)))
+                                clipped_energy = energy_sum if energy_sum > np.float32(0.0) else np.float32(0.0)
+                                visual_gains[visual_slot] = math.sqrt(clipped_energy)
                             cuda.atomic.add(contrib_counts, surf, 1)
                             cuda.atomic.add(surface_energy, surf, energy_sum)
 
