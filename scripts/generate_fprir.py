@@ -755,6 +755,15 @@ def _load_index(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _shard_index_is_complete(
+    records: Sequence[Mapping[str, Any]],
+    jobs: Sequence[DatasetJob],
+) -> bool:
+    expected = {job.item_id for job in jobs}
+    actual = {str(record.get("group", "")) for record in records}
+    return len(records) == len(jobs) and actual == expected
+
+
 def _chunks(values: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
     size = max(1, int(size))
     for start in range(0, len(values), size):
@@ -789,9 +798,17 @@ def _run_jobs(
         index_path = shard_dir / f"fprir-{shard_index:05d}.jsonl"
         if shard_path.is_file() and index_path.is_file():
             existing = _load_index(index_path)
-            all_records.extend(existing)
-            progress.update(len(shard_jobs), detail=f"resume shard {shard_index:05d}")
-            continue
+            if _shard_index_is_complete(existing, shard_jobs):
+                all_records.extend(existing)
+                progress.update(len(shard_jobs), detail=f"resume shard {shard_index:05d}")
+                continue
+            progress.update(0, detail=f"rebuild incomplete shard {shard_index:05d}")
+        shard_item_ids = {job.item_id for job in shard_jobs}
+        errors = [
+            error
+            for error in errors
+            if str(error.get("item_id", "")) not in shard_item_ids
+        ]
         generated: list[GeneratedItem] = []
         if int(workers) <= 1:
             for job in shard_jobs:
@@ -1675,6 +1692,11 @@ def main() -> None:
         f"{generated['failed_configurations']:,} failures"
     )
     print(f"Statistics: {svg_path}")
+    if errors:
+        raise SystemExit(
+            f"FP-RIR generation completed with {len(errors)} failed configuration(s); "
+            f"inspect {output_dir / 'errors.jsonl'}"
+        )
 
 
 if __name__ == "__main__":
