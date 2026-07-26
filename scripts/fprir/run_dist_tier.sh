@@ -6,34 +6,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"
 
-TIER="${1:-quick}"
+TIER="${1:-5}"
 STAGE="${DIST_STAGE:-all}"
 ROOM_COUNTS=(4 6 8 10 12)
 
 case "${TIER}" in
-  quick)
-    QUALITY=preview
-    CALIBRATION=1
-    VALIDATION=2
-    POINTS=2
-    PLANS_PER_COUNT=1
-    ;;
-  standard)
+  5)
     QUALITY=simulation
-    CALIBRATION=5
-    VALIDATION=10
+    CALIBRATION=2
+    VALIDATION=3
     POINTS=4
     PLANS_PER_COUNT=5
     ;;
-  extended)
+  10)
     QUALITY=simulation
-    CALIBRATION=10
-    VALIDATION=20
+    CALIBRATION=4
+    VALIDATION=6
     POINTS=6
     PLANS_PER_COUNT=10
     ;;
   *)
-    echo "Usage: $0 {quick|standard|extended}" >&2
+    echo "Usage: $0 {5|10}" >&2
     exit 2
     ;;
 esac

@@ -6,22 +6,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "${SCRIPT_DIR}/common.sh"
 
-TIER="${1:-6k}"
+TIER="${1:-full}"
 case "${TIER}" in
   1k)
     FLOORPLANS=1000
     NESTED_SIZES=(1000)
     ;;
-  3k)
-    FLOORPLANS=3000
-    NESTED_SIZES=(1000 3000)
+  8k)
+    FLOORPLANS=8000
+    NESTED_SIZES=(1000 8000)
     ;;
-  6k)
-    FLOORPLANS=6000
-    NESTED_SIZES=(1000 3000 6000)
+  full)
+    FLOORPLANS=15376
+    NESTED_SIZES=(1000 8000 15376)
     ;;
   *)
-    echo "Usage: $0 {1k|3k|6k}" >&2
+    echo "Usage: $0 {1k|8k|full}" >&2
     exit 2
     ;;
 esac
@@ -29,7 +29,9 @@ esac
 FLOORPLANS="${FPRIR_MAX_FLOORPLANS:-${FLOORPLANS}}"
 QUALITY="${FPRIR_QUALITY:-simulation}"
 DURATION="${FPRIR_DURATION_S:-2.0}"
-MOTION_FRACTION="${FPRIR_MOTION_FRACTION:-0.1}"
+MOTION_FRACTION="${FPRIR_MOTION_FRACTION:-0.3}"
+SAME_ROOM_VARIANTS="${FPRIR_SAME_ROOM_VARIANTS:-2}"
+CROSS_ROOM_VARIANTS="${FPRIR_CROSS_ROOM_VARIANTS:-3}"
 
 IFS=', ' read -r -a GPUS <<< "${GPU_IDS:-${GPU_ID}}"
 if [[ "${#GPUS[@]}" -lt 1 ]]; then
@@ -88,6 +90,8 @@ for rank in "${!WORKER_GPUS[@]}"; do
       --quality "${QUALITY}" \
       --fs 16000 \
       --duration-s "${DURATION}" \
+      --same-room-variants "${SAME_ROOM_VARIANTS}" \
+      --cross-room-variants "${CROSS_ROOM_VARIANTS}" \
       --motion-fraction "${MOTION_FRACTION}" \
       --motion-spacing-m 0.25 \
       --shard-size 32 \

@@ -47,7 +47,7 @@ from acoustic_agent.floorplan_resource import FloorplanResource
 
 
 DATASET_VERSION = "fprir_v1"
-GENERATOR_REVISION = "2026-07-26.3"
+GENERATOR_REVISION = "2026-07-26.4"
 MATERIAL_PROFILE = {
     "wall": "auto",
     "floor": "auto",
@@ -72,6 +72,7 @@ HABITABLE_TYPES = {
 class DatasetJob:
     item_id: str
     floorplan_idx: int
+    variant_index: int
     split: str
     kind: str
     seed: int
@@ -92,6 +93,7 @@ class DatasetJob:
         return {
             "item_id": self.item_id,
             "floorplan_idx": self.floorplan_idx,
+            "variant_index": self.variant_index,
             "split": self.split,
             "kind": self.kind,
             "seed": self.seed,
@@ -291,6 +293,10 @@ def _build_jobs_for_floorplan(
     index: int,
     *,
     split: str,
+    variant_index: int,
+    include_same_room: bool,
+    include_cross_room: bool,
+    include_distributed: bool,
     max_distributed_mics: int,
     include_motion: bool,
     motion_distance_m: float,
@@ -302,36 +308,39 @@ def _build_jobs_for_floorplan(
     sources = _candidate_source_rooms(record)
     if not sources:
         return []
+    variant = max(0, int(variant_index))
     room_count = len(room_lookup)
-    base_seed = _stable_int(DATASET_VERSION, "scene", index) & 0x7FFFFFFF
-    material_seed = _stable_int(DATASET_VERSION, "material", index) & 0x7FFFFFFF
+    base_seed = _stable_int(DATASET_VERSION, "scene", index, variant) & 0x7FFFFFFF
+    material_seed = _stable_int(DATASET_VERSION, "material", index, variant) & 0x7FFFFFFF
     jobs: list[DatasetJob] = []
 
-    same_room = _choose_stable(sources, DATASET_VERSION, "same", index)
+    same_room = _choose_stable(sources, DATASET_VERSION, "same", index, variant)
     same_id = str(same_room["id"])
     same = _placement(resource, index, same_id, same_id, base_seed + 11)
     same_source = tuple(float(value) for value in same["source"])
     same_receiver = tuple(float(value) for value in same["receiver"])
-    jobs.append(
-        DatasetJob(
-            item_id=f"fp{index:05d}_same_mono",
-            floorplan_idx=index,
-            split=split,
-            kind="same_room_mono",
-            seed=base_seed + 11,
-            material_seed=material_seed,
-            room_count=room_count,
-            source_room=same_id,
-            source_room_type=str(same_room.get("type", "unknown")),
-            source=same_source,
-            receiver_rooms=(same_id,),
-            receiver_room_types=(str(same_room.get("type", "unknown")),),
-            receivers=(same_receiver,),
-            graph_distances=(0,),
-            euclidean_distances_m=(_euclidean(same_source, same_receiver),),
-            receiver_model={"type": "mono"},
+    if include_same_room:
+        jobs.append(
+            DatasetJob(
+                item_id=f"fp{index:05d}_v{variant:02d}_same_mono",
+                floorplan_idx=index,
+                variant_index=variant,
+                split=split,
+                kind="same_room_mono",
+                seed=base_seed + 11,
+                material_seed=material_seed,
+                room_count=room_count,
+                source_room=same_id,
+                source_room_type=str(same_room.get("type", "unknown")),
+                source=same_source,
+                receiver_rooms=(same_id,),
+                receiver_room_types=(str(same_room.get("type", "unknown")),),
+                receivers=(same_receiver,),
+                graph_distances=(0,),
+                euclidean_distances_m=(_euclidean(same_source, same_receiver),),
+                receiver_model={"type": "mono"},
+            )
         )
-    )
 
     cross_pairs: list[tuple[int, str, str]] = []
     for source_room in sources:
@@ -340,13 +349,14 @@ def _build_jobs_for_floorplan(
         for receiver_id, distance in distances.items():
             if distance > 0:
                 cross_pairs.append((distance, source_id, receiver_id))
-    if cross_pairs:
+    if include_cross_room and cross_pairs:
         available_distances = sorted({distance for distance, _, _ in cross_pairs})
         target_distance = _choose_stable(
             available_distances,
             DATASET_VERSION,
             "cross-distance",
             index,
+            variant,
         )
         candidates = sorted(
             (pair for pair in cross_pairs if pair[0] == target_distance),
@@ -357,6 +367,7 @@ def _build_jobs_for_floorplan(
             DATASET_VERSION,
             "cross-pair",
             index,
+            variant,
         )
         cross = _placement(
             resource,
@@ -369,8 +380,9 @@ def _build_jobs_for_floorplan(
         cross_receiver = tuple(float(value) for value in cross["receiver"])
         jobs.append(
             DatasetJob(
-                item_id=f"fp{index:05d}_cross_circular4",
+                item_id=f"fp{index:05d}_v{variant:02d}_cross_circular4",
                 floorplan_idx=index,
+                variant_index=variant,
                 split=split,
                 kind="cross_room_circular4",
                 seed=base_seed + 23,
@@ -388,25 +400,31 @@ def _build_jobs_for_floorplan(
             )
         )
 
-    reachability = {
-        str(room["id"]): len(_graph_distances(graph, str(room["id"])))
-        for room in sources
-    }
-    maximum_reachability = max(reachability.values(), default=0)
-    distributed_source_candidates = [
-        room
-        for room in sources
-        if reachability[str(room["id"])] == maximum_reachability
-    ]
-    distributed_source = _choose_stable(
-        distributed_source_candidates,
-        DATASET_VERSION,
-        "distributed-source",
-        index,
-    )
-    distributed_source_id = str(distributed_source["id"])
-    distances = _graph_distances(graph, distributed_source_id)
-    if len(distances) >= 2:
+    if include_distributed:
+        reachability = {
+            str(room["id"]): len(_graph_distances(graph, str(room["id"])))
+            for room in sources
+        }
+        maximum_reachability = max(reachability.values(), default=0)
+        distributed_source_candidates = [
+            room
+            for room in sources
+            if reachability[str(room["id"])] == maximum_reachability
+        ]
+        distributed_source = _choose_stable(
+            distributed_source_candidates,
+            DATASET_VERSION,
+            "distributed-source",
+            index,
+            variant,
+        )
+        distributed_source_id = str(distributed_source["id"])
+        distances = _graph_distances(graph, distributed_source_id)
+    else:
+        distributed_source = None
+        distributed_source_id = ""
+        distances = {}
+    if include_distributed and distributed_source is not None and len(distances) >= 2:
         source_placement = _placement(
             resource,
             index,
@@ -420,7 +438,7 @@ def _build_jobs_for_floorplan(
             key=lambda room_id: (
                 0 if room_id == distributed_source_id else 1,
                 distances[room_id],
-                _stable_int(DATASET_VERSION, "distributed-room", index, room_id),
+                _stable_int(DATASET_VERSION, "distributed-room", index, variant, room_id),
             ),
         )[: max(2, int(max_distributed_mics))]
         receivers = []
@@ -439,8 +457,9 @@ def _build_jobs_for_floorplan(
             receivers.append(receiver)
         jobs.append(
             DatasetJob(
-                item_id=f"fp{index:05d}_distributed{len(receivers)}",
+                item_id=f"fp{index:05d}_v{variant:02d}_distributed{len(receivers)}",
                 floorplan_idx=index,
+                variant_index=variant,
                 split=split,
                 kind="distributed_mono",
                 seed=base_seed + 37,
@@ -465,8 +484,9 @@ def _build_jobs_for_floorplan(
     if include_motion:
         jobs.append(
             DatasetJob(
-                item_id=f"fp{index:05d}_moving_source",
+                item_id=f"fp{index:05d}_v{variant:02d}_moving_source",
                 floorplan_idx=index,
+                variant_index=variant,
                 split=split,
                 kind="moving_source_mono",
                 seed=base_seed + 53,
@@ -1291,6 +1311,9 @@ def _write_manifest(
     partition_count: int,
     partition_rank: int,
     global_floorplans: int,
+    same_room_variants: int,
+    cross_room_variants: int,
+    motion_fraction: float,
 ) -> dict[str, Any]:
     manifest = {
         "dataset": "FP-RIR",
@@ -1309,6 +1332,11 @@ def _write_manifest(
         "selected_floorplans": len(selected_floorplans),
         "global_selected_floorplans": int(global_floorplans),
         "planned_configurations": len(jobs),
+        "sampling": {
+            "same_room_variants": int(same_room_variants),
+            "cross_room_variants": int(cross_room_variants),
+            "motion_fraction": float(motion_fraction),
+        },
         "partition": {
             "count": int(partition_count),
             "rank": int(partition_rank),
@@ -1347,6 +1375,9 @@ def _write_plan_summary(
     path: Path,
     jobs: Sequence[DatasetJob],
     resource_summary: Mapping[str, Any],
+    *,
+    fs: int,
+    duration_s: float,
 ) -> dict[str, Any]:
     static = [job for job in jobs if job.kind != "moving_source_mono"]
     motion = [job for job in jobs if job.kind == "moving_source_mono"]
@@ -1367,6 +1398,20 @@ def _write_plan_summary(
         )
         for job in motion
     ]
+    static_rir_channels = int(
+        sum(
+            int(job.receiver_model.get("count", 1))
+            if job.kind in {"cross_room_circular4", "distributed_mono"}
+            else 1
+            for job in static
+        )
+    )
+    motion_keyframes = int(sum(nominal_motion_frames))
+    uncompressed_rir_bytes = int(
+        (static_rir_channels + motion_keyframes)
+        * max(1, int(round(float(fs) * float(duration_s))))
+        * np.dtype(np.float32).itemsize
+    )
     summary = {
         "dataset": "FP-RIR",
         "version": DATASET_VERSION,
@@ -1379,16 +1424,11 @@ def _write_plan_summary(
             "configurations": len(jobs),
             "configuration_types": dict(Counter(job.kind for job in jobs)),
             "static_configurations": len(static),
-            "static_rir_channels": int(
-                sum(
-                    int(job.receiver_model.get("count", 1))
-                    if job.kind in {"cross_room_circular4", "distributed_mono"}
-                    else 1
-                    for job in static
-                )
-            ),
+            "static_rir_channels": static_rir_channels,
             "moving_source_trajectories": len(motion),
-            "nominal_moving_source_keyframes": int(sum(nominal_motion_frames)),
+            "nominal_moving_source_keyframes": motion_keyframes,
+            "uncompressed_rir_bytes": uncompressed_rir_bytes,
+            "uncompressed_rir_gib": uncompressed_rir_bytes / float(1024**3),
             "microphones_per_static_configuration": _describe(
                 [
                     int(job.receiver_model.get("count", 1))
@@ -1409,7 +1449,9 @@ def _write_plan_summary(
     return summary
 
 
-def _tier_label(size: int) -> str:
+def _tier_label(size: int, total_floorplans: int | None = None) -> str:
+    if total_floorplans is not None and int(size) >= int(total_floorplans):
+        return "adapt-full"
     if int(size) >= 1000 and int(size) % 1000 == 0:
         return f"adapt-{int(size) // 1000}k"
     return f"adapt-{int(size)}"
@@ -1433,7 +1475,7 @@ def _write_nested_tier_indices(
             for record in records
             if int(record["floorplan_idx"]) in selected
         ]
-        label = _tier_label(requested_size)
+        label = _tier_label(requested_size, len(scan_rows))
         index_name = f"{label}.jsonl"
         index_path = tier_dir / index_name
         with index_path.open("w", encoding="utf-8") as handle:
@@ -1445,6 +1487,14 @@ def _write_nested_tier_indices(
             "requested_floorplans": requested_size,
             "completed_floorplans": len(
                 {int(record["floorplan_idx"]) for record in tier_records}
+            ),
+            "split_floorplans": dict(
+                Counter(
+                    {
+                        int(record["floorplan_idx"]): str(record.get("split", "unknown"))
+                        for record in tier_records
+                    }.values()
+                )
             ),
             "configurations": len(tier_records),
             "configuration_types": dict(
@@ -1501,6 +1551,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--duration-s", type=float, default=None)
     parser.add_argument("--split-ratios", type=_parse_ratios, default=(0.8, 0.1, 0.1))
     parser.add_argument("--max-distributed-mics", type=int, default=4)
+    parser.add_argument("--same-room-variants", type=int, default=1)
+    parser.add_argument("--cross-room-variants", type=int, default=1)
     parser.add_argument("--motion-fraction", type=float, default=None)
     parser.add_argument("--motion-distance-m", type=float, default=1.0)
     parser.add_argument("--motion-spacing-m", type=float, default=0.25)
@@ -1558,6 +1610,10 @@ def main() -> None:
     if motion_fraction is None:
         motion_fraction = 0.2 if profile == "pilot" else 0.1
     motion_fraction = float(np.clip(float(motion_fraction), 0.0, 1.0))
+    same_room_variants = max(0, int(args.same_room_variants))
+    cross_room_variants = max(0, int(args.cross_room_variants))
+    if same_room_variants == 0 and cross_room_variants == 0:
+        raise SystemExit("at least one static RIR variant must be enabled")
     output_dir = (
         Path(args.output)
         if args.output is not None
@@ -1584,17 +1640,25 @@ def main() -> None:
         include_motion = (
             _stable_int(DATASET_VERSION, "motion", index) / float(2**64)
         ) < motion_fraction
-        jobs.extend(
-            _build_jobs_for_floorplan(
-                resource,
-                index,
-                split=split,
-                max_distributed_mics=max(2, int(args.max_distributed_mics)),
-                include_motion=include_motion,
-                motion_distance_m=float(args.motion_distance_m),
-                motion_spacing_m=float(args.motion_spacing_m),
+        variant_count = max(same_room_variants, cross_room_variants, 1)
+        for variant_index in range(variant_count):
+            jobs.extend(
+                _build_jobs_for_floorplan(
+                    resource,
+                    index,
+                    split=split,
+                    variant_index=variant_index,
+                    include_same_room=variant_index < same_room_variants,
+                    include_cross_room=variant_index < cross_room_variants,
+                    include_distributed=(
+                        args.configuration_set != "adapt" and variant_index == 0
+                    ),
+                    max_distributed_mics=max(2, int(args.max_distributed_mics)),
+                    include_motion=include_motion and variant_index == 0,
+                    motion_distance_m=float(args.motion_distance_m),
+                    motion_spacing_m=float(args.motion_spacing_m),
+                )
             )
-        )
         plan_progress.update(1, detail=f"floorplan {index}")
     plan_progress.finish()
     if args.configuration_set == "adapt":
@@ -1622,6 +1686,9 @@ def main() -> None:
         partition_count=partition_count,
         partition_rank=partition_rank,
         global_floorplans=len(global_selected_floorplans),
+        same_room_variants=same_room_variants,
+        cross_room_variants=cross_room_variants,
+        motion_fraction=motion_fraction,
     )
     (output_dir / "resource-statistics.json").write_text(
         json.dumps(resource_summary, indent=2, ensure_ascii=True) + "\n",
@@ -1636,13 +1703,16 @@ def main() -> None:
             output_dir / "plan-summary.json",
             jobs,
             resource_summary,
+            fs=int(args.fs),
+            duration_s=duration_s,
         )
         planned = plan_summary["plan"]
         print(
             "Plan only: "
             f"{planned['static_rir_channels']:,} static RIR channels, "
             f"{planned['moving_source_trajectories']:,} motion trajectories, "
-            f"{planned['nominal_moving_source_keyframes']:,} nominal motion keyframes"
+            f"{planned['nominal_moving_source_keyframes']:,} nominal motion keyframes, "
+            f"{planned['uncompressed_rir_gib']:.2f} GiB uncompressed"
         )
         print(f"Output: {output_dir}")
         return

@@ -12,26 +12,47 @@ if [[ "${#GPUS[@]}" -lt 1 ]]; then
   exit 2
 fi
 
-TIERS=(quick standard extended)
+TIERS=(5 10)
+REQUESTED_STAGE="${DIST_STAGE:-all}"
+if [[ "${REQUESTED_STAGE}" == "all" ]]; then
+  STAGES=(localization beamforming)
+elif [[ "${REQUESTED_STAGE}" == "localization" || "${REQUESTED_STAGE}" == "beamforming" ]]; then
+  STAGES=("${REQUESTED_STAGE}")
+else
+  echo "DIST_STAGE must be all, localization, or beamforming" >&2
+  exit 2
+fi
+TASK_TIERS=()
+TASK_STAGES=()
+for tier in "${TIERS[@]}"; do
+  for stage in "${STAGES[@]}"; do
+    TASK_TIERS+=("${tier}")
+    TASK_STAGES+=("${stage}")
+  done
+done
+
 PIDS=()
-for index in "${!TIERS[@]}"; do
-  tier="${TIERS[$index]}"
+for index in "${!TASK_TIERS[@]}"; do
+  tier="${TASK_TIERS[$index]}"
+  stage="${TASK_STAGES[$index]}"
   gpu="${GPUS[$((index % ${#GPUS[@]}))]}"
   tier_output="${FPRIR_OUTPUT_ROOT}/dist-${tier}"
-  launcher_log="${LOG_DIR}/dist-${tier}-launcher-$(date +%Y%m%d-%H%M%S).log"
+  status_path="${tier_output}/.status-${stage}"
+  launcher_log="${LOG_DIR}/dist-${tier}-${stage}-launcher-$(date +%Y%m%d-%H%M%S).log"
   mkdir -p "${tier_output}"
-  printf "running\n" >"${tier_output}/.status"
-  echo "Dist ${tier}: physical GPU ${gpu}, log ${launcher_log}"
+  printf "running\n" >"${status_path}"
+  echo "Dist-${tier} ${stage}: physical GPU ${gpu}, log ${launcher_log}"
   (
     set +e
     GPU_ID="${gpu}" \
+    DIST_STAGE="${stage}" \
     FPRIR_OUTPUT_ROOT="${FPRIR_OUTPUT_ROOT}" \
     LOG_DIR="${LOG_DIR}" \
     PYTHON="${PYTHON}" \
     "${SCRIPT_DIR}/run_dist_tier.sh" "${tier}"
-    tier_status=$?
-    printf "%d\n" "${tier_status}" >"${tier_output}/.status"
-    exit "${tier_status}"
+    task_status=$?
+    printf "%d\n" "${task_status}" >"${status_path}"
+    exit "${task_status}"
   ) >"${launcher_log}" 2>&1 &
   PIDS+=("$!")
 done
@@ -40,7 +61,7 @@ set +e
 "${PYTHON}" "${SCRIPT_DIR}/monitor_dist_tiers.py" \
   --output-root "${FPRIR_OUTPUT_ROOT}" \
   --tiers "${TIERS[@]}" \
-  --stage "${DIST_STAGE:-all}"
+  --stage "${REQUESTED_STAGE}"
 monitor_status=$?
 status=0
 for pid in "${PIDS[@]}"; do

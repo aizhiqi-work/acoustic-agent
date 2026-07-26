@@ -55,15 +55,15 @@ def main() -> None:
                     bar.set_postfix_str(f"{tier}/{stage}", refresh=True)
             statuses = [
                 status
-                for tier in args.tiers
+                for tier, stage in expected
                 if (
                     status := _finished_status(
-                        args.output_root / f"dist-{tier}" / ".status"
+                        args.output_root / f"dist-{tier}" / f".status-{stage}"
                     )
                 )
                 is not None
             ]
-            if len(statuses) == len(args.tiers):
+            if len(statuses) == len(expected):
                 if any(status != "0" for status in statuses):
                     raise SystemExit("one or more Dist tiers failed; inspect the logs")
                 break

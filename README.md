@@ -289,18 +289,18 @@ python scripts/generate_fprir.py \
 
 The terminal reports scan, planning, simulation, and summary progress with
 throughput and ETA. Completed HDF5 shards are resumed automatically. CUDA batch
-entry points generate nested Adapt 1K/3K/6K corpora and Quick/Standard/Extended
+entry points generate nested Adapt 1K/8K/FULL corpora and Dist-5/Dist-10
 distributed-localization and beamforming evaluations:
 
 ```bash
 # One GPU.
 GPU_ID=0 scripts/fprir/run_adapt_tier.sh 1k
-GPU_ID=0 scripts/fprir/run_dist_tier.sh quick
+GPU_ID=0 scripts/fprir/run_dist_tier.sh 5
 
 # Several GPUs. Adapt is partitioned; Dist tiers run concurrently.
 GPU_IDS=0,1,2,3 FPRIR_PROCESSES_PER_GPU=4 \
-  scripts/fprir/run_adapt_multi_gpu.sh 6k
-GPU_IDS=0,1,2 scripts/fprir/run_dist_multi_gpu.sh
+  scripts/fprir/run_adapt_multi_gpu.sh full
+GPU_IDS=0,1,2,3 scripts/fprir/run_dist_multi_gpu.sh
 
 # Generate every published tier.
 GPU_IDS=0,1,2,3 scripts/fprir/run_all_tiers.sh all
