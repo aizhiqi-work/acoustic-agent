@@ -1,0 +1,220 @@
+# FP-RIR Dataset
+
+FP-RIR is Acoustic Agent's floorplan-based multichannel room impulse response
+dataset. The generator uses the bundled, validated residential floorplan
+resource and the same public solver API as the Web workbench.
+
+## Protocol
+
+Each floorplan is assigned to exactly one split using a stable hash:
+
+- 80% train
+- 10% validation
+- 10% test
+
+All source, receiver, material, array, and motion variants of that floorplan
+remain in the same split. This prevents geometry and room-connectivity leakage.
+
+The core dataset creates three static configurations per floorplan:
+
+| Configuration | Channels | Placement |
+| --- | ---: | --- |
+| `same_room_mono` | 1 | Source and microphone in one habitable room |
+| `cross_room_circular4` | 4 | Compact 4-microphone circular array across one or more open portals |
+| `distributed_mono` | 2-4 | One synchronized mono microphone per selected room |
+
+Cross-room pairs are sampled across the available room-graph distances instead
+of always selecting an adjacent room. Distributed microphones include the
+source room and connected rooms at increasing graph distance. The optional
+`moving_source_mono` companion subset samples a room-constrained source path
+with 0.25 m keyframe spacing by default.
+
+Every floorplan uses one deterministic material seed. Wall, floor, ceiling,
+door, and window materials are sampled from the semantic acoustic-material
+resource and stored with their six-band absorption, scattering, and
+transmission parameters.
+
+The core v1 protocol intentionally leaves automatic furniture disabled.
+Otherwise, receiver-specific collision avoidance could produce a different
+furniture layout for each channel of a distributed configuration. A furnished
+extension should generate one layout per floorplan and reuse it unchanged for
+every source and receiver.
+
+## Generate
+
+FP-RIR is split into two products with different purposes:
+
+- **Adapt** is a far-field RIR corpus for downstream model adaptation. Its
+  published 1K, 3K, and 6K floorplan tiers contain same-room mono, cross-room
+  circular-array, and a 10% moving-source subset.
+- **Dist** is an evaluation suite for whole-home TDOA localization and
+  distributed beamforming. It stores benchmark results rather than duplicating
+  a large training corpus.
+
+The batch entry points are:
+
+```bash
+# Physical GPU 2 is exposed as solver device 0 inside the script.
+GPU_ID=2 scripts/fprir/run_adapt_tier.sh smoke
+GPU_ID=2 scripts/fprir/run_adapt_tier.sh 1k
+GPU_ID=2 scripts/fprir/run_adapt_tier.sh 3k
+GPU_ID=2 scripts/fprir/run_adapt_tier.sh 6k
+
+GPU_ID=2 scripts/fprir/run_dist_tier.sh quick
+GPU_ID=2 scripts/fprir/run_dist_tier.sh standard
+GPU_ID=2 scripts/fprir/run_dist_tier.sh extended
+```
+
+Set `FPRIR_OUTPUT_ROOT=/data/fprir` to move all data and logs outside the
+repository. Set `PLAN_ONLY=1` for an Adapt metadata-only dry run, or
+`DIST_STAGE=localization` / `DIST_STAGE=beamforming` to run one Dist stage.
+All CUDA batch scripts use FP32 tracing and retain completed generator shards
+or benchmark checkpoints when the same command is resumed. Completed Dist
+stages are skipped unless `FORCE=1` is set.
+
+Adapt tiers are nested. A 6K generation writes one set of HDF5 shards plus
+`tiers/adapt-1k.jsonl`, `adapt-3k.jsonl`, and `adapt-6k.jsonl`; the smaller
+tiers reference the same shards and do not duplicate RIR tensors.
+
+Start with the stratified pilot. It samples floorplans around 4, 6, 8, 10, and
+12 rooms and shows progress, generation rate, and ETA:
+
+```bash
+python scripts/generate_fprir.py \
+  --profile pilot \
+  --output benchmark-results/fprir-pilot
+```
+
+Inspect the complete full-corpus plan without running the solver:
+
+```bash
+python scripts/generate_fprir.py \
+  --profile full \
+  --plan-only \
+  --output benchmark-results/fprir-full-plan
+```
+
+Generate the complete dataset:
+
+```bash
+python scripts/generate_fprir.py \
+  --profile full \
+  --output /data/FP-RIR \
+  --quality simulation \
+  --fs 16000 \
+  --duration-s 2.0 \
+  --max-distributed-mics 4 \
+  --motion-fraction 0.1 \
+  --shard-size 32 \
+  --workers 1
+```
+
+The default single worker avoids oversubscribing Numba's internal parallel
+work. A stopped run can be resumed with the same command: a shard is reused
+only after both its HDF5 file and JSONL sidecar have been finalized.
+
+With the current 15,376-scene resource and the defaults above, the deterministic
+full plan contains:
+
+| Planned property | Count |
+| --- | ---: |
+| Train / validation / test floorplans | 12,275 / 1,539 / 1,562 |
+| Static configurations | 46,120 |
+| Static RIR channels | 138,261 |
+| Moving-source trajectories | 1,488 |
+| Nominal moving-source keyframes | 7,440 |
+
+Four source scenes have no verified open cross-room route, so their
+cross-room compact-array and distributed configurations are omitted instead of
+inventing connectivity.
+
+## Storage
+
+The output directory contains:
+
+```text
+manifest.json
+plan.jsonl
+resource-statistics.json
+fprir-summary.json
+fprir-overview.tex
+fprir-statistics.svg
+fprir-statistics.png       # when ImageMagick is available
+fprir-statistics.pdf       # when ImageMagick is available
+errors.jsonl
+tiers/
+  adapt-1k.jsonl
+  adapt-3k.jsonl
+  adapt-6k.jsonl
+  summary.json
+shards/
+  fprir-00000.h5
+  fprir-00000.jsonl
+  ...
+```
+
+Static RIR tensors use shape `[channel, sample]`. Moving-source tensors use
+`[keyframe, channel, sample]`. RIRs are stored as gzip-compressed `float32`;
+each HDF5 group has the same item ID as its JSONL index record.
+
+Metadata includes:
+
+- floorplan index and disjoint split;
+- configuration and receiver type;
+- source and microphone coordinates;
+- source and receiver room IDs and semantic room types;
+- room-graph and Euclidean source-microphone distances;
+- material IDs and six-band acoustic coefficients;
+- sample rate, duration, quality, and intersection backend;
+- broadband and six-band RIR-derived RT60;
+- motion trajectory and per-keyframe metrics where applicable.
+
+## Read
+
+```python
+import json
+from pathlib import Path
+
+import h5py
+
+root = Path("/data/FP-RIR")
+record = json.loads(
+    (root / "shards" / "fprir-00000.jsonl").read_text().splitlines()[0]
+)
+
+with h5py.File(root / "shards" / record["shard"], "r") as shard:
+    rir = shard[record["group"]]["rir"][:]
+
+print(rir.shape)
+print(record["split"], record["kind"])
+print(record["graph_distances"], record["rt60_s"])
+```
+
+## Statistics
+
+`fprir-statistics.svg` contains the four distributions used by the FP-RIR
+paper section:
+
+1. rooms per floorplan, computed over all 15,376 resource scenes;
+2. source-microphone room-graph distance;
+3. Euclidean source-microphone distance;
+4. broadband RIR-derived RT60.
+
+`fprir-summary.json` is the machine-readable source of all table values.
+`fprir-overview.tex` is generated from the same summary so that reported counts
+cannot drift from the produced shards.
+
+## Dist Protocol
+
+Dist uses room-count strata 4, 6, 8, 10, and 12. Quick samples one calibration
+and two validation layouts per stratum for localization, then one layout per
+stratum for whole-home beamforming. Standard uses 5/10 calibration/validation
+layouts and five beamforming layouts per stratum. Extended doubles those
+layout counts.
+
+The fixed whole-home sensor budget is 5, 7, 8, 8, and 8 microphones for the
+4-, 6-, 8-, 10-, and 12-room strata. The benchmark compares synchronized
+distributed single microphones and coverage-preserving local arrays under
+same-room and cross-room interference. Its reports include room accuracy,
+localization error, SNR and SI-SDR improvement, STOI, PESQ when available, and
+runtime.

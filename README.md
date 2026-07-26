@@ -18,6 +18,7 @@ sources or receivers.
 - [Python API](#python-api)
 - [Audio And Noise](#audio-and-noise)
 - [Motion And Batch Production](#motion-and-batch-production)
+- [FP-RIR Dataset](#fp-rir-dataset)
 - [Quality Presets](#quality-presets)
 - [CUDA Acceleration](#cuda-acceleration)
 - [Performance](#performance)
@@ -264,6 +265,41 @@ dataset.save_npz("floorplan_rirs.npz")
 
 The NPZ archive stores float32 RIRs plus a structured JSON manifest. See
 [batch_production.py](examples/batch_production.py) for a runnable example.
+
+## FP-RIR Dataset
+
+FP-RIR is the reproducible floorplan-based dataset pipeline built on the
+bundled 15,376-scene residential resource. It creates floorplan-disjoint
+train/validation/test splits and samples same-room mono, cross-room compact
+array, distributed-microphone, and moving-source RIR configurations.
+
+Generate a representative pilot or inspect the full plan without running the
+solver:
+
+```bash
+python scripts/generate_fprir.py \
+  --profile pilot \
+  --output benchmark-results/fprir-pilot
+
+python scripts/generate_fprir.py \
+  --profile full \
+  --plan-only \
+  --output benchmark-results/fprir-full-plan
+```
+
+The terminal reports scan, planning, simulation, and summary progress with
+throughput and ETA. Completed HDF5 shards are resumed automatically. CUDA batch
+entry points generate nested Adapt 1K/3K/6K corpora and Quick/Standard/Extended
+distributed-localization and beamforming evaluations:
+
+```bash
+GPU_ID=0 scripts/fprir/run_adapt_tier.sh 1k
+GPU_ID=0 scripts/fprir/run_dist_tier.sh quick
+```
+
+See
+[FP-RIR Dataset](docs/FP_RIR.md) for the sampling protocol, item schema,
+statistics, data loader, and full generation command.
 
 ## Quality Presets
 
