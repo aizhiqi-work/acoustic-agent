@@ -13,6 +13,7 @@ import zlib
 
 import numpy as np
 from shapely.geometry import Polygon
+from tqdm.auto import tqdm
 
 from acoustic_agent.floorplan_resource import FloorplanResource
 
@@ -214,76 +215,91 @@ def run_stratified_study(
     )
     results: list[dict[str, Any]] = []
     placements: list[dict[str, Any]] = []
+    planned_rirs = sum(
+        int(row["room_count"]) ** 2 * max(1, int(points_per_room))
+        for row in validation_rows
+    )
 
-    for plan_number, floorplan_index in enumerate(validation_indices, start=1):
-        model = load_model(floorplan_index, resource)
-        profile = profile_by_index[floorplan_index]
-        split = split_by_index[floorplan_index]
-        grid = localization_grid(model, spacing_m=0.55)
-        ordered_nodes = place_nodes(
-            model,
-            len(model.rooms),
-            mode="single",
-            risk_quantile=risk_quantile,
-        )
-        targets = sample_target_points(
-            model,
-            points_per_room=max(1, int(points_per_room)),
-            seed=seed + floorplan_index * 17,
-            spacing_m=0.52,
-        )
-        for order, node in enumerate(ordered_nodes, start=1):
-            placements.append(
-                {
-                    "floorplan_idx": floorplan_index,
-                    "room_count": profile.room_count,
-                    "area_m2": round(profile.area_m2, 4),
-                    "order": order,
-                    "node_id": node.id,
-                    "room_id": node.room_id,
-                    "x_m": round(node.position[0], 5),
-                    "y_m": round(node.position[1], 5),
-                    "z_m": round(node.position[2], 5),
-                }
+    with tqdm(
+        total=planned_rirs,
+        desc="Localization RIR",
+        unit="rir",
+        dynamic_ncols=True,
+        mininterval=0.2,
+        smoothing=0.1,
+    ) as progress:
+        for floorplan_index in validation_indices:
+            model = load_model(floorplan_index, resource)
+            profile = profile_by_index[floorplan_index]
+            split = split_by_index[floorplan_index]
+            grid = localization_grid(model, spacing_m=0.55)
+            ordered_nodes = place_nodes(
+                model,
+                len(model.rooms),
+                mode="single",
+                risk_quantile=risk_quantile,
             )
-        for target in targets:
-            measurements = [generator.single(model, target, node) for node in ordered_nodes]
-            truth = np.asarray(target.position[:2], dtype=float)
-            for microphone_count in range(3, len(ordered_nodes) + 1):
-                nodes = ordered_nodes[:microphone_count]
-                estimate, estimated_room, _ = localize_tdoa(
-                    model,
-                    nodes,
-                    measurements[:microphone_count],
-                    grid,
-                )
-                results.append(
+            targets = sample_target_points(
+                model,
+                points_per_room=max(1, int(points_per_room)),
+                seed=seed + floorplan_index * 17,
+                spacing_m=0.52,
+            )
+            progress.set_postfix(
+                floorplan=floorplan_index,
+                rooms=profile.room_count,
+                refresh=False,
+            )
+            for order, node in enumerate(ordered_nodes, start=1):
+                placements.append(
                     {
-                        "split": "validation",
                         "floorplan_idx": floorplan_index,
                         "room_count": profile.room_count,
                         "area_m2": round(profile.area_m2, 4),
-                        "relative_area_bin": split["relative_area_bin"],
-                        "absolute_area_bin": split["absolute_area_bin"],
-                        "target_id": target.id,
-                        "target_room": target.room_id,
-                        "microphones": microphone_count,
-                        "configuration": f"single_{microphone_count}x1",
-                        "local_microphone": any(node.room_id == target.room_id for node in nodes),
-                        "true_x_m": round(float(truth[0]), 5),
-                        "true_y_m": round(float(truth[1]), 5),
-                        "estimated_x_m": round(float(estimate[0]), 5),
-                        "estimated_y_m": round(float(estimate[1]), 5),
-                        "position_error_m": round(float(np.linalg.norm(estimate - truth)), 5),
-                        "estimated_room": estimated_room,
-                        "room_correct": bool(estimated_room == target.room_id),
+                        "order": order,
+                        "node_id": node.id,
+                        "room_id": node.room_id,
+                        "x_m": round(node.position[0], 5),
+                        "y_m": round(node.position[1], 5),
+                        "z_m": round(node.position[2], 5),
                     }
                 )
-        print(
-            f"[{plan_number:03d}/{len(validation_indices):03d}] FloorPlan {floorplan_index}: "
-            f"{profile.room_count} rooms, {profile.area_m2:.1f} m2, {len(targets)} targets",
-            flush=True,
-        )
+            for target in targets:
+                measurements = []
+                for node in ordered_nodes:
+                    measurements.append(generator.single(model, target, node))
+                    progress.update(1)
+                truth = np.asarray(target.position[:2], dtype=float)
+                for microphone_count in range(3, len(ordered_nodes) + 1):
+                    nodes = ordered_nodes[:microphone_count]
+                    estimate, estimated_room, _ = localize_tdoa(
+                        model,
+                        nodes,
+                        measurements[:microphone_count],
+                        grid,
+                    )
+                    results.append(
+                        {
+                            "split": "validation",
+                            "floorplan_idx": floorplan_index,
+                            "room_count": profile.room_count,
+                            "area_m2": round(profile.area_m2, 4),
+                            "relative_area_bin": split["relative_area_bin"],
+                            "absolute_area_bin": split["absolute_area_bin"],
+                            "target_id": target.id,
+                            "target_room": target.room_id,
+                            "microphones": microphone_count,
+                            "configuration": f"single_{microphone_count}x1",
+                            "local_microphone": any(node.room_id == target.room_id for node in nodes),
+                            "true_x_m": round(float(truth[0]), 5),
+                            "true_y_m": round(float(truth[1]), 5),
+                            "estimated_x_m": round(float(estimate[0]), 5),
+                            "estimated_y_m": round(float(estimate[1]), 5),
+                            "position_error_m": round(float(np.linalg.norm(estimate - truth)), 5),
+                            "estimated_room": estimated_room,
+                            "room_correct": bool(estimated_room == target.room_id),
+                        }
+                    )
 
     by_room_count = _group_metrics(results, ("room_count", "microphones"))
     by_relative_area = _group_metrics(results, ("relative_area_bin", "microphones"))

@@ -6,6 +6,7 @@ import time
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+from tqdm.auto import tqdm
 
 from research.doa.distributed import (
     SensorNode,
@@ -119,24 +120,35 @@ def run_whole_home_benchmark(
         for case in cases
     }
     resumed_case_count = len(cases)
+    total_cases = len(split) * 2 * len(selected_scenarios)
     target_dry, interferer_dry = _study_audio(float(duration_s), FS)
     pink_dry = _tile_audio(
         load_wav_mono(RESOURCE_AUDIO / "pink_noise_bed.wav", FS), target_dry.size
     )
     started = time.perf_counter()
 
+    progress = tqdm(
+        total=total_cases,
+        initial=len(completed),
+        desc="Beamforming",
+        unit="case",
+        dynamic_ncols=True,
+        mininterval=0.2,
+        smoothing=0.1,
+    )
     for plan_number, split_row in enumerate(split, start=1):
         floorplan_idx = int(split_row["index"])
         room_count = int(split_row["room_count"])
+        progress.set_postfix(
+            floorplan=floorplan_idx,
+            rooms=room_count,
+            refresh=False,
+        )
         if all(
             (floorplan_idx, target_case, scenario) in completed
             for target_case in ("array_covered", "array_uncovered")
             for scenario in selected_scenarios
         ):
-            print(
-                f"[{plan_number}/{len(split)}] floorplan={floorplan_idx} rooms={room_count} cached",
-                flush=True,
-            )
             continue
 
         model = load_model(floorplan_idx)
@@ -522,6 +534,7 @@ def run_whole_home_benchmark(
                 )
                 completed.add(case_key)
                 _write_checkpoint(output, signature, rows, cases)
+                progress.update(1)
                 if captured is not None:
                     audio_dir = output / "audio" / f"floorplan-{floorplan_idx}-{target_case}-{scenario}"
                     audio_dir.mkdir(parents=True, exist_ok=True)
@@ -529,10 +542,7 @@ def run_whole_home_benchmark(
                     for name, samples in captured.items():
                         write_wav_mono(audio_dir / f"{name}.wav", samples, FS)
 
-        print(
-            f"[{plan_number}/{len(split)}] floorplan={floorplan_idx} rooms={room_count} cases={len(cases)}",
-            flush=True,
-        )
+    progress.close()
 
     overall = _summarize(rows, ("strategy",))
     scenario_strategy = _summarize(rows, ("scenario", "strategy"))

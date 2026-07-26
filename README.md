@@ -293,13 +293,22 @@ entry points generate nested Adapt 1K/3K/6K corpora and Quick/Standard/Extended
 distributed-localization and beamforming evaluations:
 
 ```bash
+# One GPU.
 GPU_ID=0 scripts/fprir/run_adapt_tier.sh 1k
 GPU_ID=0 scripts/fprir/run_dist_tier.sh quick
+
+# Several GPUs. Adapt is partitioned; Dist tiers run concurrently.
+GPU_IDS=0,1,2,3 FPRIR_PROCESSES_PER_GPU=4 \
+  scripts/fprir/run_adapt_multi_gpu.sh 6k
+GPU_IDS=0,1,2 scripts/fprir/run_dist_multi_gpu.sh
+
+# Generate every published tier.
+GPU_IDS=0,1,2,3 scripts/fprir/run_all_tiers.sh all
 ```
 
 See
 [FP-RIR Dataset](docs/FP_RIR.md) for the sampling protocol, item schema,
-statistics, data loader, and full generation command.
+statistics, data loader, performance notes, and all single-/multi-GPU commands.
 
 ## Quality Presets
 

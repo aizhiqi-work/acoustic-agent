@@ -35,19 +35,19 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import time
 from typing import Any, Iterable, Mapping, Sequence
 
 import h5py
 import numpy as np
+from tqdm.auto import tqdm
 
 from acoustic_agent import AcousticAgent
 from acoustic_agent.floorplan_resource import FloorplanResource
 
 
 DATASET_VERSION = "fprir_v1"
-GENERATOR_REVISION = "2026-07-26.2"
+GENERATOR_REVISION = "2026-07-26.3"
 MATERIAL_PROFILE = {
     "wall": "auto",
     "floor": "auto",
@@ -118,65 +118,37 @@ class GeneratedItem:
 
 
 class ProgressBar:
-    """A dependency-free terminal progress bar suitable for long batch jobs."""
+    """Small tqdm adapter retained to keep the generator call sites concise."""
 
-    def __init__(self, total: int, label: str, *, width: int = 28) -> None:
+    def __init__(self, total: int, label: str, *, unit: str = "item") -> None:
         self.total = max(0, int(total))
-        self.label = str(label)
-        self.width = max(12, int(width))
         self.current = 0
-        self.started = time.monotonic()
-        self.last_draw = 0.0
-        self.tty = bool(sys.stderr.isatty())
-        self._last_percent = -1
+        self._bar = tqdm(
+            total=self.total,
+            desc=str(label),
+            unit=unit,
+            dynamic_ncols=True,
+            mininterval=0.2,
+            smoothing=0.1,
+            bar_format=(
+                "{desc:<10} {percentage:3.0f}%|{bar}| "
+                "{n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+            ),
+        )
 
     def update(self, amount: int = 1, *, detail: str = "") -> None:
-        self.current = min(self.total, self.current + int(amount))
-        now = time.monotonic()
-        percent = int(100 * self.current / max(self.total, 1))
-        if (
-            self.current < self.total
-            and now - self.last_draw < 0.12
-            and (self.tty or percent == self._last_percent)
-        ):
-            return
-        self.last_draw = now
-        self._last_percent = percent
-        elapsed = max(now - self.started, 1e-9)
-        rate = self.current / elapsed
-        remaining = max(self.total - self.current, 0)
-        eta = remaining / rate if rate > 0 else float("inf")
-        filled = int(round(self.width * self.current / max(self.total, 1)))
-        bar = "#" * filled + "-" * (self.width - filled)
-        suffix = (
-            f"{self.current:,}/{self.total:,}  {percent:3d}%  "
-            f"{rate:5.2f}/s  ETA {_format_duration(eta)}"
-        )
+        increment = max(0, min(int(amount), self.total - self.current))
         if detail:
-            suffix += f"  {detail[:38]}"
-        line = f"{self.label:<12} [{bar}] {suffix}"
-        if self.tty:
-            sys.stderr.write("\r" + line)
-            if self.current >= self.total:
-                sys.stderr.write("\n")
-        elif self.current >= self.total or percent % 10 == 0:
-            sys.stderr.write(line + "\n")
-        sys.stderr.flush()
+            self._bar.set_postfix_str(detail[:48], refresh=False)
+        self.current += increment
+        self._bar.update(increment)
 
     def finish(self, *, detail: str = "") -> None:
+        if detail:
+            self._bar.set_postfix_str(detail[:48], refresh=False)
         if self.current < self.total:
-            self.update(self.total - self.current, detail=detail)
-        elif self.total == 0:
-            self.update(0, detail=detail)
-
-
-def _format_duration(seconds: float) -> str:
-    if not math.isfinite(seconds):
-        return "--:--"
-    seconds = max(0, int(round(seconds)))
-    hours, remainder = divmod(seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    return f"{hours:d}:{minutes:02d}:{secs:02d}" if hours else f"{minutes:02d}:{secs:02d}"
+            self.update(self.total - self.current)
+        self._bar.close()
 
 
 def _stable_int(*parts: Any) -> int:
@@ -789,7 +761,7 @@ def _run_jobs(
     shard_dir.mkdir(parents=True, exist_ok=True)
     all_records: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-    progress = ProgressBar(len(jobs), "Generate")
+    progress = ProgressBar(len(jobs), "Generate", unit="config")
     error_path = output_dir / "errors.jsonl"
     if error_path.exists():
         errors.extend(_load_index(error_path))
@@ -880,7 +852,7 @@ def _scan_resource(
     rows: list[dict[str, Any]] = []
     room_types: Counter[str] = Counter()
     split_counts: Counter[str] = Counter()
-    progress = ProgressBar(len(resource), "Scan")
+    progress = ProgressBar(len(resource), "Scan", unit="scene")
     for index in range(len(resource)):
         record = resource.record(index)
         rooms = record.get("rooms", [])
@@ -1316,6 +1288,9 @@ def _write_manifest(
     rt_precision: str,
     rt_cuda_device: int,
     nested_tier_sizes: Sequence[int],
+    partition_count: int,
+    partition_rank: int,
+    global_floorplans: int,
 ) -> dict[str, Any]:
     manifest = {
         "dataset": "FP-RIR",
@@ -1332,7 +1307,12 @@ def _write_manifest(
         },
         "floorplan_disjoint": True,
         "selected_floorplans": len(selected_floorplans),
+        "global_selected_floorplans": int(global_floorplans),
         "planned_configurations": len(jobs),
+        "partition": {
+            "count": int(partition_count),
+            "rank": int(partition_rank),
+        },
         "intersection_backend": intersection_backend,
         "configuration_set": configuration_set,
         "rt_accelerator": rt_accelerator,
@@ -1499,6 +1479,18 @@ def _parse_ratios(value: str) -> tuple[float, float, float]:
     return parts
 
 
+def _partition_floorplans(
+    selected_floorplans: Sequence[int],
+    partition_count: int,
+    partition_rank: int,
+) -> list[int]:
+    count = max(1, int(partition_count))
+    rank = int(partition_rank)
+    if not 0 <= rank < count:
+        raise ValueError("partition rank must be in [0, partition count)")
+    return list(selected_floorplans[rank::count])
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--profile", choices=("pilot", "full"), default="pilot")
@@ -1537,6 +1529,18 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="scan, split, and sample all metadata without running the RIR solver",
     )
+    parser.add_argument(
+        "--partition-count",
+        type=int,
+        default=1,
+        help="split the selected FloorPlans into this many deterministic process partitions",
+    )
+    parser.add_argument(
+        "--partition-rank",
+        type=int,
+        default=0,
+        help="zero-based partition generated by this process",
+    )
     return parser.parse_args()
 
 
@@ -1560,12 +1564,21 @@ def main() -> None:
         else Path("benchmark-results") / ("fprir-pilot" if profile == "pilot" else "FP-RIR")
     ).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    partition_count = max(1, int(args.partition_count))
+    partition_rank = int(args.partition_rank)
+    if not 0 <= partition_rank < partition_count:
+        raise SystemExit("--partition-rank must be in [0, --partition-count)")
 
     resource = FloorplanResource()
     scan_rows, resource_summary = _scan_resource(resource, args.split_ratios)
-    selected_floorplans = _select_floorplans(scan_rows, maximum)
+    global_selected_floorplans = _select_floorplans(scan_rows, maximum)
+    selected_floorplans = _partition_floorplans(
+        global_selected_floorplans,
+        partition_count,
+        partition_rank,
+    )
     jobs: list[DatasetJob] = []
-    plan_progress = ProgressBar(len(selected_floorplans), "Plan")
+    plan_progress = ProgressBar(len(selected_floorplans), "Plan", unit="scene")
     for index in selected_floorplans:
         split = _split_for_floorplan(index, args.split_ratios)
         include_motion = (
@@ -1606,13 +1619,16 @@ def main() -> None:
         rt_precision=str(args.rt_precision),
         rt_cuda_device=int(args.rt_cuda_device),
         nested_tier_sizes=tuple(int(value) for value in args.nested_tier_sizes),
+        partition_count=partition_count,
+        partition_rank=partition_rank,
+        global_floorplans=len(global_selected_floorplans),
     )
     (output_dir / "resource-statistics.json").write_text(
         json.dumps(resource_summary, indent=2, ensure_ascii=True) + "\n",
         encoding="utf-8",
     )
     print(
-        f"FP-RIR {profile}: {len(selected_floorplans):,} floorplans, "
+        f"FP-RIR {profile}: {len(selected_floorplans):,}/{len(global_selected_floorplans):,} floorplans, "
         f"{len(jobs):,} planned configurations, {quality}, {args.fs} Hz, {duration_s:g} s"
     )
     if args.plan_only:
@@ -1644,7 +1660,7 @@ def main() -> None:
         workers=max(1, int(args.workers)),
         compression=int(args.compression),
     )
-    charts = ProgressBar(5, "Summarize")
+    charts = ProgressBar(5, "Summarize", unit="step")
     summary = _summarize(
         resource_summary,
         records,

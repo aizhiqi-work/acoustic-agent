@@ -54,7 +54,7 @@ FP-RIR is split into two products with different purposes:
 The batch entry points are:
 
 ```bash
-# Physical GPU 2 is exposed as solver device 0 inside the script.
+# Single GPU. Physical GPU 2 is exposed as solver device 0 inside the script.
 GPU_ID=2 scripts/fprir/run_adapt_tier.sh smoke
 GPU_ID=2 scripts/fprir/run_adapt_tier.sh 1k
 GPU_ID=2 scripts/fprir/run_adapt_tier.sh 3k
@@ -64,6 +64,65 @@ GPU_ID=2 scripts/fprir/run_dist_tier.sh quick
 GPU_ID=2 scripts/fprir/run_dist_tier.sh standard
 GPU_ID=2 scripts/fprir/run_dist_tier.sh extended
 ```
+
+For a server with several GPUs, give the physical device IDs as a
+comma-separated list:
+
+```bash
+# Adapt deterministically partitions the FloorPlans across GPU processes.
+GPU_IDS=2,3,4,5 \
+FPRIR_PROCESSES_PER_GPU=4 \
+scripts/fprir/run_adapt_multi_gpu.sh 6k
+
+# Quick, Standard, and Extended Dist run concurrently on up to three GPUs.
+GPU_IDS=2,3,4,5 scripts/fprir/run_dist_multi_gpu.sh
+
+# Generate both products and every published tier.
+GPU_IDS=2,3,4,5 scripts/fprir/run_all_tiers.sh all
+
+# Generate only one product.
+GPU_IDS=2,3,4,5 scripts/fprir/run_all_tiers.sh adapt
+GPU_IDS=2,3,4,5 scripts/fprir/run_all_tiers.sh dist
+```
+
+`run_all_tiers.sh` automatically selects the multi-GPU launchers when
+`GPU_IDS` contains more than one device. With one GPU, use `GPU_ID=2`; the
+single-device scripts run sequentially.
+
+Do not increase `--workers` inside one CUDA generator. Numba CUDA contexts are
+process-local, and concurrent threads on the same device are both slower and
+can fail with a device-unavailable error. `FPRIR_PROCESSES_PER_GPU` uses
+independent OS processes instead, so GPU tracing can overlap with CPU-side
+six-band reconstruction. Start at `2`; on the tested 64-thread, four-RTX-4090
+server, `4` processes per GPU was stable and fastest in the pilot. The launcher
+automatically divides available Numba CPU threads among all processes.
+
+CUDA remains the recommended backend. A CPU-only fallback is available when
+GPUs are busy:
+
+```bash
+FPRIR_RT_ACCELERATOR=numba \
+FPRIR_RT_PRECISION=float64 \
+NUMBA_NUM_THREADS=64 \
+scripts/fprir/run_adapt_tier.sh 6k
+
+FPRIR_RT_ACCELERATOR=numba \
+FPRIR_RT_PRECISION=float64 \
+NUMBA_NUM_THREADS=64 \
+scripts/fprir/run_dist_tier.sh quick
+```
+
+CPU mode uses the same solver and BVH, but the 64-thread CPU is best reserved
+for fallback or validation because it consumes the whole host to approach the
+throughput of one 4090.
+
+The Python batch loops use `tqdm`. Every stage displays completed work,
+elapsed time, processing rate, and estimated remaining time. Adapt reports
+resource scanning, configuration planning, RIR generation, and summary
+generation separately. Multi-GPU Adapt displays one aggregate configuration
+bar. Dist localization counts completed RIR solves, Dist beamforming counts
+target/interference cases, and its multi-GPU launcher displays an aggregate
+six-stage bar. Detailed per-process progress is retained in timestamped logs.
 
 Set `FPRIR_OUTPUT_ROOT=/data/fprir` to move all data and logs outside the
 repository. Set `PLAN_ONLY=1` for an Adapt metadata-only dry run, or
@@ -75,6 +134,21 @@ stages are skipped unless `FORCE=1` is set.
 Adapt tiers are nested. A 6K generation writes one set of HDF5 shards plus
 `tiers/adapt-1k.jsonl`, `adapt-3k.jsonl`, and `adapt-6k.jsonl`; the smaller
 tiers reference the same shards and do not duplicate RIR tensors.
+
+For a short multi-GPU systems check before the 6K run:
+
+```bash
+GPU_IDS=2,3 \
+FPRIR_PROCESSES_PER_GPU=2 \
+FPRIR_MAX_FLOORPLANS=20 \
+FPRIR_QUALITY=preview \
+FPRIR_DURATION_S=0.25 \
+FPRIR_MOTION_FRACTION=0 \
+scripts/fprir/run_adapt_multi_gpu.sh 6k
+```
+
+Use a fresh `FPRIR_OUTPUT_ROOT` for this check so its manifest cannot be
+confused with the final Simulation corpus.
 
 Start with the stratified pilot. It samples floorplans around 4, 6, 8, 10, and
 12 rooms and shows progress, generation rate, and ETA:
@@ -151,6 +225,28 @@ shards/
   fprir-00000.h5
   fprir-00000.jsonl
   ...
+```
+
+A multi-GPU Adapt output additionally retains resumable process partitions
+under `parts/part-000`, `parts/part-001`, and so on. The top-level `shards/`
+directory uses hard links to those HDF5 files when the filesystem supports
+them, so the merged dataset has one logical index without storing the RIR
+tensors twice. The merger falls back to file copies only when hard links are
+unavailable.
+
+Dist outputs are benchmark artifacts rather than an RIR training corpus:
+
+```text
+dist-quick/
+  localization/
+  beamforming/
+dist-standard/
+  localization/
+  beamforming/
+dist-extended/
+  localization/
+  beamforming/
+logs/
 ```
 
 Static RIR tensors use shape `[channel, sample]`. Moving-source tensors use

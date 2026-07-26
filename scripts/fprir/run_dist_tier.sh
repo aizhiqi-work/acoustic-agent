@@ -38,6 +38,13 @@ case "${TIER}" in
     ;;
 esac
 
+RT_ACCELERATOR="${FPRIR_RT_ACCELERATOR:-cuda}"
+if [[ "${RT_ACCELERATOR}" == "numba" ]]; then
+  RT_PRECISION="${FPRIR_RT_PRECISION:-float64}"
+else
+  RT_PRECISION="${FPRIR_RT_PRECISION:-float32}"
+fi
+
 OUTPUT="${FPRIR_OUTPUT_ROOT}/dist-${TIER}"
 mkdir -p "${OUTPUT}"
 
@@ -54,8 +61,8 @@ run_localization() {
     --calibration-per-count "${CALIBRATION}" \
     --validation-per-count "${VALIDATION}" \
     --points-per-room "${POINTS}" \
-    --accelerator cuda \
-    --precision float32 \
+    --accelerator "${RT_ACCELERATOR}" \
+    --precision "${RT_PRECISION}" \
     --cuda-device 0
 }
 
@@ -76,8 +83,8 @@ run_beamforming() {
     --interferer-snr 0 \
     --background-snr 10 \
     --sensor-noise-snr 30 \
-    --rt-accelerator cuda \
-    --rt-precision float32 \
+    --rt-accelerator "${RT_ACCELERATOR}" \
+    --rt-precision "${RT_PRECISION}" \
     --rt-cuda-device 0 \
     --seed 20260723
 }

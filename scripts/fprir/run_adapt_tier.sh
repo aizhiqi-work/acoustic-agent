@@ -42,6 +42,13 @@ case "${TIER}" in
     ;;
 esac
 
+RT_ACCELERATOR="${FPRIR_RT_ACCELERATOR:-cuda}"
+if [[ "${RT_ACCELERATOR}" == "numba" ]]; then
+  RT_PRECISION="${FPRIR_RT_PRECISION:-float64}"
+else
+  RT_PRECISION="${FPRIR_RT_PRECISION:-float32}"
+fi
+
 OUTPUT="${FPRIR_OUTPUT_ROOT}/adapt-${TIER}"
 ARGS=(
   "${PYTHON}" scripts/generate_fprir.py
@@ -57,8 +64,8 @@ ARGS=(
   --shard-size 32
   --workers 1
   --intersection-backend bvh
-  --rt-accelerator cuda
-  --rt-precision float32
+  --rt-accelerator "${RT_ACCELERATOR}"
+  --rt-precision "${RT_PRECISION}"
   --rt-cuda-device 0
   --nested-tier-sizes "${NESTED_SIZES[@]}"
 )

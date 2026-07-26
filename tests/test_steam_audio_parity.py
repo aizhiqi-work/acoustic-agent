@@ -21,6 +21,7 @@ from acoustic_agent.steam_rt import (
     _air_absorption_energy_weights,
     _apply_coupled_late_reverb_prior,
     _adaptive_reflection_config,
+    _bandlimit_band_signals_serial,
     _boundary_diffraction_paths,
     _energy_decay_profile,
     _render_parametric_fdn_late_reverb,
@@ -249,6 +250,43 @@ def test_volumetric_occlusion_discards_samples_hidden_from_source():
     assert _volumetric_occlusion(scene, listener, source, config) == pytest.approx(1.0)
 
 
+@pytest.mark.parametrize("backend", ("linear", "bvh"))
+def test_batched_volumetric_occlusion_matches_serial_rays(backend):
+    room = make_room("u_shape", size=(6.0, 5.0, 2.8))
+    scene = RoomRayScene(room)
+    scene.configure_intersection(backend, 1)
+    source = np.asarray((0.7, 4.2, 1.4))
+    listener = np.asarray((5.1, 1.0, 1.4))
+    config = SimConfig(direct_occlusion_radius_m=0.18, direct_occlusion_samples=128)
+
+    radius = float(config.direct_occlusion_radius_m)
+    from acoustic_agent.steam_rt import _sphere_volume_samples
+
+    samples = _sphere_volume_samples(config.direct_occlusion_samples) * radius + source[None, :]
+    visible = 0
+    valid = 0
+    for sample in samples:
+        source_leg = sample - source
+        source_distance = float(np.linalg.norm(source_leg))
+        if (
+            source_distance > 1e-9
+            and scene.any_hit(source, source_leg / source_distance, source_distance)
+        ):
+            continue
+        listener_leg = sample - listener
+        listener_distance = float(np.linalg.norm(listener_leg))
+        valid += 1
+        if listener_distance <= 1e-9 or not scene.any_hit(
+            listener,
+            listener_leg / max(listener_distance, 1e-9),
+            listener_distance,
+        ):
+            visible += 1
+    expected = float(visible / valid) if valid else 0.0
+
+    assert _volumetric_occlusion(scene, listener, source, config) == expected
+
+
 def test_transmission_accumulates_each_physical_barrier_once():
     room = make_room("u_shape", size=(6.0, 4.0, 2.8))
     scene = RoomRayScene(room)
@@ -292,6 +330,16 @@ def test_six_band_synthesis_is_perfectly_reconstructing_for_equal_inputs():
     reconstructed = np.sum(bandlimit_band_signals(bands, 16000), axis=0)
 
     np.testing.assert_allclose(reconstructed, signal, rtol=1e-6, atol=2e-6)
+
+
+def test_parallel_six_band_synthesis_is_sample_exact_to_serial():
+    rng = np.random.default_rng(20260726)
+    signals = rng.standard_normal((len(FREQUENCY_BANDS), 32000))
+
+    serial = _bandlimit_band_signals_serial(signals, 16000)
+    parallel = bandlimit_band_signals(signals, 16000)
+
+    np.testing.assert_array_equal(parallel, serial)
 
 
 def test_six_band_synthesis_is_calibrated_at_band_centers():

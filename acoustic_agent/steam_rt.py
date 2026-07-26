@@ -42,9 +42,11 @@ _RT_VISUAL_RETAIN_LIMIT = 512
 _RT_VISUAL_CANDIDATE_FACTOR = 32
 _BVH_BOUNDS_EPS = 2.0e-6
 _STATIC_SCENE_CACHE_LIMIT = 32
+_ROOM_KEY_CACHE_LIMIT = 64
 _WORKSPACE_CACHE_BYTES = 256 * 1024 * 1024
 _PRECISION_CACHE_BYTES = 256 * 1024 * 1024
 _STATIC_CACHE_LOCK = RLock()
+_ROOM_GEOMETRY_KEY_CACHE: OrderedDict[int, tuple[Room, tuple[Any, ...]]] = OrderedDict()
 _SCENE_SURFACE_CACHE: OrderedDict[tuple[Any, ...], tuple[Any, ...]] = OrderedDict()
 _SCENE_ARRAY_CACHE: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
 _RANDOM_WORKSPACE_CACHE: OrderedDict[tuple[int, int, int, int], tuple[np.ndarray, np.ndarray]] = OrderedDict()
@@ -424,11 +426,32 @@ class RoomRayScene:
 
     def batch_any_hit(self, origins: np.ndarray, dirs: np.ndarray, max_distance: np.ndarray) -> np.ndarray:
         self._build_batch_arrays()
-        if self._intersection_backend == "bvh":
-            return np.asarray([
-                self.any_hit(origins[index], dirs[index], float(max_distance[index]))
-                for index in range(origins.shape[0])
-            ], dtype=bool)
+        if njit is not None:
+            arrays = _scene_kernel_arrays(self)
+            return _any_hit_batch_jit(
+                np.ascontiguousarray(origins, dtype=np.float64),
+                np.ascontiguousarray(dirs, dtype=np.float64),
+                np.ascontiguousarray(max_distance, dtype=np.float64),
+                arrays["kinds"],
+                arrays["wall_a"],
+                arrays["wall_delta"],
+                arrays["wall_z"],
+                arrays["z_values"],
+                arrays["box_center"],
+                arrays["box_axis_u"],
+                arrays["box_axis_v"],
+                arrays["box_half"],
+                arrays["box_z"],
+                arrays["normals"],
+                arrays["corners"],
+                arrays["bvh_bounds_min"],
+                arrays["bvh_bounds_max"],
+                arrays["bvh_start"],
+                arrays["bvh_count"],
+                arrays["bvh_escape"],
+                arrays["bvh_primitives"],
+                self._intersection_backend == "bvh",
+            )
         t_all = np.stack([surface.batch_intersect(origins, dirs, self)[0] for surface in self.surfaces], axis=0)
         return np.any((t_all > _EPS) & (t_all < (max_distance - _EPS)[None, :]), axis=0)
 
@@ -452,6 +475,13 @@ def _freeze_cache_value(value: Any) -> Any:
 
 
 def _scene_geometry_cache_key(room: Room) -> tuple[Any, ...]:
+    identity = id(room)
+    with _STATIC_CACHE_LOCK:
+        cached = _ROOM_GEOMETRY_KEY_CACHE.get(identity)
+        if cached is not None and cached[0] is room:
+            _ROOM_GEOMETRY_KEY_CACHE.move_to_end(identity)
+            return cached[1]
+
     material_signature = tuple(
         sorted(
             (
@@ -470,12 +500,18 @@ def _scene_geometry_cache_key(room: Room) -> tuple[Any, ...]:
         for key in ("surface_segments", "objects", "material_seed")
         if key in metadata
     }
-    return (
+    key = (
         tuple((float(corner[0]), float(corner[1])) for corner in room.corners),
         float(room.height_m),
         material_signature,
         _freeze_cache_value(geometry_metadata),
     )
+    with _STATIC_CACHE_LOCK:
+        _ROOM_GEOMETRY_KEY_CACHE[identity] = (room, key)
+        _ROOM_GEOMETRY_KEY_CACHE.move_to_end(identity)
+        while len(_ROOM_GEOMETRY_KEY_CACHE) > _ROOM_KEY_CACHE_LIMIT:
+            _ROOM_GEOMETRY_KEY_CACHE.popitem(last=False)
+    return key
 
 
 def _cached_room_ray_scene(room: Room) -> RoomRayScene:
@@ -3071,6 +3107,27 @@ def bandlimit_band_signals(signals: np.ndarray, fs: int) -> np.ndarray:
     values = np.asarray(signals, dtype=np.float64)
     if values.ndim != 2 or values.shape[0] != _NUM_BANDS:
         raise ValueError(f"expected {_NUM_BANDS} band signals, got shape {values.shape}")
+    if njit is None or values.shape[1] < 256:
+        return _bandlimit_band_signals_serial(values, fs)
+
+    input_bands, coefficients = _bandlimit_parallel_plan(int(fs))
+    filtered = _lowpass_filter_bank_jit(
+        np.ascontiguousarray(values[input_bands], dtype=np.float64),
+        coefficients,
+    )
+    out = np.zeros_like(values, dtype=np.float32)
+    out[0] = filtered[0]
+    for band_index in range(1, _NUM_BANDS - 1):
+        task = 1 + (band_index - 1) * 2
+        out[band_index] = filtered[task] - filtered[task + 1]
+    out[-1] = values[-1] - filtered[-1]
+    return out
+
+
+def _bandlimit_band_signals_serial(signals: np.ndarray, fs: int) -> np.ndarray:
+    values = np.asarray(signals, dtype=np.float64)
+    if values.ndim != 2 or values.shape[0] != _NUM_BANDS:
+        raise ValueError(f"expected {_NUM_BANDS} band signals, got shape {values.shape}")
 
     crossovers = [edge[1] for edge in _band_edges(fs)[:-1]]
     out = np.zeros_like(values, dtype=np.float32)
@@ -3081,6 +3138,45 @@ def bandlimit_band_signals(signals: np.ndarray, fs: int) -> np.ndarray:
         out[band_index] = upper - lower
     out[-1] = values[-1] - _band_limit(values[-1], 0.0, crossovers[-1], fs, mode="lowpass")
     return out
+
+
+@lru_cache(maxsize=16)
+def _bandlimit_parallel_plan(fs: int) -> tuple[np.ndarray, np.ndarray]:
+    sampling_rate = max(1, int(fs))
+    nyquist = 0.5 * sampling_rate
+    crossovers = [edge[1] for edge in _band_edges(sampling_rate)[:-1]]
+    input_bands = [0]
+    cutoffs = [crossovers[0]]
+    for band_index in range(1, _NUM_BANDS - 1):
+        input_bands.extend((band_index, band_index))
+        cutoffs.extend((crossovers[band_index], crossovers[band_index - 1]))
+    input_bands.append(_NUM_BANDS - 1)
+    cutoffs.append(crossovers[-1])
+
+    coefficients = np.zeros((len(cutoffs), 4, 5), dtype=np.float64)
+    order = 8
+    for task, cutoff_value in enumerate(cutoffs):
+        cutoff = float(np.clip(float(cutoff_value), 1e-3, nyquist * 0.999))
+        w0 = 2.0 * math.pi * cutoff / sampling_rate
+        cw0, sw0 = math.cos(w0), math.sin(w0)
+        for section in range(order // 2):
+            section_q = 1.0 / (
+                2.0 * math.cos((2.0 * section + 1.0) * math.pi / (2.0 * order))
+            )
+            alpha = sw0 / (2.0 * section_q)
+            a0 = 1.0 + alpha
+            b0 = ((1.0 - cw0) / 2.0) / a0
+            coefficients[task, section] = (
+                b0,
+                (1.0 - cw0) / a0,
+                b0,
+                (-2.0 * cw0) / a0,
+                (1.0 - alpha) / a0,
+            )
+    bands = np.asarray(input_bands, dtype=np.int64)
+    bands.setflags(write=False)
+    coefficients.setflags(write=False)
+    return bands, coefficients
 
 
 def _foa_coefficients(directions: np.ndarray) -> np.ndarray:
@@ -4084,6 +4180,7 @@ def _as_precision_array(value: np.ndarray, dtype: Any) -> np.ndarray:
 def _clear_static_caches() -> None:
     global _PRECISION_ARRAY_BYTES, _RANDOM_WORKSPACE_BYTES
     with _STATIC_CACHE_LOCK:
+        _ROOM_GEOMETRY_KEY_CACHE.clear()
         _SCENE_SURFACE_CACHE.clear()
         _SCENE_ARRAY_CACHE.clear()
         _RANDOM_WORKSPACE_CACHE.clear()
@@ -4100,6 +4197,7 @@ def _static_cache_info() -> dict[str, int]:
     with _STATIC_CACHE_LOCK:
         return {
             **{key: int(value) for key, value in _STATIC_CACHE_STATS.items()},
+            "room_key_entries": len(_ROOM_GEOMETRY_KEY_CACHE),
             "scene_entries": len(_SCENE_SURFACE_CACHE),
             "array_entries": len(_SCENE_ARRAY_CACHE),
             "workspace_entries": len(_RANDOM_WORKSPACE_CACHE),
@@ -4142,6 +4240,42 @@ if njit is not None:
             out[index] = y0
             x2, x1 = x1, x0
             y2, y1 = y1, y0
+        return out
+
+
+    @njit(parallel=True, cache=True)
+    def _lowpass_filter_bank_jit(values, coefficients):
+        task_count, sample_count = values.shape
+        out = np.empty((task_count, sample_count), dtype=np.float32)
+        for task in prange(task_count):
+            current = np.empty(sample_count, dtype=np.float32)
+            scratch = np.empty(sample_count, dtype=np.float32)
+            for section in range(coefficients.shape[1]):
+                b0 = coefficients[task, section, 0]
+                b1 = coefficients[task, section, 1]
+                b2 = coefficients[task, section, 2]
+                a1 = coefficients[task, section, 3]
+                a2 = coefficients[task, section, 4]
+                x1 = 0.0
+                x2 = 0.0
+                y1 = 0.0
+                y2 = 0.0
+                for index in range(sample_count):
+                    if section == 0:
+                        x0 = values[task, index]
+                    elif section % 2 == 1:
+                        x0 = current[index]
+                    else:
+                        x0 = scratch[index]
+                    y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+                    if section % 2 == 0:
+                        current[index] = y0
+                    else:
+                        scratch[index] = y0
+                    x2, x1 = x1, x0
+                    y2, y1 = y1, y0
+            for index in range(sample_count):
+                out[task, index] = scratch[index]
         return out
 
 
@@ -4216,19 +4350,29 @@ def _volumetric_occlusion(scene: RoomRayScene, listener: np.ndarray, source: np.
     count = max(1, int(config.direct_occlusion_samples))
     radius = max(1e-4, float(config.direct_occlusion_radius_m))
     samples = _sphere_volume_samples(count) * radius + source[None, :]
-    visible = 0
-    valid = 0
-    for sample in samples:
-        source_leg = sample - source
-        source_distance = float(np.linalg.norm(source_leg))
-        if source_distance > 1e-9 and scene.any_hit(source, source_leg / source_distance, source_distance):
-            continue
-        listener_leg = sample - listener
-        listener_distance = float(np.linalg.norm(listener_leg))
-        valid += 1
-        if listener_distance <= 1e-9 or not scene.any_hit(listener, listener_leg / max(listener_distance, 1e-9), listener_distance):
-            visible += 1
-    return float(visible / valid) if valid else 0.0
+    source_legs = samples - source[None, :]
+    source_distances = np.linalg.norm(source_legs, axis=1)
+    source_directions = source_legs / np.maximum(source_distances[:, None], 1e-9)
+    source_blocked = scene.batch_any_hit(
+        np.repeat(source[None, :], count, axis=0),
+        source_directions,
+        source_distances,
+    )
+    eligible = (source_distances <= 1e-9) | ~source_blocked
+    valid = int(np.count_nonzero(eligible))
+    if valid == 0:
+        return 0.0
+
+    listener_legs = samples - listener[None, :]
+    listener_distances = np.linalg.norm(listener_legs, axis=1)
+    listener_directions = listener_legs / np.maximum(listener_distances[:, None], 1e-9)
+    listener_blocked = scene.batch_any_hit(
+        np.repeat(listener[None, :], count, axis=0),
+        listener_directions,
+        listener_distances,
+    )
+    visible = eligible & ((listener_distances <= 1e-9) | ~listener_blocked)
+    return float(np.count_nonzero(visible) / valid)
 
 
 def _sphere_volume_samples(count: int) -> np.ndarray:
@@ -4517,6 +4661,37 @@ if njit is not None:
     def _any_hit_jit(origin, direction, max_distance, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives, use_bvh):
         surf, t, nx, ny, nz = _closest_hit_backend_jit(origin, direction, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives, use_bvh)
         return surf >= 0 and t > _EPS and t < max_distance - _EPS
+
+
+    @njit(parallel=True, cache=True)
+    def _any_hit_batch_jit(origins, directions, max_distances, kinds, wall_a, wall_delta, wall_z, z_values, box_center, box_axis_u, box_axis_v, box_half, box_z, normals, corners, bvh_bounds_min, bvh_bounds_max, bvh_start, bvh_count, bvh_escape, bvh_primitives, use_bvh):
+        out = np.empty(origins.shape[0], dtype=np.bool_)
+        for index in prange(origins.shape[0]):
+            out[index] = _any_hit_jit(
+                origins[index],
+                directions[index],
+                max_distances[index],
+                kinds,
+                wall_a,
+                wall_delta,
+                wall_z,
+                z_values,
+                box_center,
+                box_axis_u,
+                box_axis_v,
+                box_half,
+                box_z,
+                normals,
+                corners,
+                bvh_bounds_min,
+                bvh_bounds_max,
+                bvh_start,
+                bvh_count,
+                bvh_escape,
+                bvh_primitives,
+                use_bvh,
+            )
+        return out
 
 
     @njit(cache=True)
